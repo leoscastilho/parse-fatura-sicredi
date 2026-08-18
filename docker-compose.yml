@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------------
+#  parse-fatura-sicredi — stack completa
+#
+#  Feito para Proxmox VE + Portainer:
+#    * sem chave `version:` (obsoleta no Compose v2, e o Portainer reclama)
+#    * volumes nomeados, não bind mounts com caminho de host, para o stack
+#      subir por "Repository"/"Web editor" no Portainer sem editar caminho
+#    * o `categories.yml` é a exceção: é bind mount de propósito, porque você
+#      quer editar esse arquivo à mão no host e ver o efeito sem rebuild
+#    * healthcheck em tudo, para o Portainer mostrar verde/vermelho de verdade
+#
+#  Subir:
+#      cp .env.example .env      # e preencher o token
+#      docker compose up -d --build
+#
+#  Não tem banco separado: o estado transacional é SQLite dentro do volume
+#  `fatura-data`. Um container a menos para monitorar num homelab.
+# ---------------------------------------------------------------------------
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fatura-backend:2.0.0
+    container_name: fatura-backend
+    restart: unless-stopped
+    user: "10001:10001"
+    environment:
+      FATURA_RULES_PATH: /app/config/categories.yml
+      FATURA_DB_PATH: /data/state.db
+      FATURA_TRANSACTION_TTL_HOURS: "24"
+      FATURA_GITHUB_REPO: ${FATURA_GITHUB_REPO:-leoscastilho/parse-fatura-sicredi}
+      FATURA_GITHUB_BRANCH: ${FATURA_GITHUB_BRANCH:-main}
+      FATURA_GITHUB_FILE_PATH: categories.yml
+      # O token NÃO tem default e não é ARG de build: se estiver ausente, a
+      # aplicação funciona inteira, só não publica no GitHub.
+      FATURA_GITHUB_TOKEN: ${FATURA_GITHUB_TOKEN:-}
+      FATURA_CORS_ORIGINS: '["http://localhost:5173"]'
+    volumes:
+      - fatura-data:/data
+      # Bind mount da config inteira: você edita no host com o editor que
+      # quiser, o container enxerga na hora, e o que o portal grava aparece no
+      # `git status` para você revisar antes de commitar.
+      - ./config:/app/config:rw
+    networks: [fatura]
+    # Sem `ports:`. O backend só é alcançável pelo nginx, dentro da rede do
+    # compose — não fica exposto na LAN.
+    expose:
+      - "8000"
+
+  frontend:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: fatura-frontend:2.0.0
+    container_name: fatura-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      # Troque para "8080:80" se a 80 já estiver ocupada na VM.
+      - "${FATURA_HTTP_PORT:-8080}:80"
+    networks: [fatura]
+
+volumes:
+  fatura-data:
+    name: fatura-data
+
+networks:
+  fatura:
+    name: fatura
+    driver: bridge

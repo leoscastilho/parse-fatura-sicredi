@@ -1,0 +1,62 @@
+# =============================================================================
+#  Nubank — PLACEHOLDER
+# =============================================================================
+#  `validado: false` porque este perfil foi escrito sem uma fatura real na mão.
+#  O portal mostra um aviso enquanto essa flag estiver falsa: o parsing roda,
+#  mas a conferência de totais é a única coisa em que confiar.
+#
+#  Para validar: exporte uma fatura do app, suba na aba "Formato de entrada",
+#  confira as colunas detectadas e vire a flag.
+#
+#  Cores: #820AD1 (Electric Violet) e #1B0C24, da identidade da marca.
+# =============================================================================
+
+id: nubank
+nome: Nubank
+validado: false
+
+tema:
+  primaria: "#820AD1"
+  escura: "#1B0C24"
+  clara: "#E9D5F7"
+  suave: "#F6EDFC"
+  destaque: "#FFC700"
+  neutra: "#6B5B75"
+  aviso: "#7A4B00"
+  erro: "#E60050"
+  fundo: "#F7F4F9"
+  texto: "#1B0C24"
+  inicial: N
+
+leitura:
+  # `csv_simples`: uma tabela só, cabeçalho na primeira linha, um lançamento
+  # por linha. É o formato que o Nubank exporta para fatura de cartão.
+  estrategia: csv_simples
+  extensoes: [".csv"]
+  delimitador: ","
+  encoding: utf-8
+
+  # Nome da coluna no arquivo -> papel no nosso modelo.
+  colunas:
+    data: date
+    descricao: title
+    valor: amount
+    parcela: null            # o Nubank já traz "Parcela 2/5" dentro do title
+
+  # O Nubank exporta a fatura sem data de vencimento no arquivo. Sem ela não dá
+  # para preencher a coluna Data, então o portal pergunta no upload.
+  vencimento:
+    rotulo: null
+    perguntar: true
+    formato: "%d/%m/%Y"
+
+  numeros:
+    milhar: ""
+    decimal: "."
+
+  data_lancamento: "%Y-%m-%d"
+
+  # Sem seção internacional separada: o Nubank já converte para reais.
+  internacional: null
+  fim_secao: null
+  resumo: null

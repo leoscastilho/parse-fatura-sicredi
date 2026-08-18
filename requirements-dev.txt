@@ -1,0 +1,11 @@
+# Só para rodar a suíte. Não vai para a imagem final.
+-r requirements.txt
+
+pytest==9.1.1
+
+# O `starlette.testclient` precisa de um cliente HTTP, e a partir do Starlette
+# 1.0 esse cliente é o httpx2. Sem declarar aqui, o build falha com
+# "The starlette.testclient module requires the httpx2 package to be installed"
+# — mas só na máquina onde ele não estivesse instalado por acaso, que foi
+# exatamente como esse bug passou despercebido.
+httpx2==2.12.0

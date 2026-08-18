@@ -1,0 +1,47 @@
+# =============================================================================
+#  Formato de SAÍDA — compartilhado por todos os bancos
+# =============================================================================
+#
+#  A fatura de cada banco chega num formato diferente, mas tudo sai daqui no
+#  mesmo CSV, porque o destino é sempre a mesma planilha.  Se um dia a planilha
+#  mudar, muda só este arquivo — nenhum código.
+#
+#  Placeholders disponíveis:
+#     {descricao} {parcela} {dia} {mes} {ano}   -> na descrição
+#     {periodo} {inicio} {fim}                  -> no nome do arquivo
+# =============================================================================
+
+colunas: [Data, Categoria, Descrição, "Valor (R$)", Pago]
+
+data:
+  # De onde sai a coluna `Data`.
+  #   vencimento -> a data de vencimento da fatura (uma só para a fatura toda);
+  #                 é assim porque a planilha agrega por mês de pagamento
+  #   compra     -> a data real de cada compra
+  origem: vencimento
+  formato: "%m/%d/%Y"
+
+descricao:
+  # "[Cartão] Renner (Parcela 03/05) {Em 10/May}"
+  modelo: "[Cartão] {descricao}{parcela}{sufixo_data}"
+  parcela: " (Parcela {parcela})"
+  # A data da compra fica preservada aqui porque a coluna Data guarda o
+  # vencimento.  Mês em inglês, fixo — `strftime('%b')` mudaria com o locale
+  # da máquina e quebraria 6.700 linhas de histórico.
+  sufixo_data: " {{Em {dia}/{mes}}}"
+  titlecase: true
+  colapsar_espacos: true
+
+# Coluna `Pago`: a fatura já foi paga quando você exporta.
+pago: x
+
+ordenacao:
+  # Chaves aplicadas nesta ordem. Disponíveis: data, categoria, data_compra,
+  # valor, descricao.
+  chaves: [data, categoria, data_compra]
+  categoria_vazia_no_fim: true
+
+arquivo:
+  encoding: utf-8            # use utf-8-sig se o Excel comer os acentos
+  um_extrato: "fatura_{periodo}.csv"
+  varios_extratos: "faturas_{inicio}_a_{fim}.csv"

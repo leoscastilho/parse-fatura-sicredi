@@ -1,149 +1,138 @@
-import pandas as pd
-import os
-from datetime import datetime
-import openai
+#!/usr/bin/env python3
+"""
+parse-fatura-sicredi — CLI
 
-# Initialize OpenAI API (make sure to set your OpenAI API key)
-openai.api_key = os.getenv("OPENAI_API_KEY")
-openai_model = "gpt-4o-mini"
-enable_ai = False
+Mesma engine da API: tudo que classifica mora em `core/`. Este arquivo só cuida
+de argumentos, arquivos e do relatório na tela, então CLI e site nunca podem
+divergir na classificação.
 
-# List of possible categories
-categories = [
-    "Ajuste", "Alimentação", "Hobby", "Cachorro", "Casa", "Construção",
-    "Educação", "Eletrônicos", "Filha", "Imposto", "Investimento", "Lazer",
-    "Cartão de crédito", "Outros", "Poupança", "Renda Fixa", "Renda Variável",
-    "Resgate Poupança", "Restante", "Saúde", "Serviços", "Transporte", "Vestuário"
-]
+    python main.py                       # input/ -> output/fatura_AAAA-MM.csv
+    python main.py --split               # um CSV por extrato
+    python main.py --no-interactive      # não abre o categorizador no fim
+    python main.py --strict              # sai com erro se ficar algo sem categoria
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from core import (
+    ClassifiedLine,
+    LineState,
+    Ruleset,
+    classify_sources,
+    classify_statement,
+    lines_to_csv,
+    output_name,
+    read_statement,
+)
 
 
-def get_category_from_description(description):
-    if not enable_ai:
-        return "Outros"  # Return default category if AI is disabled
+def report_for(statement, lines: list[ClassifiedLine], dropped, destination) -> tuple[list[str], int]:
+    def check(read: float, declared: float | None) -> str:
+        if declared is None:
+            return f"R$ {read:>12,.2f}   (fatura não informa)"
+        mark = "OK" if abs(read - declared) < 0.01 else f"DIVERGE {read - declared:+,.2f}"
+        return f"R$ {read:>12,.2f}  vs. fatura R$ {declared:>12,.2f}   [{mark}]"
 
-    prompt = f"Given the description: '{description}', classify it into one of the following categories: {', '.join(categories)}."
+    out = [
+        "",
+        "=" * 78,
+        statement.name + (f"  ->  {destination.name}" if destination else ""),
+        f"  Vencimento .......... {statement.due_date:%d/%m/%Y}   "
+        f"(coluna Data = {statement.due_date:%m/%d/%Y})",
+        f"  Lançamentos ......... {len(lines)} exportados, {len(dropped)} descartados",
+        f"  Débitos ............. {check(statement.debits, statement.declared_debits)}",
+        f"  Créditos ............ {check(statement.credits, statement.declared_credits)}",
+    ]
+    if dropped:
+        out.append("  Descartados (pagamento da fatura anterior):")
+        out += [f"    - {d.descricao}  R$ {d.valor:,.2f}" for d in dropped]
 
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",  # Specify GPT-4 model (or the specific variant)
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that categorizes expenses."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=20,
-            temperature=0.3,  # Lower temperature for more consistent results
-        )
-        category = response['choices'][0]['message']['content'].strip()
+    flags = {LineState.UNMAPPED: "SEM CATEGORIA", LineState.MARKETPLACE: "MARKETPLACE"}
+    review = [(l, flags[l.state]) for l in lines if l.state in flags]
+    if review:
+        out.append(f"  Revisar ({len(review)}):")
+        for line, flag in sorted(review, key=lambda r: -r[0].valor):
+            out.append(
+                f"    [{flag:13s}] {line.merchant_raw:24s} R$ {line.valor:>10,.2f}"
+                + (f"  -> {line.categoria}" if line.categoria else "")
+            )
 
-        # Ensure the category is valid
-        if category not in categories:
-            category = "Outros"  # Default category if it's not recognized
-    except Exception as e:
-        print(f"Error with GPT-4 API: {e}")
-        category = "Outros"  # Default category in case of an error
+    return out, sum(1 for l in lines if l.state is LineState.UNMAPPED)
 
-    return category
 
-def read_credit_card_table(input_folder, output_folder):
-    # Ensure output folder exists
-    os.makedirs(output_folder, exist_ok=True)
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--input", default="input", type=Path)
+    parser.add_argument("--output", default="output", type=Path)
+    parser.add_argument("--rules", default="config/categories.yml", type=Path)
+    parser.add_argument("--output-file")
+    parser.add_argument("--split", action="store_true")
+    parser.add_argument("--report-file", type=Path)
+    parser.add_argument("--encoding", default="utf-8")
+    parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--no-interactive", action="store_true")
+    args = parser.parse_args()
 
-    # Get the first day of the current month
-    first_day_of_current_month = datetime(datetime.now().year, datetime.now().month, 1).strftime("%m/%d/%Y")
+    rules = Ruleset.load(args.rules)
+    args.output.mkdir(parents=True, exist_ok=True)
 
-    # Iterate through all files in the input folder
-    for file_name in os.listdir(input_folder):
-        # Check if the file has an Excel extension
-        if file_name.endswith(".xls") or file_name.endswith(".xlsx"):
-            input_xls = os.path.join(input_folder, file_name)
-            output_csv = os.path.join(output_folder, f"{os.path.splitext(file_name)[0]}.csv")
+    paths = sorted(p for p in args.input.iterdir()
+                   if p.suffix.lower() in {".xls", ".xlsx"} and not p.name.startswith("~$"))
+    if not paths:
+        print(f"Nenhum .xls/.xlsx em {args.input}/", file=sys.stderr)
+        return 1
 
-            # Read the Excel file
-            xls = pd.ExcelFile(input_xls)
+    report: list[str] = []
+    uncategorized = 0
+    all_lines: list[ClassifiedLine] = []
+    statements = []
 
-            # Assuming the relevant data is in the first sheet
-            sheet_name = xls.sheet_names[0]
-            data = pd.read_excel(xls, sheet_name=sheet_name, header=None)
+    for index, path in enumerate(paths):
+        statement = read_statement(path, name=path.name)
+        lines, dropped = classify_statement(statement, rules, index=index)
+        all_lines += lines
+        statements.append(statement)
 
-            # Find the header row ("Histórico de Despesas")
-            header_row = data.apply(lambda row: row.str.contains("Histórico de Despesas", na=False).any(), axis=1).idxmax()
+        per_file = args.output / f"{path.stem}.csv"
+        if args.split:
+            per_file.write_bytes(lines_to_csv(lines, args.encoding))
+            destination = per_file
+        else:
+            destination = None
+            # Não deixar para trás o CSV de uma execução com --split.
+            per_file.unlink(missing_ok=True)
 
-            # Extract the table starting from the header row
-            table_start = header_row + 2  # Skip "Histórico de Despesas" and "Despesas no Brasil"
-            table = data.loc[table_start:]
+        chunk, pending = report_for(statement, lines, dropped, destination)
+        report += chunk
+        uncategorized += pending
 
-            # Find the row where "Valor Total R$" is located (this approach checks all columns)
-            end_row = table.apply(lambda row: row.astype(str).str.strip().str.contains("Valor Total", na=False).any(), axis=1)
+    combined = args.output / (args.output_file or output_name(statements))
+    if args.split:
+        combined.unlink(missing_ok=True)
+    else:
+        combined.write_bytes(lines_to_csv(all_lines, args.encoding))
+        report += ["", "=" * 78,
+                   f"{len(all_lines)} lançamento(s) de {len(paths)} fatura(s)  ->  {combined}"]
 
-            # Check if "Valor Total R$" is found and get the index of the first occurrence
-            if end_row.any():
-                end_row = end_row.idxmax()  # Get the index of the first True
-            else:
-                print("Error: 'Valor Total R$' not found")
-                end_row = len(table)  # Default to the end of the table if not found
+    text = "\n".join(report).lstrip("\n")
+    print(text)
+    if args.report_file:
+        args.report_file.write_text(text + "\n", encoding="utf-8")
 
-            # Table data is before the "Valor Total R$" row
-            table = table.loc[:end_row-1]
+    if uncategorized and not args.no_interactive:
+        from categorize import interactive_session
+        interactive_session(args.rules, args.output, args.encoding)
 
-            # Set the header row for the table
-            table.columns = data.loc[table_start]
-            table = table[1:]  # Drop the header row itself from the data
+    if args.strict and uncategorized:
+        print(f"\n{uncategorized} lançamento(s) sem categoria.", file=sys.stderr)
+        return 1
+    return 0
 
-            # Add empty "Categoria" column between "Data" and "Descrição"
-            if "Data" in table.columns:
-                table.insert(table.columns.get_loc("Descrição"), "Categoria", "")
 
-            # Use GPT-4 to categorize each description before manipulation, if AI is enabled
-            if "Descrição" in table.columns and enable_ai:
-                table["Categoria"] = table["Descrição"].apply(get_category_from_description)
-
-            # Add a new column "Pago" with "x" to all rows
-            table["Pago"] = "x"
-
-            # Process "Descrição" column with original "Data" for concatenation
-            if "Parcela" in table.columns and "Descrição" in table.columns and "Data" in table.columns:
-                # Concatenate "[Cartão]" to the beginning of "Descrição" and "Parcela" if applicable
-                table["Descrição"] = table.apply(
-                    lambda row: f"[Cartão] {row['Descrição'].strip()} (Parcela {row['Parcela']})"
-                    if pd.notna(row["Parcela"]) else f"[Cartão] {row['Descrição'].strip()}",
-                    axis=1
-                )
-
-                # Add the original "Data" to "Descrição"
-                def format_date_and_append(row):
-                    try:
-                        # Use the original "Data" date for the concatenation
-                        date_obj = datetime.strptime(row["Data"], "%d/%m/%Y")
-                        formatted_date = f"{date_obj.day}/{date_obj.strftime('%b')}"
-                        return f"{row['Descrição']} {{em {formatted_date}}}"
-                    except (ValueError, TypeError):
-                        return row["Descrição"]
-
-                table["Descrição"] = table.apply(format_date_and_append, axis=1)
-
-                # Optionally remove the "Parcela" column
-                table = table.drop(columns=["Parcela"])
-
-            # Normalize the "Descrição" column (convert to title case)
-            if "Descrição" in table.columns:
-                table["Descrição"] = table["Descrição"].apply(lambda x: x.title() if isinstance(x, str) else x)
-
-            # Update "Data" column with the first day of the current month
-            if "Data" in table.columns:
-                table["Data"] = first_day_of_current_month
-
-            # Process "Valor (R$)" column
-            if "Valor (R$)" in table.columns:
-                table["Valor (R$)"] = table["Valor (R$)"].replace(
-                    {r"[^\d,.-]": "", r"\.": "", ",": "."}, regex=True
-                ).astype(float)
-
-                # Move negative values to the bottom by sorting
-                table = table.sort_values(by="Valor (R$)", ascending=[False])
-
-            # Save to a new CSV file
-            table.to_csv(output_csv, index=False, encoding="utf-8")
-            print(f"Processed {file_name} -> {output_csv}")
-
-# Example usage
-read_credit_card_table("input", "output")
+if __name__ == "__main__":
+    raise SystemExit(main())

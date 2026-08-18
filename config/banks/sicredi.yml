@@ -1,0 +1,59 @@
+# =============================================================================
+#  Sicredi — perfil de leitura e tema
+# =============================================================================
+#  Cores oficiais: marca.sicredi.com.br/cores
+# =============================================================================
+
+id: sicredi
+nome: Sicredi
+validado: true          # perfil conferido contra extratos reais
+
+tema:
+  primaria: "#3FA110"        # Verde Sicredi
+  escura: "#146E37"          # Verde Escuro
+  clara: "#D7E6C8"           # Neutro Claro
+  suave: "#EDF5E5"
+  destaque: "#FFCD00"        # Amarelo
+  neutra: "#5A645A"          # Neutro Escuro
+  aviso: "#5A3C1E"           # Marrom
+  erro: "#E60050"            # Magenta
+  fundo: "#F4F7F1"
+  texto: "#24291F"
+  inicial: S
+
+leitura:
+  # `excel_secoes`: planilha em que os lançamentos vivem em blocos, cada um
+  # com sua linha de cabeçalho e um "Valor Total" fechando.  É o caso do
+  # Sicredi, que separa Despesas no Brasil de Despesas Internacionais.
+  estrategia: excel_secoes
+  extensoes: [".xls", ".xlsx"]
+  planilha: 0
+
+  vencimento:
+    rotulo: "Data de Vencimento"
+    formato: "%d/%m/%Y"
+
+  # Uma seção começa numa linha cujas duas primeiras células são estas.
+  cabecalho:
+    data: Data
+    descricao: Descrição
+    parcela: Parcela
+    valor: "Valor (R$)"
+
+  # A seção internacional tem uma coluna a mais (US$); o valor em reais
+  # continua sendo o último. Sem isto, essas linhas somem do CSV.
+  internacional:
+    marcador: "US$"
+
+  fim_secao: "Valor Total"
+
+  # Para conferir a soma lida contra o que a própria fatura declara.
+  resumo:
+    creditos: "Pagamentos / Créditos"
+    total: "Valor Total(R$)"
+
+  numeros:
+    milhar: "."
+    decimal: ","
+
+  data_lancamento: "%d/%m/%Y"
