@@ -1,0 +1,466 @@
+# =============================================================================
+#  Regras de categorização — parse-fatura-sicredi
+# =============================================================================
+#
+#  COMO FUNCIONA (na ordem):
+#
+#  0. A descrição do lançamento é NORMALIZADA antes de qualquer comparação:
+#     MAIÚSCULAS, sem acentos, pontuação virando espaço, espaços colapsados,
+#     e CamelCase separado.
+#         "Prudent*APOL00188798"  ->  "PRUDENT APOL00188798"
+#         "OggiSantaRita"         ->  "OGGI SANTA RITA"
+#     Escreva as palavras-chave em MAIÚSCULAS e sem acentos.  A comparação
+#     também ignora espaços, então GRELHA GRILL acha "GrelhaGrill".
+#
+#  1. `excluir`       -> se casar, a linha é DESCARTADA (não vai pro CSV).
+#  2. `regras`        -> lista ORDENADA; a primeira que casar vence.
+#                        Use aqui os casos específicos que precisam ganhar de
+#                        uma palavra-chave genérica de `palavras`.  Aceita regex.
+#  3. `palavras`      -> mapa  Categoria -> [trechos].  Vence o trecho MAIS
+#                        LONGO que casar (o mais específico).  A ordem aqui
+#                        não importa, o que facilita editar.
+#  4. `marketplaces`  -> Categoria VAZIA de propósito (ver abaixo).
+#  5. nada casou      -> Categoria fica VAZIA e a linha vai pro fim do CSV.
+#
+#  `desconhecidos`  -> estabelecimentos que você já disse que não sabe
+#                      classificar.  Saem com categoria vazia e o
+#                      `categorize.py` não pergunta de novo.  Apague uma linha
+#                      de lá para voltar a ser perguntado.
+#
+#  `marketplaces`   -> Amazon, Mercado Livre e afins.  Categoria sai VAZIA de
+#                      propósito (varia a cada compra), o categorize.py não
+#                      pergunta, e o relatório marca como MARKETPLACE.
+#
+#  PARA ADICIONAR UMA CATEGORIA NOVA: acrescente a chave em `palavras` (e em
+#  `configuracao.categorias`, para ela já aparecer na lista do categorize.py).
+#  O `main.py` não precisa ser tocado.
+#
+#  Linhas marcadas com  # ?  são chutes — confirme ou corrija.
+# =============================================================================
+
+configuracao:
+  # Vazio de propósito: o que não casar com nada fica sem categoria e vai pro
+  # fim do CSV, para você resolver no `categorize.py`.
+  categoria_padrao: ""
+
+  # Colapsa espaços múltiplos dentro da descrição ("DM      *Nintend" ->
+  # "DM *Nintend"). Ponha `false` para manter byte a byte como vem do Sicredi.
+  colapsar_espacos: true
+
+  # Lista oferecida pelo `categorize.py`. Mantenha igual à da planilha.
+  categorias:
+    - Ajuste
+    - Alimentação
+    - Assinaturas
+    - Cachorro
+    - Cartão de crédito
+    - Casa
+    - Construção
+    - Educação
+    - Eletrônicos
+    - Filha
+    - Hobby
+    - Imposto
+    - Investimento
+    - Lazer
+    - Outros
+    - Poupança
+    - Presentes
+    - Renda Fixa
+    - Renda Variável
+    - Resgate Poupança
+    - Restante
+    - Saúde
+    - Seguros
+    - Serviços
+    - Transporte
+    - Vestuário
+    - Viagem
+
+
+# -----------------------------------------------------------------------------
+# 1. LINHAS DESCARTADAS
+#    O pagamento da fatura anterior não é uma despesa — você lança ele à mão
+#    na planilha como "Cartão de crédito".
+# -----------------------------------------------------------------------------
+excluir:
+  - PAGAMENTO DEBITO
+  - PAG FAT DEB CC
+  - PAGAMENTO EFETUADO
+  - PAGTO FATURA
+
+
+# -----------------------------------------------------------------------------
+# 2. REGRAS ORDENADAS (primeira que casar vence) — casos específicos
+# -----------------------------------------------------------------------------
+regras:
+  # -- Estornos e créditos: têm que vir antes de "ANUIDADE" -------------------
+  - padrao: "CREDITO ANUIDADE"
+    categoria: Ajuste
+  - padrao: "DEVOLUCAO DE COMPRAS|ESTORNO|CASHBACK|DESCONTO ANTECIPACAO|VARIACAO CAMBIAL"
+    categoria: Ajuste
+
+  # -- IOF é imposto (seu histórico registra "IOF de ..." em Imposto) ---------
+  - padrao: "^IOF"
+    categoria: Imposto
+
+  # -- Mercado Livre: sub-lojas identificáveis ganham do genérico -------------
+  - padrao: "MERCADOLIVRE (LIVROS|LEITURA)"
+    categoria: Educação
+  - padrao: "MERCADOLIVRE (TECHSH|ESPLAN)"
+    categoria: Eletrônicos
+  - padrao: "MERCADOLIVRE GROW"
+    categoria: Hobby          # ? Grow = jogos de tabuleiro
+  - padrao: "AMAZONMKTPLC EMPORIO"
+    categoria: Alimentação
+  - padrao: "AMAZON ?PRIME"
+    categoria: Assinaturas    # assinatura, não compra no marketplace
+  - padrao: "AMAZON ?(MUSIC|KINDLE)"
+    categoria: Assinaturas
+
+  # -- Postos: "POSTO" genérico é transporte ---------------------------------
+  - padrao: "(AUTO |RODO )?POSTO "
+    categoria: Transporte
+
+
+# -----------------------------------------------------------------------------
+# 3. PALAVRAS-CHAVE POR CATEGORIA (vence o trecho mais longo)
+# -----------------------------------------------------------------------------
+palavras:
+
+  Alimentação:
+    - SUPERMERCADO
+    - SUPERMERCADOS
+    - ALVORA                  # Supermercados Alvorada
+    - EPA SANTA RITA
+    - UTILCUMBICA
+    - MERCADO 11PRODUTOS
+    - PADOCA
+    - PADARIA
+    - PANIFICADORA
+    - MUNDIAL PAES
+    - PAO DO CEU
+    - CAFETERIA
+    - BARAO CAFETERIA
+    - PROSA E CAFE
+    - COFFEE
+    - RESTAURANTE
+    - MAISABOR
+    - MAISSABOR
+    - ARMAZEM DO VALE
+    - ELITE MINEIRA
+    - CIA DO SABOR
+    - CHURRASCO
+    - CHAPA HAUS
+    - HAMBURGUERIA
+    - HAMBURGUE
+    - BURGERS
+    - BISTRO
+    - GRELHA GRILL
+    - GRELHAGRILL
+    - MASSAS
+    - PIZZARIA
+    - SANTA PIZZA
+    - YASAI
+    - LONBRAKITCHEN
+    - XICOS
+    - PARMEGGIO
+    - BUENO APPETIT
+    - HOME DONUTS
+    - DONA NILDA
+    - DELIVERY
+    - PASTELZINHO
+    - RODOSNACK
+    - MARMITA
+    - LANCHE
+    - DIAS ADAMI CHOCOLATE     # ? chocolateria — histórico oscila Lazer/Alimentação
+    - VAGNER DE SOUZA          # ? recorrente, histórico aponta Alimentação
+    - QUINDIM                  # ?
+    - D MASSAS
+    - SHIRLEI C                # ?
+    - JULES PANIFICADORA
+    - ASSB COMERCIO            # ?
+    - VOCKHAMBURGUE
+
+  Lazer:
+    - SYMPLA
+    - CLUBE
+    - COUNTRY
+    - CAMPO BELO
+    - CINEMA
+    - INGRESSO
+    - BAR DO
+    - BOTECO
+    - ADEGA
+    - CERVEJA
+    - CERVEJARIA
+    - VINHO
+    - VINHOS
+    - BEBIDAS
+    - DISTRIBUIDORA
+    - OGGI                     # ? gelateria — histórico registra em Lazer
+    - GELATO
+    - SAPORI GELATOS           # ?
+    - SORVETE
+    - THE BEST ACAI            # ?
+    - ACAI
+
+  Viagem:
+    - AIRBNB
+    - BOOKING
+    - HOTEL
+    - POUSADA
+    - PAMPAS PALACE
+    - AIRPORTPARK
+    - LATAM
+    - DECOLAR
+    - 123MILHAS
+    - RESERVA DE VIAGEM
+
+  Assinaturas:
+    - NETFLIX
+    - SPOTIFY
+    - HBOMAX
+    - HELPHBOMAX
+    - DISNEY
+    - GOOGLE STORAGE
+    - LIVELO                   # ? Clube Livelo é assinatura mensal
+
+  Seguros:
+    - PRUDENT                  # seguro de vida (antes estava em Saúde)
+    - PRUDENTIAL
+    - SUHAI
+    - PRESTAMISTA
+    - SEGURO
+    - SEGUROS
+    - APOLICE
+    - PORTO SEGURO
+    - ICATU
+    - SOMPO
+    - AZUL SEGUROS
+    - ALLIANZ
+    - BRADESCO SEG
+    - TOKIO MARINE
+
+  Presentes:
+    - PRESENTE
+    - LOJA DE PRESENTES
+    - NATURA                   # ? cosméticos — histórico registra em Outros
+    - OBOTICARIO
+    - BOTICARIO
+
+  Transporte:
+    - UBER
+    - UBERRIDES
+    - PEDAGIO
+    - ESTACIONAMENTO
+    - GASOLINA
+    - COMBUSTIVEL
+    - IPVA
+    - LICENCIAMENTO
+    - MONTREAL POUSO           # ? concessionária em Pouso Alegre
+    - VALEDRIVER
+    - MECANICA
+    - PNEU
+    - REVISAO
+    - LAVA JATO
+    - CONSORSIO
+    - CONSORCIO
+
+  Saúde:
+    - DROGARIA
+    - DROGASIL
+    - FARMACIA
+    - FARMA
+    - NATUS FARMA
+    - FARMADIL
+    - HOSPITAL
+    - LABORATORIO
+    - JUCILAB                  # ? parece laboratório
+    - ACADEMIA
+    - BODYTECH
+    - DENTISTA
+    - PSICOLOGO
+    - DERMATOLOGISTA
+    - FISIOTERAPIA
+    - ECONOMIZE JA             # ? rede de farmácias, histórico -> Saúde
+    - OTICA
+    - UNIMED
+    - PLANO DE SAUDE
+    - SUPLEMENTO
+    - WHEY
+    - CREATINA
+
+  Vestuário:
+    - RENNER
+    - RIACHUELO
+    - YOUCOM
+    - HERING
+    - MARISA
+    - ZARA
+    - CALCADO
+    - CALCADOS
+    - SAPATO
+    - TENIS
+    - JAQUETA
+    - SANDRA HELENA VESTUA
+    - VF SANTA RITA            # ?
+    - MONTREAL MODA            # ?
+
+  Casa:
+    - CASASBAHIA
+    - CASAS BAHIA
+    - MAGAZINE
+    - MOBLY
+    - TELHANORTE
+    - LEROY
+    - MADEIRAMADEIRA
+    - PARAFUSOS
+    - PARAFER
+    - MOVEIS
+    - PLANEJADOS
+    - IPTU
+    - CONDOMINIO
+    - FAXINA
+    - ARTEX
+    - GALAO
+    - CAMA
+    - SOFA
+    - FOGAO
+    - CADEIRAS
+    - ESCRITORIO
+    - CARITAS MAT ELETRIC      # ? material elétrico
+
+  Construção:
+    - OBRA
+    - PEDREIRO
+    - PEDREIROS
+    - ELETRICISTA
+    - PINTOR
+    - CIMENTO
+    - MATERIAL DE CONSTRUCAO
+    - CONSTRUMINAS
+    - LC TINTAS                # ? histórico tem "Lc Tintas" em Hobby E Casa
+
+  Cachorro:
+    - PETLOVE
+    - PET LOVE
+    - COBASI
+    - PETZ
+    - RACAO
+    - VETERINARI
+    - ZOOCORRO
+    - JOYNER
+    - ADESTRAMENTO
+    - COLEIRA
+    - SHOPGA
+
+  Eletrônicos:
+    - SAMSUNG
+    - LOGITECH
+    - KABUM
+    - MOUSE
+    - TECLADO
+    - NOTEBOOK
+    - CELULAR
+    - TABLET
+    - ROTEADOR
+    - PIXEL HOUSE              # ?
+
+  Hobby:
+    - NINTEND
+    - NINTENDOESHOP
+    - PLAYSTATION
+    - STEAM
+    - BOARD GAME
+    - LUDOPEDIA
+    - FAIR PLAY                # ? loja de jogos
+
+  Educação:
+    - LIVRARIA
+    - LIVROS
+    - PAPELARIA
+    - MAXPEL
+    - COURSERA
+    - UDEMY
+    - ALURA
+    - KINDLE
+    - AUDIBLE
+    - EBOOK
+    - INGLES
+    - FIES
+
+  Serviços:
+    - ANUIDADE
+    - CESTA DE RELACIONAMENTO
+    - VIVO
+    - CLARO
+    - RECARGA
+    - CLOUDFLARE
+    - GOOGLEBALTAPI            # ? cobrança de API do Google
+    - CABELEIREIRO
+    - CABELEREIRO
+    - BARBEARIA
+    - NOWIGO
+
+  Imposto:
+    - DARF
+    - IRPF
+    - TAXA MEI
+
+  Filha:
+    - CRESCI E PERDI
+    - RI HAPPY
+    - RIHAPPY
+    - PBKIDS
+
+
+# -----------------------------------------------------------------------------
+# 4. MARKETPLACES — categoria em branco, de propósito
+#    Amazon e Mercado Livre vendem de ração a monitor: a categoria muda a cada
+#    compra, então gravar uma palavra-chave seria errado na maioria das vezes.
+#    Saem com Categoria VAZIA, o categorize.py não pergunta (não há resposta
+#    única a gravar), e aparecem no relatório marcados como MARKETPLACE para
+#    você preencher na planilha.
+#
+#    As sub-lojas identificáveis ficam em `regras` lá em cima e ganham destas
+#    aqui — MERCADOLIVRE LIVROS vira Educação, MERCADOLIVRE GROW vira Hobby.
+# -----------------------------------------------------------------------------
+marketplaces:
+  - AMAZON
+  - AMAZONMKTPLC
+  - MERCADOLIVRE
+  - MERCADO MERCADOLIVR
+  - MERCADO MERCADOLIVRE
+  - SHOPEE
+  - ALIEXPRESS
+  - MAGALU
+  - AMERICANAS
+
+
+# -----------------------------------------------------------------------------
+# 5. ESTABELECIMENTOS QUE VOCÊ NÃO SABE CLASSIFICAR
+#     Saem com Categoria vazia e o categorize.py não pergunta de novo.
+#     Apague uma linha daqui para voltar a ser perguntado.
+# -----------------------------------------------------------------------------
+desconhecidos:
+  - 17 506 867 WESLEY LU
+  - 45 085 527 JOAO VITO
+  - 50267406 GIOVANA CAR
+  - ADRIANA RIBEIRO PIVO
+  - ATELIE DETALLI
+  - ATEMPORAL
+  - BLING BLING SHOP PRE
+  - EC MELIMAI
+  - EURIPEDES DA SILVEIR
+  - FARABBUD MOEMA
+  - FGK COMERCIO VAREJIS
+  - FOTO SANTA RITA
+  - JIM COM 59506579 JU
+  - LACAPAS
+  - LOJA DO JAPONES
+  - MP JANE
+  - RAFAELA ELISEU MAGLI
+  - SERRA SUL SHOPPING
+  - TETELESTAI
+  - YAGO VICENTE DE ALME
