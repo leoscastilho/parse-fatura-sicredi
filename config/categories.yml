@@ -173,14 +173,16 @@ palavras:
     - RODOSNACK
     - MARMITA
     - LANCHE
-    - DIAS ADAMI CHOCOLATE     # ? chocolateria — histórico oscila Lazer/Alimentação
-    - VAGNER DE SOUZA          # ? recorrente, histórico aponta Alimentação
-    - QUINDIM                  # ?
     - D MASSAS
     - SHIRLEI C                # ?
     - JULES PANIFICADORA
     - ASSB COMERCIO            # ?
     - VOCKHAMBURGUE
+    - CASA DE SINHA
+    - GARAGEM DA PIZZA
+    - BRASEIRO
+    - EMPORIO GRAOS DE MIN
+    - SUP TEIXEIRA
 
   Lazer:
     - SYMPLA
@@ -198,12 +200,12 @@ palavras:
     - VINHOS
     - BEBIDAS
     - DISTRIBUIDORA
-    - OGGI                     # ? gelateria — histórico registra em Lazer
     - GELATO
     - SAPORI GELATOS           # ?
     - SORVETE
     - THE BEST ACAI            # ?
     - ACAI
+    - DIAS ADAMI CHOCOLATE
 
   Viagem:
     - AIRBNB
@@ -216,6 +218,7 @@ palavras:
     - DECOLAR
     - 123MILHAS
     - RESERVA DE VIAGEM
+    - UNITED
 
   Assinaturas:
     - NETFLIX
@@ -225,6 +228,7 @@ palavras:
     - DISNEY
     - GOOGLE STORAGE
     - LIVELO                   # ? Clube Livelo é assinatura mensal
+    - QUINDIM
 
   Seguros:
     - PRUDENT                  # seguro de vida (antes estava em Saúde)
@@ -248,6 +252,7 @@ palavras:
     - NATURA                   # ? cosméticos — histórico registra em Outros
     - OBOTICARIO
     - BOTICARIO
+    - RI HAPP
 
   Transporte:
     - UBER
@@ -366,6 +371,7 @@ palavras:
     - TABLET
     - ROTEADOR
     - PIXEL HOUSE              # ?
+    - BEST BUY
 
   Hobby:
     - NINTEND
@@ -464,3 +470,5 @@ desconhecidos:
   - SERRA SUL SHOPPING
   - TETELESTAI
   - YAGO VICENTE DE ALME
+  - TST CC 101 NORTH TRY
+  - JOSEWESLLEY

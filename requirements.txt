@@ -1,3 +1,25 @@
-pandas>=2.2
-xlrd>=2.0.1
-PyYAML>=6.0
+# Versões FIXAS de propósito.
+#
+# Com `>=` o `docker build` vira alvo móvel: entre um build e outro o Starlette
+# pulou de 0.x para 1.x e derrubou a suíte inteira, porque o TestClient passou a
+# exigir outro pacote HTTP. Numa imagem que você reconstrói de vez em quando,
+# reprodutibilidade vale mais do que estar sempre na última versão.
+#
+# Para atualizar: solte os pinos, rode `pytest tests/ -q`, e volte a fixar com
+# `pip freeze` no que passou.
+
+# --- núcleo (CLI + API) ---
+pandas==3.0.5
+numpy==2.5.2
+xlrd==2.0.2            # .xls antigo (BIFF) — é o que o Sicredi exporta
+openpyxl==3.1.5        # .xlsx, e é o que os testes usam para gerar extratos
+PyYAML==6.0.3
+
+# --- API ---
+fastapi==0.141.1
+starlette==1.6.0
+uvicorn[standard]==0.52.3
+python-multipart==0.0.32   # UploadFile
+pydantic==2.13.4
+pydantic-settings==2.15.0
+PyGithub==2.9.1            # commit do categories.yml

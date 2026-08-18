@@ -1,0 +1,14 @@
+.git
+.venv
+__pycache__
+*.pyc
+input/*
+output/*
+documents/*
+web/node_modules
+web/dist
+.env
+*.db
+
+# os testes ENTRAM na imagem de teste; só o cache sai
+.pytest_cache

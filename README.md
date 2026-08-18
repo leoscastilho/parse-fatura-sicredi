@@ -107,11 +107,15 @@ python categorize.py --list     # só lista os pendentes, sem perguntar
 ```
 
 Também roda **automaticamente no fim do `main.py`** quando aparece
-estabelecimento novo (desligue com `--no-interactive`, ou quando não há
-terminal — cron, CI — ele não trava esperando resposta).
+estabelecimento novo — inclusive rodando pelo PyCharm. Desligue com
+`--no-interactive`. Sem entrada disponível (cron, pipe fechado) ele não trava:
+avisa e sai.
 
 Ele agrupa por estabelecimento, não por linha: `SUPERMERCADOS ALVORA` aparece
-23 vezes numa fatura e é perguntado **uma** vez.
+23 vezes numa fatura e é perguntado **uma** vez. O número da transação é
+ignorado no agrupamento, então `UNITED01624563906420` e `...431` são o mesmo
+estabelecimento — e a palavra-chave gravada (`UNITED`) casa com as próximas
+compras, em vez de valer só para aquele número.
 
 ```
 ──────────────────────────────────────────────────────────────────────────────

@@ -1,2 +1,27 @@
 .DS_Store
 .idea
+.venv/
+__pycache__/
+*.pyc
+
+# segredos — nunca versionar
+.env
+
+# estado transacional da API
+*.db
+*.db-wal
+*.db-shm
+
+# dados financeiros — nunca versionar
+input/*
+output/*
+documents/*
+!input/.gitignore
+!output/.gitignore
+!documents/.gitignore
+
+web/node_modules/
+web/dist/
+
+# snapshot pre-refactor (apague quando estiver confiante)
+.backup-v1/
