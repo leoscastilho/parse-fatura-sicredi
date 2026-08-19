@@ -289,3 +289,26 @@ input[type="date"], input[type="file"] {
 
 .destaque { color: var(--verde-escuro); font-weight: 700; }
 button.ghost.confirm { border-color: var(--verde); color: var(--verde-escuro); }
+
+/* Linha cuja categoria a regra trocou na recategorização. Marcada porque é o
+   que se confere: o resto do arquivo volta exatamente como entrou. */
+tr.changed td { background: var(--verde-suave); }
+
+/* ------------------------------------------------------------------ viagem */
+/* Campo rotulado dentro de uma .toolbar — o rótulo em cima, o controle
+   embaixo, para o editor de períodos caber numa linha só. */
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field > .small { color: var(--muted); }
+.field input { width: 100%; }
+
+/* Períodos de viagem na tela de upload: recolhido por padrão para não competir
+   com o dropzone, mas aberto assim que houver algum período. */
+.viagem-upload {
+  margin: 16px 0; padding: 10px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 10px;
+}
+.viagem-upload > summary {
+  cursor: pointer; font-weight: 600; color: var(--verde-escuro);
+  display: flex; align-items: center; gap: 8px;
+}

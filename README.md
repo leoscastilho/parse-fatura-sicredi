@@ -201,6 +201,37 @@ palavras:
     - LATAM
 ```
 
+### Viagem é uma data, não um estabelecimento
+
+Palavra-chave não resolve viagem. O restaurante da esquina e o restaurante de
+Gramado casam com o mesmo `RESTAURANTE`; o que os separa é **quando** você
+comprou. Por isso a viagem se declara por **período**, no portal, depois de
+subir as faturas:
+
+1. Você informa um ou mais intervalos (ida e volta). Os seletores ficam presos
+   ao intervalo real de compras do lote — não dá para marcar uma viagem que as
+   faturas nem cobrem.
+2. Tudo que foi **comprado** dentro de um intervalo aparece numa etapa própria,
+   já marcado. A data comparada é a da compra (`{Em 15/Jul}`), não a do
+   vencimento — uma parcela de 2024 não vira despesa de viagem por cair na
+   fatura de agosto de 2026.
+3. Você desmarca o que não é viagem (o jogo comprado no eShop no meio do
+   passeio), e o resto é confirmado.
+
+O confirmado vira `Viagem` na coluna Categoria, e **a categoria real vai para a
+descrição**, entre parênteses, logo antes da data da compra:
+
+```
+08/10/2026,Viagem,[Cartão] B91 Supremo Pizzaria (Alimentação) {Em 15/Jul},142.90,
+```
+
+Assim a planilha continua respondendo "quanto gastei em comida naquela viagem?"
+sem perder o total da viagem.
+
+> Vale só na importação de fatura. A recategorização promete devolver o arquivo
+> com **só** a coluna Categoria alterada, e a viagem escreve dentro da
+> descrição — os dois contratos não cabem juntos.
+
 ## Lançamentos negativos
 
 O **pagamento da fatura anterior** (`PAGAMENTO DEBITO`, `Pag Fat Deb Cc`) é

@@ -6,6 +6,8 @@ posterior carregando o `transaction_id`.
 
     /categories      o que existe hoje no YAML
     /upload          .xls  -> transaction_id + 4 baldes de itens
+    /recategorize    CSV de saída -> mesma revisão, só a coluna Categoria muda
+    /travel          períodos de viagem -> as compras que caem dentro deles
     /validate        "se eu fizer isso, o que acontece?" (dry-run, não grava)
     /update-mapping  grava a decisão no YAML de trabalho da transação
     /preview         linhas + atribuições -> dataset final, para a tela de revisão
@@ -16,6 +18,8 @@ from __future__ import annotations
 
 import io
 import unicodedata
+from dataclasses import replace
+from pathlib import Path
 from contextlib import asynccontextmanager
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -24,7 +28,16 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, sta
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from core import ClassifiedLine, LineState, Ruleset, classify_sources, lines_to_csv, output_name, sort_lines
+from core import (
+    ClassifiedLine, LineState, Ruleset, classify_sources, lines_to_csv,
+    lines_to_csv_preserving_order, output_name, read_output_csv, recategorize,
+    sort_lines,
+)
+from core.recategorize import RecategorizeError
+from core.travel import (
+    TravelError, TravelRange, apply_travel, mark_travel, purchase_range,
+    validate_ranges,
+)
 from core.text import compact, normalize
 from core.yaml_edit import (
     YamlEditError, add_category, add_keyword, add_to_list,
@@ -34,6 +47,8 @@ from core.yaml_edit import (
 from .github_sync import GitHubConflict, GitHubDisabled, GitHubSync, commit_message
 from .models import (
     Assignment,
+    CategoryChangeItem,
+    SourceFile,
     AssignmentImpact,
     CategoriesResponse,
     DroppedItem,
@@ -43,7 +58,11 @@ from .models import (
     MerchantGroup,
     PreviewRequest,
     PreviewResponse,
+    PurchaseRange,
     StatementSummary,
+    TravelRangeItem,
+    TravelRequest,
+    TravelResponse,
     UpdateMappingRequest,
     UpdateMappingResponse,
     RuleEntry,
@@ -122,7 +141,28 @@ def _load_transaction(store: Store, transaction_id: str) -> dict:
 
 
 def _lines_of(record: dict) -> list[ClassifiedLine]:
-    return [ClassifiedLine.from_dict(payload) for payload in record["lines"]]
+    """As linhas do extrato, já com a marca de viagem derivada dos períodos.
+
+    A marca NÃO é gravada em `lines_json`: ela é recalculada aqui a cada
+    leitura, a partir dos períodos que o usuário salvou. É o que mantém as
+    linhas lidas do extrato imutáveis e faz editar um período ser idempotente
+    — apagou o período, sumiu a marca, sem nada para desfazer.
+    """
+    lines = [ClassifiedLine.from_dict(payload) for payload in record["lines"]]
+    ranges = _ranges_of(record)
+    return mark_travel(lines, ranges) if ranges else lines
+
+
+def _ranges_of(record: dict) -> list[TravelRange]:
+    saida = []
+    for payload in record.get("travel") or []:
+        try:
+            saida.append(TravelRange.from_dict(payload))
+        except TravelError:
+            # Período gravado inválido não deve derrubar a transação inteira;
+            # ele simplesmente não marca nada.
+            continue
+    return saida
 
 
 def _group_by_merchant(lines: list[ClassifiedLine]) -> list[MerchantGroup]:
@@ -186,6 +226,27 @@ def _apply_assignments(
     return resolved
 
 
+def _apply_travel(
+    lines: list[ClassifiedLine], rejected: list[str] | set[str]
+) -> list[ClassifiedLine]:
+    """Converte em `Viagem` as linhas confirmadas, guardando a categoria real.
+
+    Roda DEPOIS de `_apply_assignments` de propósito: a categoria que vai para
+    o parêntese é a final, já com as decisões do marketplace e as correções
+    manuais aplicadas. Rodar antes gravaria a categoria da regra e perderia
+    exatamente o que o usuário acabou de resolver.
+    """
+    rejeitadas = set(rejected)
+    saida: list[ClassifiedLine] = []
+    for line in lines:
+        if not line.viagem or line.line_id in rejeitadas:
+            saida.append(line)
+            continue
+        categoria, descricao = apply_travel(line, line.categoria)
+        saida.append(replace(line, categoria=categoria, descricao=descricao))
+    return saida
+
+
 def _staged_yaml(record: dict, assignments: list[Assignment]) -> tuple[str, list[MappingChange]]:
     """Aplica ao YAML de trabalho tudo que o usuário pediu para persistir."""
     text = record["yaml_working"]
@@ -236,6 +297,13 @@ def _header_safe(text: str) -> str:
         return ""
     normalizado = unicodedata.normalize("NFKD", text)
     return normalizado.encode("ascii", "replace").decode("ascii")
+
+
+def _purchase_range(lines: list[ClassifiedLine]) -> PurchaseRange | None:
+    inicio, fim = purchase_range(lines)
+    if inicio is None or fim is None:
+        return None
+    return PurchaseRange(inicio=inicio.isoformat(), fim=fim.isoformat())
 
 
 def _period_of(record: dict) -> str:
@@ -384,6 +452,140 @@ async def upload(
         marketplace_items=[LineItem.from_core(l) for l in sort_lines(bucket(LineState.MARKETPLACE))],
         ignored_items=_group_by_merchant(bucket(LineState.IGNORED)),
         warnings=warnings,
+        purchase_range=_purchase_range(lines),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 2b. POST /recategorize
+# ---------------------------------------------------------------------------
+
+@app.post("/recategorize", response_model=UploadResponse)
+async def recategorize_csv(
+    files: list[UploadFile] = File(..., description="CSV no formato de saída"),
+    settings: Settings = Depends(get_settings),
+    store: Store = Depends(get_store),
+) -> UploadResponse:
+    """Passa as regras ATUAIS por cima de um CSV que já saiu daqui.
+
+    Mesma revisão do fluxo de fatura — novos, marketplace, conferência — só que
+    a origem é o próprio formato de saída. Sai o mesmo arquivo com a coluna
+    Categoria atualizada, nas mesmas linhas e na mesma ordem.
+    """
+    if len(files) > settings.max_files_per_upload:
+        raise HTTPException(413, detail=f"máximo {settings.max_files_per_upload} arquivos")
+
+    cfg = load_config(settings)
+    rules = Ruleset.from_text(cfg.categories_text)
+    yaml_sha = GitHubSync(settings).current_sha() if settings.github_enabled else None
+
+    lidas: list[ClassifiedLine] = []
+    fontes: list[SourceFile] = []
+
+    for indice, upload_file in enumerate(files):
+        if not upload_file.filename.lower().endswith(".csv"):
+            raise HTTPException(
+                415, detail=f"{upload_file.filename}: a recategorização espera .csv "
+                            "no formato de saída deste portal")
+        blob = await upload_file.read()
+        if len(blob) > settings.max_upload_bytes:
+            raise HTTPException(413, detail=f"{upload_file.filename} excede o limite")
+        try:
+            linhas = read_output_csv(io.BytesIO(blob), name=upload_file.filename,
+                                     schema=cfg.output, index=indice)
+        except RecategorizeError as exc:
+            raise HTTPException(422, detail=str(exc))
+
+        lidas += linhas
+        fontes.append(SourceFile(name=upload_file.filename, rows=len(linhas),
+                                 total=round(sum(l.valor for l in linhas), 2)))
+
+    linhas, mudancas = recategorize(lidas, rules)
+
+    nome = (f"recategorizado_{Path(files[0].filename).stem}.csv" if len(files) == 1
+            else f"recategorizado_{len(files)}_arquivos.csv")
+
+    transaction_id, expires = store.create(
+        filename=nome, yaml_text=cfg.categories_text, yaml_sha=yaml_sha,
+        statements=[], dropped=[],
+        lines=[l.to_dict() for l in linhas], modo="recategorizacao",
+    )
+
+    def balde(state: LineState) -> list[ClassifiedLine]:
+        return [l for l in linhas if l.state is state]
+
+    avisos = []
+    sem_categoria = sum(1 for l in linhas if not l.categoria)
+    if sem_categoria:
+        avisos.append(
+            f"{sem_categoria} linha(s) continuam sem categoria: nem a regra opinou "
+            "nem havia categoria no arquivo de origem.")
+
+    return UploadResponse(
+        modo="recategorizacao",
+        transaction_id=transaction_id,
+        expires_at=expires,
+        statements=[],
+        dropped=[],
+        unmapped_items=_group_by_merchant(balde(LineState.UNMAPPED)),
+        auto_classified_items=_group_by_merchant(balde(LineState.AUTO)),
+        marketplace_items=[LineItem.from_core(l) for l in balde(LineState.MARKETPLACE)],
+        ignored_items=_group_by_merchant(balde(LineState.IGNORED)),
+        warnings=avisos,
+        source_files=fontes,
+        changes=[CategoryChangeItem(**m.__dict__) for m in mudancas],
+        unchanged=len(linhas) - len(mudancas),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 2c. POST /travel
+# ---------------------------------------------------------------------------
+
+@app.post("/travel", response_model=TravelResponse)
+def travel(payload: TravelRequest, store: Store = Depends(get_store)) -> TravelResponse:
+    """Define os períodos de viagem da transação e devolve o que eles pegam.
+
+    Idempotente e substitutivo: a lista enviada VIRA a lista de períodos, então
+    remover um período é mandar a lista sem ele. Nada de categoria muda aqui —
+    isto só marca as candidatas. A conversão em `Viagem` acontece no /preview e
+    no /export, depois da etapa de confirmação.
+    """
+    record = _load_transaction(store, payload.transaction_id)
+
+    # Na recategorização o contrato é que a descrição não seja tocada, e a
+    # viagem escreve a categoria real dentro dela. Os dois não cabem juntos.
+    if record["modo"] == "recategorizacao":
+        raise HTTPException(
+            409,
+            detail="períodos de viagem só valem na importação de fatura — a "
+                   "recategorização não altera a descrição do arquivo")
+
+    try:
+        ranges = [TravelRange.from_dict(r.model_dump()) for r in payload.ranges]
+    except TravelError as exc:
+        raise HTTPException(422, detail=str(exc))
+
+    store.save_travel(payload.transaction_id, [r.to_dict() for r in ranges])
+
+    cru = [ClassifiedLine.from_dict(p) for p in record["lines"]]
+    marcadas = mark_travel(cru, ranges)
+    candidatas = [l for l in marcadas if l.viagem]
+
+    # Períodos novos podem ter deixado de pegar linhas que o usuário já havia
+    # desmarcado; a rejeição só faz sentido para o que ainda é candidato.
+    vivas = {l.line_id for l in candidatas}
+    rejeitadas = [i for i in (record.get("travel_rejected") or []) if i in vivas]
+    store.save_travel_rejected(payload.transaction_id, rejeitadas)
+
+    return TravelResponse(
+        transaction_id=payload.transaction_id,
+        ranges=[TravelRangeItem(**r.to_dict()) for r in ranges],
+        purchase_range=_purchase_range(cru),
+        warnings=validate_ranges(ranges, cru),
+        items=[LineItem.from_core(l) for l in sort_lines(candidatas)],
+        count=len(candidatas),
+        total=round(sum(l.valor for l in candidatas), 2),
     )
 
 
@@ -569,8 +771,16 @@ def preview(payload: PreviewRequest, store: Store = Depends(get_store)) -> Previ
     store.save_assignments(
         payload.transaction_id, [a.model_dump() for a in payload.assignments]
     )
+    store.save_travel_rejected(payload.transaction_id, payload.travel_rejected)
 
-    resolved = sort_lines(_apply_assignments(_lines_of(record), payload.assignments))
+    resolvidas = _apply_assignments(_lines_of(record), payload.assignments)
+    # A viagem entra por ÚLTIMO: a categoria que vai para o parêntese é a
+    # final, já com marketplace e correções manuais resolvidos.
+    resolvidas = _apply_travel(resolvidas, payload.travel_rejected)
+    # Recategorização não reordena: o compromisso é que só a coluna Categoria
+    # mude em relação ao arquivo de entrada.
+    resolved = (resolvidas if record["modo"] == "recategorizacao"
+                else sort_lines(resolvidas))
 
     by_category: dict[str, float] = defaultdict(float)
     for line in resolved:
@@ -603,9 +813,18 @@ def export(
         if payload.assignments is not None
         else [Assignment(**a) for a in record["assignments"]]
     )
-    resolved = _apply_assignments(_lines_of(record), assignments)
+    rejected = (
+        payload.travel_rejected
+        if payload.travel_rejected is not None
+        else record["travel_rejected"]
+    )
+    resolved = _apply_travel(
+        _apply_assignments(_lines_of(record), assignments), rejected)
     cfg = load_config(settings)
-    blob = lines_to_csv(resolved, encoding=payload.encoding, schema=cfg.output)
+    blob = (lines_to_csv_preserving_order(resolved, schema=cfg.output,
+                                          encoding=payload.encoding)
+            if record["modo"] == "recategorizacao"
+            else lines_to_csv(resolved, encoding=payload.encoding, schema=cfg.output))
 
     # A publicação do YAML no GitHub é BEST-EFFORT: o trabalho deste endpoint é
     # entregar o CSV. Sem token, sem rede ou com conflito de SHA, o download

@@ -49,6 +49,10 @@ class LineItem(BaseModel):
     categoria: str
     state: LineState
     matched: str | None = None
+    categoria_anterior: str | None = None
+    # A compra caiu dentro de um período de viagem. Sugestão para a etapa de
+    # confirmação; não implica que a linha já esteja como `Viagem`.
+    viagem: bool = False
 
     @classmethod
     def from_core(cls, line: ClassifiedLine) -> "LineItem":
@@ -125,6 +129,10 @@ class Assignment(BaseModel):
 
 class AssignmentSet(BaseModel):
     assignments: list[Assignment] = Field(default_factory=list)
+    # line_ids que caíram numa janela de viagem mas que o usuário DESMARCOU na
+    # etapa de confirmação. Só a exceção viaja pela rede: o padrão é que tudo
+    # dentro da janela seja viagem, então a lista costuma vir vazia.
+    travel_rejected: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +151,60 @@ class CategoriesResponse(BaseModel):
     source_sha: str | None = None
 
 
+class SourceFile(BaseModel):
+    name: str
+    rows: int
+    total: float
+
+
+class CategoryChangeItem(BaseModel):
+    line_id: str
+    descricao: str
+    valor: float
+    de: str
+    para: str
+    matched: str | None = None
+
+
+class PurchaseRange(BaseModel):
+    """Menor e maior data de COMPRA do lote.
+
+    É o que limita os seletores de data da etapa de viagem: não faz sentido
+    marcar uma viagem em março se as compras deste lote vão de maio a julho.
+    """
+
+    inicio: str
+    fim: str
+
+
+class TravelRangeItem(BaseModel):
+    inicio: str                 # AAAA-MM-DD
+    fim: str                    # AAAA-MM-DD
+    rotulo: str = ""
+
+
+class TravelRequest(BaseModel):
+    transaction_id: str
+    ranges: list[TravelRangeItem] = Field(default_factory=list)
+
+
+class TravelResponse(BaseModel):
+    transaction_id: str
+    ranges: list[TravelRangeItem]
+    purchase_range: PurchaseRange | None = None
+    # Avisos, não erros: um período fora do lote não impede nada, só não marca
+    # nada. Quem decide se isso é engano é o usuário.
+    warnings: list[str] = Field(default_factory=list)
+    items: list[LineItem] = Field(default_factory=list)
+    count: int = 0
+    total: float = 0.0
+
+
 class UploadResponse(BaseModel):
+    # "fatura" = extrato do banco; "recategorizacao" = CSV que já saiu daqui.
+    # O front usa isto para trocar os textos e pular a conferência de totais,
+    # que não existe num CSV de saída.
+    modo: Literal["fatura", "recategorizacao"] = "fatura"
     transaction_id: str
     expires_at: datetime
     statements: list[StatementSummary]
@@ -153,6 +214,13 @@ class UploadResponse(BaseModel):
     marketplace_items: list[LineItem]
     ignored_items: list[MerchantGroup]
     warnings: list[str] = Field(default_factory=list)
+    # Limites para o editor de períodos de viagem. `None` quando nenhuma linha
+    # trouxe data de compra legível (exportação antiga sem `{Em 15/Jul}`).
+    purchase_range: PurchaseRange | None = None
+    # Só na recategorização:
+    source_files: list[SourceFile] = Field(default_factory=list)
+    changes: list[CategoryChangeItem] = Field(default_factory=list)
+    unchanged: int = 0
 
 
 class ValidationIssue(BaseModel):
@@ -222,6 +290,9 @@ class ExportRequest(BaseModel):
 
     transaction_id: str
     assignments: list[Assignment] | None = None
+    # Mesma semântica de `assignments`: omitido = usa o que ficou do /preview,
+    # `[]` = "confirmei todas as viagens, não rejeitei nenhuma".
+    travel_rejected: list[str] | None = None
     commit_mapping: bool = True
     encoding: Literal["utf-8", "utf-8-sig"] = "utf-8"
 

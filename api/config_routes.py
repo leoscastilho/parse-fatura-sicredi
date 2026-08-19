@@ -153,13 +153,15 @@ def get_config(settings: Settings = Depends(get_settings)) -> ConfigResponse:
         installment="03/05",
         amount=270.51,
     )
-    exemplo = {
-        schema.colunas[0]: datetime(2026, 8, 10).strftime(schema.data_formato),
-        "Categoria": "Alimentação",
-        "Descrição": build_description(exemplo_entry, schema),
-        "Valor (R$)": "270.51",
-        "Pago": schema.pago,
-    }
+    # Pelo schema, não por nomes fixos: a pré-visualização tem que refletir os
+    # nomes de coluna que a pessoa acabou de escrever no formato de saída.
+    exemplo = schema.linha(
+        data=datetime(2026, 8, 10).strftime(schema.data_formato),
+        categoria="Alimentação",
+        descricao=build_description(exemplo_entry, schema),
+        valor="270.51",
+        pago=schema.pago,
+    )
 
     return ConfigResponse(
         banks=[

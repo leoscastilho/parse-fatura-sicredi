@@ -45,15 +45,29 @@ class ClassifiedLine:
     categoria: str
     state: LineState
     matched: str | None = None
+    # Preenchido só na recategorização: a categoria que veio no arquivo de
+    # entrada. Serve de fallback quando a regra não opina, e é o outro lado do
+    # diff mostrado na revisão.
+    categoria_anterior: str | None = None
+    # A linha ORIGINAL do CSV de entrada, célula por célula. É o que permite
+    # devolver o arquivo com tudo intacto — inclusive colunas que este portal
+    # nem conhece e formatação de número que ele reescreveria.
+    origem_row: dict | None = None
+    # A COMPRA caiu dentro de um período de viagem. É candidatura, não
+    # sentença: quem decide é a etapa de confirmação (ver core/travel.py).
+    viagem: bool = False
 
-    def as_csv_row(self) -> dict:
-        return {
-            "Data": self.data,
-            "Categoria": self.categoria,
-            "Descrição": self.descricao,
-            "Valor (R$)": self.valor,
-            "Pago": self.pago,
-        }
+    def as_csv_row(self, schema: OutputSchema | None = None) -> dict:
+        """A linha no formato de saída — com os nomes de coluna DO schema.
+
+        Sem o schema os nomes seriam fixos, e renomear `Descrição` para `Item`
+        no formato de saída derrubava a exportação inteira: o writer recebia as
+        chaves antigas e o `csv.DictWriter` recusava a linha.
+        """
+        schema = schema or OutputSchema()
+        return schema.linha(data=self.data, categoria=self.categoria,
+                            descricao=self.descricao, valor=self.valor,
+                            pago=self.pago)
 
     def to_dict(self) -> dict:
         payload = asdict(self)
@@ -203,7 +217,7 @@ def lines_to_csv(lines: list[ClassifiedLine], encoding: str | None = None,
     writer = csv.DictWriter(buffer, fieldnames=schema.colunas, lineterminator="\n")
     writer.writeheader()
     for line in sort_lines(lines, schema):
-        writer.writerow(line.as_csv_row())
+        writer.writerow(line.as_csv_row(schema))
     return buffer.getvalue().encode(encoding or schema.encoding)
 
 

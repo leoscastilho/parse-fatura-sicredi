@@ -18,7 +18,12 @@ import pytest
 from openpyxl import Workbook
 
 REPO = Path(__file__).resolve().parent.parent
-CONFIG = REPO / "config"
+# A configuração REAL do app — a que o portal edita. Só um teste olha para ela,
+# e apenas para conferir que carrega.
+CONFIG_REAL = REPO / "config"
+# A configuração dos TESTES: uma fotografia congelada. É contra ela que a suíte
+# inteira roda, para que editar suas regras no portal nunca derrube o build.
+CONFIG = Path(__file__).resolve().parent / "fixtures" / "config"
 REAL_INPUT = REPO / "input"
 
 
@@ -117,7 +122,13 @@ def nubank_csv(tmp_path) -> Path:
 
 @pytest.fixture
 def config_dir(tmp_path) -> Path:
-    """Cópia da config real, para os testes poderem escrever sem sujar o repo."""
+    """Cópia da config CONGELADA (tests/fixtures/config), gravável e isolada.
+
+    Não é a configuração real de propósito: um teste que dependesse dela
+    passaria a falhar assim que alguém confirmasse um chute ou mapeasse um
+    estabelecimento novo pelo portal. Ver `test_config_real_e_valida` para a
+    cobertura da configuração de verdade.
+    """
     destino = tmp_path / "config"
     shutil.copytree(CONFIG, destino)
     return destino
@@ -147,6 +158,84 @@ def client(config_dir, tmp_path, monkeypatch):
 @pytest.fixture
 def categories_text(config_dir) -> str:
     return (config_dir / "categories.yml").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# CSV de saída montado pelo SCHEMA, nunca por nomes fixos
+# ---------------------------------------------------------------------------
+#
+# Os nomes das colunas são configuráveis pelo portal: `Descrição` vira `Item`,
+# `Valor (R$)` vira `Valor`. Todo teste que escrevia o cabeçalho na mão passou
+# a falhar assim que essa configuração foi exercida de verdade — uma edição
+# legítima no "Formato de saída" derrubou o build inteiro.
+#
+# Estas ajudas montam o CSV a partir do schema. O teste fala de PAPÉIS (data,
+# categoria, descricao, valor, pago) e o NOME da coluna fica por conta da
+# configuração de quem estiver rodando a suíte.
+
+@pytest.fixture
+def output_schema(config_dir):
+    from core.profiles import ConfigSet
+    return ConfigSet.load(config_dir).output
+
+
+def csv_de_saida_texto(schema, linhas: list[dict], extras: tuple = ()) -> str:
+    """Monta um CSV no formato de saída ATUAL.
+
+    `linhas` usa os papéis como chave. `extras` acrescenta colunas que o portal
+    não conhece (`Mês`, `Ano`), para provar que sobrevivem à ida e volta.
+    """
+    import csv as _csv
+    import io as _io
+
+    colunas = list(schema.colunas) + list(extras)
+    buffer = _io.StringIO()
+    writer = _csv.DictWriter(buffer, fieldnames=colunas, lineterminator="\n")
+    writer.writeheader()
+    for linha in linhas:
+        row = schema.linha(
+            data=linha.get("data", ""), categoria=linha.get("categoria", ""),
+            descricao=linha.get("descricao", ""), valor=linha.get("valor", ""),
+            pago=linha.get("pago", "x"),
+        )
+        row.update({c: linha.get(c, "") for c in extras})
+        writer.writerow(row)
+    return buffer.getvalue()
+
+
+def com_um_chute(config_dir, categoria: str = "Casa", palavra: str = "CHUTOMETRO"):
+    """Garante um `# ?` no categories.yml da cópia de teste.
+
+    Os chutes são para o usuário confirmar ou apagar pela aba Regras — ou seja,
+    o arquivo real tende a ZERO com o uso. Testes sobre chutes precisam plantar
+    o seu, em vez de depender de o arquivo de alguém ainda ter algum.
+    """
+    alvo = config_dir / "categories.yml"
+    texto = alvo.read_text(encoding="utf-8")
+    marca = f"  {categoria}:\n"
+    if marca not in texto:
+        raise AssertionError(f"categoria {categoria} não existe no categories.yml")
+    texto = texto.replace(marca, f"{marca}    - {palavra}    # ? plantado pelo teste\n", 1)
+    alvo.write_text(texto, encoding="utf-8")
+    return palavra
+
+
+def com_uma_redundancia(config_dir, categoria: str = "Casa",
+                        curta: str = "ZZTESTE", longa: str = "ZZTESTE LOJA"):
+    """Planta um par redundante: a longa nunca vence, a curta já pega tudo.
+
+    Mesmo motivo do `com_um_chute` — o arquivo real fica MAIS limpo com o uso,
+    então depender das redundâncias que ele tinha ontem é garantir build
+    vermelho amanhã.
+    """
+    alvo = config_dir / "categories.yml"
+    texto = alvo.read_text(encoding="utf-8")
+    marca = f"  {categoria}:\n"
+    if marca not in texto:
+        raise AssertionError(f"categoria {categoria} não existe no categories.yml")
+    texto = texto.replace(marca, f"{marca}    - {curta}\n    - {longa}\n", 1)
+    alvo.write_text(texto, encoding="utf-8")
+    return curta, longa
 
 
 def real_statements() -> list[Path]:

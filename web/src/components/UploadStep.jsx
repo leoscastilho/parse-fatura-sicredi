@@ -1,8 +1,11 @@
 import { useRef, useState } from 'react'
+import TravelRanges from './TravelRanges'
 
 const brl = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 
-export default function UploadStep({ onUpload, busy, banco }) {
+export default function UploadStep({
+  onUpload, busy, banco, travelRanges = [], onTravelRangesChange,
+}) {
   const [files, setFiles] = useState([])
   const [dragging, setDragging] = useState(false)
   const [vencimento, setVencimento] = useState('')
@@ -80,6 +83,26 @@ export default function UploadStep({ onUpload, busy, banco }) {
             <code>Data</code> do CSV.
           </span>
         </div>
+      )}
+
+      {/* A viagem se declara aqui porque é agora que você lembra dela — não
+          depois de revisar 130 estabelecimentos. Ainda não há intervalo de
+          compras para limitar os seletores (as faturas nem foram lidas), então
+          a validação acontece do outro lado, na etapa Viagem. */}
+      {onTravelRangesChange && (
+        <details className="viagem-upload" open={travelRanges.length > 0}>
+          <summary>
+            Viajou neste período?
+            {travelRanges.length > 0 && (
+              <span className="badge">{travelRanges.length}</span>
+            )}
+          </summary>
+          <TravelRanges
+            ranges={travelRanges}
+            onChange={onTravelRangesChange}
+            busy={busy}
+          />
+        </details>
       )}
 
       <button className="primary" disabled={!pronto || busy}

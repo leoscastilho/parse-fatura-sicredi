@@ -44,6 +44,13 @@ export function upload(files, banco = '', vencimento = '') {
   return json('/upload', { method: 'POST', body: form })
 }
 
+// Recategorizar CSVs que já saíram daqui: mesma revisão, origem diferente.
+export function recategorize(files) {
+  const form = new FormData()
+  for (const file of files) form.append('files', file)
+  return json('/recategorize', { method: 'POST', body: form })
+}
+
 // --- configuração (bancos, formato de entrada e saída) ---------------------
 
 export const getConfig = () => json('/config')
@@ -102,12 +109,23 @@ export const validate = (transaction_id, assignments) =>
 export const updateMapping = (transaction_id, assignments, commit_now = false) =>
   json('/update-mapping', asJson({ transaction_id, assignments, commit_now }))
 
-export const preview = (transaction_id, assignments) =>
-  json('/preview', asJson({ transaction_id, assignments }))
+// --- viagens ---------------------------------------------------------------
+
+// Substitutivo: a lista enviada VIRA a lista de períodos. Remover um período é
+// mandar a lista sem ele — não existe DELETE aqui.
+export const travel = (transaction_id, ranges) =>
+  json('/travel', asJson({ transaction_id, ranges }))
+
+export const preview = (transaction_id, assignments, travel_rejected = []) =>
+  json('/preview', asJson({ transaction_id, assignments, travel_rejected }))
 
 // O /export devolve bytes, não JSON: monta um object URL e dispara o download.
-export async function exportCsv(transaction_id, assignments, commit_mapping = true) {
-  const response = await request('/export', asJson({ transaction_id, assignments, commit_mapping }))
+export async function exportCsv(
+  transaction_id, assignments, commit_mapping = true, travel_rejected = [],
+) {
+  const response = await request('/export', asJson({
+    transaction_id, assignments, commit_mapping, travel_rejected,
+  }))
 
   const disposition = response.headers.get('content-disposition') || ''
   const filename = (disposition.match(/filename="([^"]+)"/) || [])[1] || 'fatura.csv'

@@ -14,6 +14,8 @@ import pytest
 
 from core import ConfigSet, Ruleset, classify_sources, lines_to_csv
 
+from .conftest import com_um_chute, com_uma_redundancia
+
 
 def _upload(client, path, banco="", vencimento="", nome=None):
     return client.post(
@@ -115,14 +117,15 @@ def test_preview_precedencia_linha_sobre_estabelecimento(client, sicredi_xlsx):
     assert resolvida["categoria"] == "Hobby", "a decisão de linha tem que vencer"
 
 
-def test_export_devolve_csv_para_download(client, sicredi_xlsx):
+def test_export_devolve_csv_para_download(client, sicredi_xlsx, output_schema):
     tx = _upload(client, sicredi_xlsx).json()["transaction_id"]
     resposta = client.post("/export", json={"transaction_id": tx, "assignments": [],
                                             "commit_mapping": False})
     assert resposta.status_code == 200
     assert "attachment" in resposta.headers["content-disposition"]
-    assert resposta.content.decode().splitlines()[0] == \
-        "Data,Categoria,Descrição,Valor (R$),Pago"
+    # Os nomes das colunas são configuráveis; o que o teste fixa é que o
+    # cabeçalho exportado é EXATAMENTE o do formato de saída em vigor.
+    assert resposta.content.decode().splitlines()[0] == ",".join(output_schema.colunas)
 
 
 def test_export_lista_vazia_difere_de_campo_omitido(client, sicredi_xlsx):
@@ -198,11 +201,24 @@ def test_banco_inexistente_da_422(client, sicredi_xlsx):
 # Regras pela API
 # ---------------------------------------------------------------------------
 
-def test_rules_marca_chutes_e_redundancias(client):
+def test_rules_marca_chutes_e_redundancias(client, config_dir):
+    # O chute é plantado aqui: no arquivo real eles TENDEM A ZERO conforme são
+    # confirmados pela aba Regras, e um teste que dependesse disso quebraria
+    # justamente quando o portal fosse usado como se espera.
+    palavra = com_um_chute(config_dir)
     data = client.get("/rules").json()
     assert data["flagged_count"] > 0, "os `# ?` têm que aparecer"
-    redundantes = [e for e in data["entries"] if e["redundant_with"]]
-    assert redundantes, "SUPERMERCADO/SUPERMERCADOS deveriam ser detectados"
+    assert any(e["value"] == palavra and e["flagged"] for e in data["entries"])
+
+
+def test_rules_marca_redundancias(client, config_dir):
+    """Uma palavra que já é coberta por outra mais curta nunca vence sozinha."""
+    curta, longa = com_uma_redundancia(config_dir)
+    data = client.get("/rules").json()
+    redundantes = {e["value"]: e["redundant_with"] for e in data["entries"]
+                   if e["redundant_with"]}
+    assert longa in redundantes, f"{longa!r} é coberta por {curta!r}"
+    assert any(curta in quem for quem in redundantes[longa])
 
 
 def test_rules_edit_e_atomico(client, config_dir):
@@ -397,8 +413,9 @@ def test_aviso_de_commit_cabe_num_header_http(client, sicredi_xlsx):
 # Confirmar um chute
 # ---------------------------------------------------------------------------
 
-def test_confirmar_chute_mantem_o_mapeamento(client):
+def test_confirmar_chute_mantem_o_mapeamento(client, config_dir):
     """Antes só dava para apagar (perdendo o mapeamento) ou trocar a categoria."""
+    com_um_chute(config_dir)
     antes = client.get("/rules").json()
     chute = next(e for e in antes["entries"] if e["flagged"])
 
@@ -415,7 +432,8 @@ def test_confirmar_chute_mantem_o_mapeamento(client):
     assert igual[0]["comment"] == ""
 
 
-def test_confirmar_nao_mexe_nas_outras_entradas(client):
+def test_confirmar_nao_mexe_nas_outras_entradas(client, config_dir):
+    com_um_chute(config_dir)
     antes = client.get("/rules").json()
     chute = next(e for e in antes["entries"] if e["flagged"])
     depois = client.post("/rules/edit", json={"operations": [

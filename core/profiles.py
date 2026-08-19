@@ -110,10 +110,21 @@ class BankProfile:
 # Schema de saída
 # ---------------------------------------------------------------------------
 
+# Os cinco PAPÉIS que uma linha do CSV cumpre, na ordem canônica. O nome da
+# coluna é escolha do usuário (`Descrição` ou `Item`, `Valor (R$)` ou `Valor`);
+# o papel é o que o código conhece. Sem esta separação, renomear uma coluna no
+# formato de saída quebrava a exportação inteira — o writer montava a linha com
+# os nomes antigos e o csv.DictWriter recusava.
+PAPEIS = ("data", "categoria", "descricao", "valor", "pago")
+
+
 @dataclass
 class OutputSchema:
     colunas: list[str] = field(default_factory=lambda: [
         "Data", "Categoria", "Descrição", "Valor (R$)", "Pago"])
+    # papel -> nome da coluna. Preenchido por posição a partir de `colunas`
+    # quando o YAML não traz um bloco `campos:` explícito.
+    campos: dict[str, str] = field(default_factory=dict)
     data_origem: str = "vencimento"
     data_formato: str = "%m/%d/%Y"
     modelo: str = "[Cartão] {descricao}{parcela}{sufixo_data}"
@@ -136,8 +147,34 @@ class OutputSchema:
         if not isinstance(raw, dict):
             raise ProfileError("o formato de saída precisa ser um mapa YAML")
         data = raw.get("data") or {}
-        desc = raw.get("descricao") or {}
         arquivo = raw.get("arquivo") or {}
+
+        defaults_cols = cls().colunas
+        colunas = ([str(c) for c in raw["colunas"]] if "colunas" in raw
+                   else list(defaults_cols))
+
+        # `campos:` explícito vence; sem ele, os papéis saem da POSIÇÃO em
+        # `colunas`. É o que faz `colunas: [Data, Categoria, Item, Valor, Pago]`
+        # simplesmente funcionar, sem exigir um bloco a mais de quem só quis
+        # renomear a coluna para casar com a planilha.
+        campos_raw = raw.get("campos") or {}
+        campos: dict[str, str] = {}
+        for i, papel in enumerate(PAPEIS):
+            if papel in campos_raw:
+                campos[papel] = str(campos_raw[papel])
+            elif i < len(colunas):
+                campos[papel] = colunas[i]
+            else:
+                campos[papel] = defaults_cols[i]
+
+        # O bloco que descreve como montar a descrição pode vir com a chave
+        # canônica `descricao:` ou com o nome que o usuário deu à coluna
+        # (`Item:`). Aceitar os dois evita que renomear a coluna desligue o
+        # modelo em silêncio, que é exatamente o que acontecia antes.
+        desc = raw.get("descricao")
+        if desc is None:
+            desc = raw.get(campos["descricao"])
+        desc = desc or {}
 
         ordenacao_raw = raw.get("ordenacao") or {}
         if isinstance(ordenacao_raw, list):
@@ -152,8 +189,8 @@ class OutputSchema:
         return cls(
             # `colunas` ausente cai no default; `colunas: []` fica vazio de
             # propósito, para o endpoint poder recusar em vez de mascarar.
-            colunas=([str(c) for c in raw["colunas"]] if "colunas" in raw
-                     else list(defaults.colunas)),
+            colunas=colunas,
+            campos=campos,
             data_origem=data.get("origem", defaults.data_origem),
             data_formato=data.get("formato", defaults.data_formato),
             modelo=desc.get("modelo", defaults.modelo),
@@ -170,6 +207,30 @@ class OutputSchema:
             path=path,
             raw_text=text,
         )
+
+    def coluna(self, papel: str) -> str:
+        """Nome da coluna que cumpre `papel` neste formato de saída.
+
+        Funciona mesmo num `OutputSchema()` construído à mão (sem passar pelo
+        YAML), caindo na posição canônica e depois no nome padrão.
+        """
+        if papel in self.campos:
+            return self.campos[papel]
+        i = PAPEIS.index(papel)
+        if i < len(self.colunas):
+            return self.colunas[i]
+        return OutputSchema.__dataclass_fields__["colunas"].default_factory()[i]
+
+    def linha(self, *, data: str, categoria: str, descricao: str,
+              valor, pago: str) -> dict:
+        """Monta a linha do CSV com os nomes de coluna DESTE formato."""
+        return {
+            self.coluna("data"): data,
+            self.coluna("categoria"): categoria,
+            self.coluna("descricao"): descricao,
+            self.coluna("valor"): valor,
+            self.coluna("pago"): pago,
+        }
 
     @classmethod
     def load(cls, path: Path) -> "OutputSchema":

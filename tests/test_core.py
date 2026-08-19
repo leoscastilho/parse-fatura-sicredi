@@ -373,3 +373,58 @@ def test_substring_tem_falso_positivo_conhecido():
         "configuracao: {categoria_padrao: ''}\n"
         "palavras:\n  Construção:\n    - CIMENTO\n")
     assert rules.classify("ESTABELECIMENTO XPTO").categoria == "Construção"
+
+
+# ---------------------------------------------------------------------------
+# A configuração REAL do repositório
+# ---------------------------------------------------------------------------
+#
+# A suíte roda contra uma fotografia congelada (tests/fixtures/config) para que
+# editar regras no portal não derrube o build. Mas a configuração de verdade
+# não pode ficar sem cobertura nenhuma: se ela parar de carregar, o app sobe
+# quebrado. Estes testes verificam SANIDADE, nunca conteúdo — não exigem que
+# exista nenhuma palavra-chave, categoria ou marketplace em particular, porque
+# é exatamente isso que muda com o uso.
+
+def test_config_real_carrega():
+    from tests.conftest import CONFIG_REAL
+    cfg = ConfigSet.load(CONFIG_REAL)
+    assert cfg.output.colunas, "o formato de saída precisa ter colunas"
+    assert cfg.banks, "precisa existir ao menos um banco"
+    assert cfg.default_bank
+
+
+def test_config_real_tem_papeis_coerentes():
+    """Todo papel tem que apontar para uma coluna que existe no cabeçalho."""
+    from tests.conftest import CONFIG_REAL
+    from core.profiles import PAPEIS
+    schema = ConfigSet.load(CONFIG_REAL).output
+    for papel in PAPEIS:
+        assert schema.coluna(papel) in schema.colunas, (
+            f"o papel {papel!r} aponta para {schema.coluna(papel)!r}, "
+            f"que não está em {schema.colunas}")
+    assert len(set(schema.colunas)) == len(schema.colunas), "colunas repetidas"
+
+
+def test_config_real_tem_regex_validos():
+    """Um regex quebrado no `regras:` derruba a classificação inteira.
+
+    `Ruleset.from_text` compila cada padrão na carga, então chegar aqui sem
+    exceção já é a prova. Os asserts existem para a falha ficar legível se um
+    dia o carregamento virar preguiçoso.
+    """
+    from tests.conftest import CONFIG_REAL
+    rules = Ruleset.from_text(ConfigSet.load(CONFIG_REAL).categories_text)
+    for padrao, categoria in rules.ordered_rules:
+        assert padrao.pattern, "regra sem padrão"
+        assert isinstance(categoria, str)
+
+
+def test_config_real_classifica_sem_estourar():
+    """Vale para qualquer ruleset: classificar nunca pode levantar exceção."""
+    from tests.conftest import CONFIG_REAL
+    rules = Ruleset.from_text(ConfigSet.load(CONFIG_REAL).categories_text)
+    for amostra in ["SUPERMERCADO X", "", "   ", "123456", "ÁÇÃO Ñ",
+                    "AMAZON BR 0123", "a" * 300]:
+        resultado = rules.classify(amostra)
+        assert resultado.categoria == "" or isinstance(resultado.categoria, str)

@@ -65,6 +65,50 @@ agrupamento das outras telas.
 
 \* o marketplace é perguntado **por linha**, e a resposta não vira palavra-chave.
 
+## Viagem: a classificação que é uma janela de tempo
+
+O restaurante da esquina e o restaurante de Gramado casam com a mesma
+palavra-chave. O que os separa é **quando** a compra foi feita, e nenhuma regra
+do `categories.yml` sabe expressar isso. Daí um eixo separado.
+
+```
+transactions
+├── travel_json           ← os PERÍODOS (input do usuário)
+└── travel_rejected_json  ← as exceções desmarcadas na confirmação
+```
+
+Três decisões que sustentam o resto:
+
+* **A marca `viagem` não é gravada em `lines_json`.** Ela é derivada dos
+  períodos a cada leitura (`mark_travel` dentro de `_lines_of`). É o que
+  preserva a imutabilidade das linhas lidas e torna reeditar um período
+  trivialmente idempotente: apagou o período, sumiu a marca, sem nada a
+  desfazer. `POST /travel` é **substitutivo** pelo mesmo motivo — remover é
+  mandar a lista sem o item, e não existe DELETE.
+* **A data comparada é a da COMPRA**, nunca a do vencimento. Uma parcela
+  comprada em 21/08/2024 numa fatura que vence em 10/08/2026 não é despesa de
+  uma viagem em agosto de 2026. É o único ponto em que esta implementação e uma
+  que olhasse a coluna `Data` divergem, e há um teste dedicado a ele.
+* **A conversão roda por último**, depois de `_apply_assignments`. A categoria
+  que vai para o parêntese é a FINAL — com marketplace e correções manuais já
+  resolvidos —, não o chute da regra.
+
+O resultado: `Categoria` vira `Viagem` e a categoria real entra na descrição,
+logo antes do `{Em 15/Jul}`:
+
+```
+[Cartão] B91 Supremo Pizzaria (Alimentação) {Em 15/Jul}
+```
+
+Assim a planilha continua respondendo "quanto gastei em comida naquela viagem?".
+A anotação é idempotente (refazer o `/preview` não empilha parênteses) e, sem
+categoria real, a linha vira `Viagem` **sem** parêntese em vez de ganhar um
+rótulo inventado.
+
+**Não vale na recategorização** (`409`): aquele fluxo promete devolver o arquivo
+com só a coluna Categoria alterada, e a viagem escreve dentro da descrição. Os
+dois contratos não cabem juntos.
+
 ## Autenticação no GitHub
 
 * **Fine-grained PAT**, `Contents: Read and write`, **um repositório só**.

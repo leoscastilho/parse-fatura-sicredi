@@ -38,6 +38,14 @@ export default function MarketplaceStep({
     })))
   }
 
+  // Sair daqui com linha em branco é o erro que esta tela existe para evitar:
+  // o CSV sai com buracos e o trabalho volta para a planilha. Então o botão de
+  // continuar preenche o que faltou, e diz exatamente com o quê.
+  function continuar() {
+    if (pending.length && bulkCategory) applyToPending()
+    onNext()
+  }
+
   function clearAll() {
     setManyAssignments(items.map((line) => ({
       scope: 'line', target: line.line_id, patch: null,
@@ -136,12 +144,18 @@ export default function MarketplaceStep({
         <p className="muted" style={{ marginTop: 14 }}>Tudo preenchido.</p>
       )}
 
-      <button className="primary" onClick={onNext}>Continuar</button>
+      <button className="primary" onClick={continuar}
+              disabled={pending.length > 0 && !bulkCategory}>
+        {pending.length > 0
+          ? `Continuar e aplicar ${bulkCategory || '…'} em ${pending.length}`
+          : 'Continuar'}
+      </button>
       <p className="muted small">
         {pending.length > 0
-          ? `Continuar agora deixa ${pending.length} linha(s) SEM categoria — elas saem
-             vazias no CSV, no fim do bloco da fatura, e você resolve na planilha.
-             Nada é preenchido automaticamente.`
+          ? `As ${pending.length} linha(s) sem categoria recebem
+             ${bulkCategory || 'a categoria escolhida acima'} ao continuar — esta
+             tela não deixa passar linha em branco. O que você já classificou à
+             mão não é tocado.`
           : 'Todas as linhas têm categoria.'}
       </p>
     </section>

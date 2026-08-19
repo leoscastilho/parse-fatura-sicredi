@@ -1,42 +1,20 @@
 # =============================================================================
-#  Regras de categorização — parse-fatura-sicredi
+#  categories.yml CONGELADO — fixture de teste, NÃO é a configuração do app
 # =============================================================================
 #
-#  COMO FUNCIONA (na ordem):
+#  A suíte usava `config/categories.yml` de verdade. Isso acoplava os testes às
+#  regras pessoais de quem roda: confirmar um chute na aba Regras, apagar uma
+#  palavra-chave ou mapear um estabelecimento novo derrubava o build — usar o
+#  portal como ele foi feito quebrava a compilação.
 #
-#  0. A descrição do lançamento é NORMALIZADA antes de qualquer comparação:
-#     MAIÚSCULAS, sem acentos, pontuação virando espaço, espaços colapsados,
-#     e CamelCase separado.
-#         "Prudent*APOL00188798"  ->  "PRUDENT APOL00188798"
-#         "OggiSantaRita"         ->  "OGGI SANTA RITA"
-#     Escreva as palavras-chave em MAIÚSCULAS e sem acentos.  A comparação
-#     também ignora espaços, então GRELHA GRILL acha "GrelhaGrill".
+#  Este arquivo é uma FOTOGRAFIA, e não muda quando você edita suas regras.
+#  Os testes falam sobre ELE; a configuração real é coberta por um teste
+#  separado que só verifica se ela carrega e é coerente, sem exigir que contenha
+#  nada em particular.
 #
-#  1. `excluir`       -> se casar, a linha é DESCARTADA (não vai pro CSV).
-#  2. `regras`        -> lista ORDENADA; a primeira que casar vence.
-#                        Use aqui os casos específicos que precisam ganhar de
-#                        uma palavra-chave genérica de `palavras`.  Aceita regex.
-#  3. `palavras`      -> mapa  Categoria -> [trechos].  Vence o trecho MAIS
-#                        LONGO que casar (o mais específico).  A ordem aqui
-#                        não importa, o que facilita editar.
-#  4. `marketplaces`  -> Categoria VAZIA de propósito (ver abaixo).
-#  5. nada casou      -> Categoria fica VAZIA e a linha vai pro fim do CSV.
-#
-#  `desconhecidos`  -> estabelecimentos que você já disse que não sabe
-#                      classificar.  Saem com categoria vazia e o
-#                      `categorize.py` não pergunta de novo.  Apague uma linha
-#                      de lá para voltar a ser perguntado.
-#
-#  `marketplaces`   -> Amazon, Mercado Livre e afins.  Categoria sai VAZIA de
-#                      propósito (varia a cada compra), o categorize.py não
-#                      pergunta, e o relatório marca como MARKETPLACE.
-#
-#  PARA ADICIONAR UMA CATEGORIA NOVA: acrescente a chave em `palavras` (e em
-#  `configuracao.categorias`, para ela já aparecer na lista do categorize.py).
-#  O `main.py` não precisa ser tocado.
-#
-#  Linhas marcadas com  # ?  são chutes — confirme ou corrija.
+#  Mexa aqui só para dar suporte a um teste novo.
 # =============================================================================
+
 
 configuracao:
   # Vazio de propósito: o que não casar com nada fica sem categoria e vai pro

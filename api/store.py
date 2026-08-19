@@ -43,8 +43,11 @@ CREATE TABLE IF NOT EXISTS transactions (
     statements_json     TEXT NOT NULL,
     dropped_json        TEXT NOT NULL,
     lines_json          TEXT NOT NULL,
+    modo                TEXT NOT NULL DEFAULT 'fatura',
     assignments_json    TEXT NOT NULL DEFAULT '[]',
     mapping_changes_json TEXT NOT NULL DEFAULT '[]',
+    travel_json         TEXT NOT NULL DEFAULT '[]',
+    travel_rejected_json TEXT NOT NULL DEFAULT '[]',
     committed_url       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_transactions_expires ON transactions(expires_at);
@@ -66,6 +69,20 @@ class Store:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            # Migração para bancos criados antes destas colunas existirem. O
+            # estado é efêmero (TTL de 24h), mas derrubar a transação de alguém
+            # no meio de uma revisão por causa de uma coluna nova seria
+            # grosseiro. Todo default aqui precisa reproduzir o comportamento
+            # antigo: 'fatura' e listas vazias não mudam nada para quem já
+            # estava no meio do fluxo.
+            colunas = {row[1] for row in conn.execute("PRAGMA table_info(transactions)")}
+            for nome, ddl in (
+                ("modo", "TEXT NOT NULL DEFAULT 'fatura'"),
+                ("travel_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("travel_rejected_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ):
+                if nome not in colunas:
+                    conn.execute(f"ALTER TABLE transactions ADD COLUMN {nome} {ddl}")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -91,6 +108,7 @@ class Store:
         statements: list[dict],
         dropped: list[dict],
         lines: list[dict],
+        modo: str = "fatura",
     ) -> tuple[str, datetime]:
         transaction_id = uuid.uuid4().hex
         created = _now()
@@ -99,8 +117,8 @@ class Store:
             conn.execute(
                 """INSERT INTO transactions
                    (id, created_at, expires_at, filename, yaml_snapshot, yaml_working,
-                    yaml_sha, statements_json, dropped_json, lines_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    yaml_sha, statements_json, dropped_json, lines_json, modo)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     transaction_id,
                     created.isoformat(),
@@ -112,6 +130,7 @@ class Store:
                     json.dumps(statements, ensure_ascii=False),
                     json.dumps(dropped, ensure_ascii=False),
                     json.dumps(lines, ensure_ascii=False),
+                    modo,
                 ),
             )
         return transaction_id, expires
@@ -129,7 +148,8 @@ class Store:
             self.delete(transaction_id)
             raise TransactionNotFound(transaction_id)
 
-        for column in ("statements", "dropped", "lines", "assignments", "mapping_changes"):
+        for column in ("statements", "dropped", "lines", "assignments",
+                       "mapping_changes", "travel", "travel_rejected"):
             record[column] = json.loads(record.pop(f"{column}_json"))
         return record
 
@@ -138,6 +158,27 @@ class Store:
             conn.execute(
                 "UPDATE transactions SET assignments_json = ? WHERE id = ?",
                 (json.dumps(assignments, ensure_ascii=False), transaction_id),
+            )
+
+    def save_travel(self, transaction_id: str, ranges: list[dict]) -> None:
+        """Guarda os PERÍODOS, não a marcação das linhas.
+
+        A marca `viagem` de cada linha é derivada destes períodos na leitura
+        (`mark_travel`), o que mantém `lines_json` imutável e torna reeditar um
+        período uma operação trivialmente idempotente: some o período, some a
+        marca, sem precisar desfazer nada.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE transactions SET travel_json = ? WHERE id = ?",
+                (json.dumps(ranges, ensure_ascii=False), transaction_id),
+            )
+
+    def save_travel_rejected(self, transaction_id: str, line_ids: list[str]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE transactions SET travel_rejected_json = ? WHERE id = ?",
+                (json.dumps(line_ids, ensure_ascii=False), transaction_id),
             )
 
     def save_yaml_working(

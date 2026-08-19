@@ -21,7 +21,17 @@ export default function UnmappedStep({
 }) {
   const [impacts, setImpacts] = useState({})
   const [saving, setSaving] = useState(false)
+  const [esconderResolvidos, setEsconderResolvidos] = useState(false)
   const items = session.unmapped_items
+
+  // "Resolvido" inclui o "não sei": decidir que não se sabe também é decidir,
+  // e a linha não deve continuar pedindo atenção.
+  const resolvido = (item) => {
+    const a = getAssignment('merchant', item.merchant)
+    return Boolean(a?.categoria || a?.mark_unknown)
+  }
+  const pendentes = items.filter((i) => !resolvido(i))
+  const visiveis = esconderResolvidos ? pendentes : items
 
   async function checkImpact(item) {
     const assignment = getAssignment('merchant', item.merchant)
@@ -76,7 +86,19 @@ export default function UnmappedStep({
       <p className="muted">
         Nada no <code>categories.yml</code> reconheceu estes. Ordenados por valor,
         do que mais pesa para o que menos pesa.
+        {items.length > pendentes.length && (
+          <> <strong>{items.length - pendentes.length} de {items.length} resolvido(s).</strong></>
+        )}
       </p>
+
+      <div className="toolbar">
+        <label className="checkbox">
+          <input type="checkbox" checked={esconderResolvidos}
+                 onChange={(e) => setEsconderResolvidos(e.target.checked)} />
+          Esconder os que já preenchi
+        </label>
+        <span className="muted small">{pendentes.length} sem categoria</span>
+      </div>
 
       <table className="grid">
         <thead>
@@ -89,7 +111,7 @@ export default function UnmappedStep({
           </tr>
         </thead>
         <tbody>
-          {items.map((item) => {
+          {visiveis.map((item) => {
             const assignment = getAssignment('merchant', item.merchant)
             const feedback = impacts[item.merchant]
             const unknown = assignment?.mark_unknown
@@ -174,6 +196,10 @@ export default function UnmappedStep({
           })}
         </tbody>
       </table>
+
+      {esconderResolvidos && visiveis.length === 0 && (
+        <p className="muted">Tudo resolvido nesta etapa.</p>
+      )}
 
       <button className="primary" onClick={persistAll} disabled={saving}>
         {saving ? 'Gravando mapeamento…' : 'Continuar'}

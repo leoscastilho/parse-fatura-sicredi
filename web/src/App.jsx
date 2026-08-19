@@ -10,13 +10,21 @@ import BankPicker from './components/BankPicker'
 import InputFormatView from './components/InputFormatView'
 import OutputFormatView from './components/OutputFormatView'
 import ConfigBundle from './components/ConfigBundle'
+import RecategorizeStep, { ChangesSummary } from './components/RecategorizeStep'
+import TravelStep from './components/TravelStep'
 import { applyTheme } from './theme'
 
 const STEPS = [
   { id: 'upload', label: 'Upload' },
+  // Só aparece na recategorização: mostra o diff antes de qualquer revisão.
+  { id: 'changes', label: 'Mudanças', apenas: 'recategorizacao' },
   { id: 'unmapped', label: 'Novos' },
   { id: 'auto', label: 'Revisão' },
   { id: 'marketplace', label: 'Marketplace' },
+  // Depois do marketplace de propósito: a categoria que vai para o parêntese é
+  // a final, já com as decisões daquela etapa. Fora da recategorização, que
+  // promete não tocar a descrição.
+  { id: 'viagem', label: 'Viagem', apenas: 'fatura' },
   { id: 'final', label: 'Conferir e exportar' },
 ]
 
@@ -34,6 +42,16 @@ export default function App() {
   const [session, setSession] = useState(null)
   const [assignments, setAssignments] = useState(new Map())
   const [flaggedRules, setFlaggedRules] = useState(0)
+  // Viagem: os períodos são o input, `travelItems` é o que o backend diz que
+  // eles pegam, e `travelRejected` são as exceções que o usuário desmarcou.
+  const [travelRanges, setTravelRanges] = useState([])
+  const [travelItems, setTravelItems] = useState([])
+  const [travelWarnings, setTravelWarnings] = useState([])
+  const [travelRejected, setTravelRejected] = useState(new Set())
+  // Etapas já liberadas. Avançar exige clicar em "Continuar" — pular uma etapa
+  // pela barra deixava para trás decisões que a etapa seguinte já consome.
+  // Chegando na última, tudo destrava e a navegação vira livre.
+  const [liberadas, setLiberadas] = useState(['upload'])
   const [banks, setBanks] = useState([])
   const [bankId, setBankId] = useState('')
   const [error, setError] = useState(null)
@@ -100,13 +118,30 @@ export default function App() {
   )
 
   async function handleUpload(files, vencimento) {
+    await processar(() => api.upload(files, bankId, vencimento), 'unmapped')
+  }
+
+  async function handleRecategorize(files) {
+    await processar(() => api.recategorize(files), 'changes')
+  }
+
+  async function processar(chamada, proximaEtapa) {
     setBusy(true)
     setError(null)
     try {
-      const data = await api.upload(files, bankId, vencimento)
-      setSession(data)
+      const sessao = await chamada()
+      setSession(sessao)
       setAssignments(new Map())
-      setStep('unmapped')
+      setTravelItems([])
+      setTravelWarnings([])
+      setTravelRejected(new Set())
+      setLiberadas(['upload', proximaEtapa])
+      setStep(proximaEtapa)
+      // Os períodos digitados na tela de upload só podem ser enviados agora,
+      // que existe transação. Falhar aqui não invalida o upload.
+      if (travelRanges.length && sessao.modo !== 'recategorizacao') {
+        await enviarPeriodos(sessao.transaction_id, travelRanges)
+      }
     } catch (e) {
       setError(e.message)
     } finally {
@@ -114,22 +149,88 @@ export default function App() {
     }
   }
 
+  // Único caminho para frente: cada etapa chama isto no seu "Continuar".
+  function avancar(destino) {
+    setLiberadas((atuais) =>
+      atuais.includes(destino) ? atuais : [...atuais, destino])
+    setStep(destino)
+  }
+
+  function limparViagem() {
+    setTravelRanges([])
+    setTravelItems([])
+    setTravelWarnings([])
+    setTravelRejected(new Set())
+  }
+
+  async function enviarPeriodos(transactionId, ranges) {
+    const resposta = await api.travel(transactionId, ranges)
+    setTravelRanges(resposta.ranges)
+    setTravelItems(resposta.items)
+    setTravelWarnings(resposta.warnings)
+    // Quem deixou de ser candidata deixa de ter rejeição — o backend faz a
+    // mesma poda; refletir aqui evita a caixa reaparecer desmarcada.
+    const vivas = new Set(resposta.items.map((i) => i.line_id))
+    setTravelRejected((atual) => new Set([...atual].filter((id) => vivas.has(id))))
+  }
+
+  // Os períodos são SUBSTITUTIVOS: a lista enviada vira a lista do backend.
+  // Adicionar e remover são a mesma chamada, o que torna desfazer trivial.
+  //
+  // Antes de existir transação (tela de upload) a lista fica só no cliente e é
+  // enviada assim que o processamento termina.
+  async function handleTravelRanges(ranges) {
+    if (!session) return setTravelRanges(ranges)
+    setBusy(true)
+    setError(null)
+    try {
+      await enviarPeriodos(session.transaction_id, ranges)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggleTravel = useCallback((lineId) => {
+    setTravelRejected((atual) => {
+      const proximo = new Set(atual)
+      if (proximo.has(lineId)) proximo.delete(lineId)
+      else proximo.add(lineId)
+      return proximo
+    })
+  }, [])
+
+  const travelRejectedList = useMemo(() => [...travelRejected], [travelRejected])
+
   function restart() {
     setSession(null)
     setAssignments(new Map())
+    limparViagem()
+    setLiberadas(['upload'])
     setStep('upload')
     setError(null)
     api.getCategories().then((d) => setCategories(d.categories)).catch(() => {})
   }
 
-  const stepIndex = STEPS.findIndex((s) => s.id === step)
+  // A ORDEM importa: `etapas` é `const`, então lê-la antes da declaração é
+  // ReferenceError (temporal dead zone), não `undefined`.
+  const modo = session?.modo || (section === 'recategorizar' ? 'recategorizacao' : 'fatura')
+  const etapas = STEPS.filter((s) => !s.apenas || s.apenas === modo)
+  const stepIndex = etapas.findIndex((s) => s.id === step)
+  // Depois de chegar em "Conferir e exportar" não há mais o que proteger: o
+  // dataset está montado e voltar para ajustar é justamente o que se quer.
+  const navegacaoLivre = liberadas.includes('final')
+  const podeIr = (id) => navegacaoLivre || liberadas.includes(id)
   const counts = session && {
     unmapped: session.unmapped_items.length,
     marketplace: session.marketplace_items.length,
+    viagem: travelItems.length - travelRejected.size,
   }
 
   const TITULOS = {
     importar: 'Importar fatura',
+    recategorizar: 'Recategorizar CSV',
     regras: 'Regras de categorização',
     entrada: 'Formato de entrada',
     saida: 'Formato de saída',
@@ -160,6 +261,13 @@ export default function App() {
         >
           Regras
           {flaggedRules > 0 && <span className="pill">{flaggedRules}</span>}
+        </button>
+
+        <button
+          className={`nav-item ${section === 'recategorizar' ? 'active' : ''}`}
+          onClick={() => setSection('recategorizar')}
+        >
+          Recategorizar CSV
         </button>
 
         <div className="nav-sep" />
@@ -237,25 +345,31 @@ export default function App() {
             />
           )}
 
-          {section === 'importar' && (
+          {(section === 'importar' || section === 'recategorizar') && (
             <>
               {session && (
                 <div className="session-bar">
                   <span className="muted small">
-                    {session.statements.length} fatura(s) de{' '}
-                    {bancoAtual?.nome || '—'} carregada(s)
+                    {session.modo === 'recategorizacao'
+                      ? `${session.source_files.reduce((s, f) => s + f.rows, 0)} linha(s) de
+                         ${session.source_files.length} arquivo(s) · ${session.changes.length}
+                         mudança(s)`
+                      : `${session.statements.length} fatura(s) de ${bancoAtual?.nome || '—'} carregada(s)`}
                   </span>
                   <button className="ghost" onClick={restart}>Começar de novo</button>
                 </div>
               )}
 
+
               <nav className="steps" aria-label="Etapas">
-                {STEPS.map((s, i) => (
+                {etapas.map((s, i) => (
                   <button
                     key={s.id}
                     className={`step ${s.id === step ? 'active' : ''} ${i < stepIndex ? 'done' : ''}`}
-                    disabled={!session && s.id !== 'upload'}
-                    onClick={() => session && setStep(s.id)}
+                    disabled={(!session && s.id !== 'upload') || !podeIr(s.id)}
+                    title={podeIr(s.id) ? undefined
+                                        : 'Conclua a etapa anterior para liberar'}
+                    onClick={() => session && podeIr(s.id) && setStep(s.id)}
                   >
                     <span className="num">{i + 1}</span>
                     {s.label}
@@ -265,12 +379,35 @@ export default function App() {
                     {counts && s.id === 'marketplace' && counts.marketplace > 0 && (
                       <span className="badge">{counts.marketplace}</span>
                     )}
+                    {counts && s.id === 'viagem' && counts.viagem > 0 && (
+                      <span className="badge">{counts.viagem}</span>
+                    )}
                   </button>
                 ))}
               </nav>
 
-              {step === 'upload' && (
-                <UploadStep onUpload={handleUpload} busy={busy} banco={bancoAtual} />
+              {step === 'upload' && section === 'importar' && (
+                <UploadStep
+                  onUpload={handleUpload}
+                  busy={busy}
+                  banco={bancoAtual}
+                  travelRanges={travelRanges}
+                  onTravelRangesChange={handleTravelRanges}
+                />
+              )}
+
+              {step === 'upload' && section === 'recategorizar' && (
+                <RecategorizeStep onUpload={handleRecategorize} busy={busy} />
+              )}
+
+              {step === 'changes' && session && (
+                <ChangesSummary
+                  session={session}
+                  getAssignment={getAssignment}
+                  setAssignment={setAssignment}
+                  setManyAssignments={setManyAssignments}
+                  onNext={() => avancar('unmapped')}
+                />
               )}
 
               {step === 'unmapped' && session && (
@@ -281,7 +418,7 @@ export default function App() {
                   setAssignment={setAssignment}
                   assignmentList={assignmentList}
                   onCategoriesChanged={setCategories}
-                  onNext={() => setStep('auto')}
+                  onNext={() => avancar('auto')}
                   onError={setError}
                 />
               )}
@@ -292,7 +429,7 @@ export default function App() {
                   categories={categories}
                   getAssignment={getAssignment}
                   setAssignment={setAssignment}
-                  onNext={() => setStep('marketplace')}
+                  onNext={() => avancar('marketplace')}
                 />
               )}
 
@@ -303,7 +440,24 @@ export default function App() {
                   getAssignment={getAssignment}
                   setAssignment={setAssignment}
                   setManyAssignments={setManyAssignments}
-                  onNext={() => setStep('final')}
+                  onNext={() => avancar(modo === 'fatura' ? 'viagem' : 'final')}
+                />
+              )}
+
+              {step === 'viagem' && session && modo === 'fatura' && (
+                <TravelStep
+                  session={session}
+                  categories={categories}
+                  ranges={travelRanges}
+                  items={travelItems}
+                  warnings={travelWarnings}
+                  rejected={travelRejected}
+                  onRangesChange={handleTravelRanges}
+                  getAssignment={getAssignment}
+                  setAssignment={setAssignment}
+                  onToggle={toggleTravel}
+                  onNext={() => avancar('final')}
+                  busy={busy}
                 />
               )}
 
@@ -311,6 +465,7 @@ export default function App() {
                 <FinalReview
                   session={session}
                   assignmentList={assignmentList}
+                  travelRejected={travelRejectedList}
                   onError={setError}
                 />
               )}
