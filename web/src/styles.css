@@ -407,6 +407,15 @@ td.alta, .alta { color: #d03b3b; }
   background: var(--muted); opacity: .45; z-index: 1;
 }
 
+/* Linha inteira como alvo de clique: mirar num quadradinho de 13px, 618 vezes,
+   é trabalho que a tela inventou. O cursor avisa que a linha responde. */
+tr.clicavel { cursor: pointer; }
+tr.clicavel:hover > td { background: var(--surface-2); }
+/* Filete na primeira linha de cada categoria de destino — é o que faz o
+   agrupamento ser visto sem precisar ler a coluna. */
+tr.abre-grupo > td { border-top: 2px solid var(--border); }
+tr.abre-grupo:first-child > td { border-top: none; }
+
 .chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .chip {
   font-size: 12px; padding: 3px 10px; border-radius: 999px;
@@ -416,3 +425,49 @@ td.alta, .alta { color: #d03b3b; }
 .chip:hover { border-color: var(--magenta); color: var(--magenta); }
 
 .card h3 { font-size: 14px; font-weight: 640; margin: 22px 0 4px; }
+
+/* -------------------------------------------------------- barra de filtros
+
+   Fica presa à direita da janela e por cima do conteúdo, não ao lado: empurrar
+   os painéis ao abrir reflowaria todo gráfico SVG do documento — os eixos são
+   calculados sobre a largura, então a tela inteira pularia a cada abertura. */
+.filtros-aba {
+  position: fixed; right: 0; top: 40%; z-index: 30;
+  writing-mode: vertical-rl; padding: 16px 8px;
+  border-radius: 10px 0 0 10px; border-right: none;
+  box-shadow: var(--shadow); background: var(--surface);
+}
+.filtros-aba.aberta { right: 340px; }
+.filtros-bolha {
+  writing-mode: horizontal-tb; display: inline-block; margin-top: 8px;
+  background: var(--amarelo); color: #24291F; border-radius: 999px;
+  padding: 0 7px; font-size: 11px; font-weight: 700;
+}
+.filtros {
+  position: fixed; right: 0; top: 61px; bottom: 0; width: 340px; z-index: 29;
+  overflow-y: auto; padding: 18px;
+  background: var(--surface); border-left: 1px solid var(--border);
+  box-shadow: -4px 0 16px rgba(36, 41, 31, .06);
+}
+.filtros h3:first-of-type { margin-top: 10px; }
+.filtros-lista {
+  display: flex; flex-direction: column; gap: 2px;
+  margin: 8px 0; max-height: 320px; overflow-y: auto;
+}
+.filtros-item {
+  align-items: flex-start; gap: 8px; padding: 5px 6px; border-radius: 6px;
+}
+.filtros-item:hover { background: var(--surface-2); }
+.filtros-item .grow { flex: 1; min-width: 0; }
+.filtros-item input { margin-top: 3px; }
+
+/* Legenda clicável — some do gráfico, ao estilo do Grafana. A escondida vira
+   contorno em vez de sumir: continua no lugar, com a cor dela, para voltar sem
+   caça ao tesouro. */
+.viz-legenda-item {
+  border: none; background: none; padding: 2px 6px; border-radius: 6px;
+  font: inherit; font-size: 12px; color: var(--muted); cursor: pointer;
+}
+.viz-legenda-item:hover { background: var(--surface-2); color: var(--text); }
+.viz-legenda-item.oculta { opacity: .55; text-decoration: line-through; }
+.viz-legenda-item:focus-visible { outline: 2px solid var(--verde); }

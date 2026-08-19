@@ -20,10 +20,10 @@ import pytest
 
 from core.analytics import (
     ARTEFATO, CARREGAMENTO, GASTO, RECEITA, AnalyticsConfig, AnalyticsError,
-    analisar, anomalias, categoria_por_periodo, custo_fixo_mensal,
+    analisar, anomalias, categoria_por_periodo, corrente_do_carry, custo_fixo_mensal,
     meses_faltando, meses_que_nao_fecham, pares_que_se_anulam, parse_periodo,
     parse_valor, por_categoria, possivel_dupla_contagem, read_ledger,
-    recorrentes, recortar, saude, serie_mensal,
+    identidade, recorrentes, recortar, reservas, saude, serie_mensal,
 )
 
 CONFIG = """
@@ -44,6 +44,12 @@ anomalias:
   desvios: 3.0
   minimo_meses: 4
   minimo_valor: 50.0
+movimentos:
+  carry:
+    - transferido para o proximo
+    - resgatado do mes anterior
+  aplicacao:
+    - aplicacao
 """
 
 
@@ -596,7 +602,8 @@ def test_intervalo_disponivel_ignora_o_recorte(cfg):
                     for a in (2024, 2026) for m in (1, 6)])
     recortado = analisar(texto, cfg, inicio="2026-01", fim="2026-12")
     assert recortado["intervalo_disponivel"] == {"inicio": "2024-01", "fim": "2026-06"}
-    assert recortado["filtro"] == {"inicio": "2026-01", "fim": "2026-12"}
+    assert recortado["filtro"] == {"inicio": "2026-01", "fim": "2026-12",
+                                   "sem_categorias": [], "sem_linhas": []}
 
 
 def test_recorte_vazio_explica_o_que_existe(cfg):
@@ -649,3 +656,306 @@ def test_saude_devolve_todos_os_meses_que_nao_fecham(cfg):
               for m in range(1, 13)]
     lancamentos, _ = read_ledger(ledger(linhas), cfg)
     assert len(saude(lancamentos, [])["meses_que_nao_fecham"]) == 12
+
+
+# ---------------------------------------------------------------------------
+# Poupança: três mecanismos na mesma categoria
+# ---------------------------------------------------------------------------
+#
+# Medido no arquivo real: `Poupança` e `Resgate Poupança` guardam o carry do
+# mês (R$ 792 mil), resgates de aplicação (R$ 438 mil) e caixinhas com objetivo
+# (R$ 155 mil). Somados viram um número que não responde pergunta nenhuma; o
+# saldo da poupança aparecia NEGATIVO em R$ 349 mil, que é a diferença entre o
+# que voltou de aplicação e o que foi guardado.
+
+def test_movimento_separa_carry_aplicacao_e_reserva(cfg):
+    assert cfg.movimento("Poupança", "Transferido para o próximo mês") == "carry"
+    assert cfg.movimento("Resgate Poupança", "Resgatado do mês anterior") == "carry"
+    assert cfg.movimento("Resgate Poupança", "Resgate Aplicação Sicredi") == "aplicacao"
+    assert cfg.movimento("Poupança", "PS5") == "reserva"
+    # Fora de `carregamento` não existe movimento nenhum: um gasto chamado
+    # "Aplicação de piso" não pode virar resgate de investimento.
+    assert cfg.movimento("Casa", "Aplicação de piso") == ""
+
+
+def test_movimento_ignora_acento_e_caixa(cfg):
+    """14 anos de digitação: "Transferido" aparece com e sem acento no resto
+    da frase, e a comparação não pode depender disso."""
+    assert cfg.movimento("Poupança", "TRANSFERIDO PARA O PROXIMO MES") == "carry"
+    assert cfg.movimento("Poupança", "transferido para o próximo mês") == "carry"
+
+
+def test_corrente_do_carry_acha_o_elo_que_nao_fecha(cfg):
+    """O que sai de um mês tem que entrar no seguinte — as duas pontas do
+    mesmo lançamento. É a checagem que só existe porque o carry foi separado."""
+    texto = ledger([
+        ("Jan-24", "Poupança", "Transferido para o próximo mês", "R$ 1000.00", "x", "1", "2024", "F"),
+        ("Feb-24", "Resgate Poupança", "Resgatado do mês anterior", "R$ 1000.00", "x", "2", "2024", "F"),
+        ("Feb-24", "Poupança", "Transferido para o próximo mês", "R$ 800.00", "x", "2", "2024", "F"),
+        ("Mar-24", "Resgate Poupança", "Resgatado do mês anterior", "R$ 500.00", "x", "3", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    corrente = corrente_do_carry(lancamentos, cfg)
+    assert corrente["elos"] == 2
+    assert [q["de"] for q in corrente["quebrados"]] == ["2024-02"]
+    assert corrente["quebrados"][0]["diferenca"] == 300.0
+
+
+def test_corrente_acha_carry_que_chegou_sem_ter_saido(cfg):
+    """O erro simétrico: fevereiro recebe do mês anterior, mas janeiro nunca
+    mandou. Conferir só um lado deixaria isto passar."""
+    texto = ledger([
+        ("Feb-24", "Resgate Poupança", "Resgatado do mês anterior", "R$ 900.00", "x", "2", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    corrente = corrente_do_carry(lancamentos, cfg)
+    assert corrente["sem_origem"] == [{"periodo": "2024-02", "entrou": 900.0,
+                                       "origem": "2024-01"}]
+
+
+def test_corrente_atravessa_a_virada_de_ano(cfg):
+    texto = ledger([
+        ("Dec-24", "Poupança", "Transferido para o próximo mês", "R$ 700.00", "x", "12", "2024", "F"),
+        ("Jan-25", "Resgate Poupança", "Resgatado do mês anterior", "R$ 700.00", "x", "1", "2025", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    assert corrente_do_carry(lancamentos, cfg)["quebrados"] == []
+
+
+def test_reserva_nao_soma_o_carry_nem_a_aplicacao(cfg):
+    """O saldo da poupança tem que ser o da CAIXINHA. Somar o carry (que zera
+    todo mês) e os resgates de aplicação (cujo aporte está em `Investimento`)
+    dava saldo negativo de centenas de milhares."""
+    texto = ledger([
+        ("Jan-24", "Poupança", "Transferido para o próximo mês", "R$ 5000.00", "x", "1", "2024", "F"),
+        ("Feb-24", "Resgate Poupança", "Resgatado do mês anterior", "R$ 5000.00", "x", "2", "2024", "F"),
+        ("Feb-24", "Resgate Poupança", "Resgate Aplicação Sicredi", "R$ 9000.00", "x", "2", "2024", "F"),
+        ("Feb-24", "Poupança", "PS5", "R$ 300.00", "x", "2", "2024", "F"),
+        ("Mar-24", "Poupança", "PS5", "R$ 200.00", "x", "3", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    grupos = reservas(lancamentos, cfg)["grupos"]
+    assert grupos["carry"]["saldo"] == 0.0
+    assert grupos["reserva"]["saldo"] == 500.0
+    assert grupos["aplicacao"]["saldo"] == -9000.0
+
+
+def test_objetivos_agrupam_grafias_e_exibem_a_mais_usada(cfg):
+    """"Reserva de Emergência" e "Reserva de emergência" são o mesmo cofre. O
+    rótulo é a grafia mais usada, não a primeira — senão um deslize de digitação
+    de 2019 batiza a linha do gráfico."""
+    texto = ledger([
+        ("Jan-24", "Poupança", "Reserva de emergência", "R$ 100.00", "x", "1", "2024", "F"),
+        ("Feb-24", "Poupança", "Reserva de Emergência", "R$ 100.00", "x", "2", "2024", "F"),
+        ("Mar-24", "Poupança", "Reserva de Emergência", "R$ 100.00", "x", "3", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    objetivos = reservas(lancamentos, cfg)["objetivos"]
+    assert len(objetivos) == 1
+    assert objetivos[0]["objetivo"] == "Reserva de Emergência"
+    assert objetivos[0]["total"] == 300.0
+    assert objetivos[0]["movimentos"] == 3
+
+
+def test_objetivo_nao_e_inventado_a_partir_do_resgate(cfg):
+    """Os resgates não nomeiam o objetivo: guarda-se em "Documentos Veículos" e
+    resgata-se como "Resgate manutenção carro". Parear os dois daria um saldo
+    por objetivo que parece exato e está errado — então não existe."""
+    texto = ledger([
+        ("Jan-24", "Poupança", "Documentos Veículos", "R$ 400.00", "x", "1", "2024", "F"),
+        ("Feb-24", "Resgate Poupança", "Resgate manutenção carro", "R$ 400.00", "x", "2", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    resultado = reservas(lancamentos, cfg)
+    assert [o["objetivo"] for o in resultado["objetivos"]] == ["Documentos Veículos"]
+    assert resultado["grupos"]["reserva"]["saldo"] == 0.0
+
+
+def test_saldo_da_reserva_e_acumulado_mes_a_mes(cfg):
+    texto = ledger([
+        ("Jan-24", "Poupança", "PS5", "R$ 300.00", "x", "1", "2024", "F"),
+        ("Feb-24", "Poupança", "PS5", "R$ 200.00", "x", "2", "2024", "F"),
+        ("Mar-24", "Resgate Poupança", "Resgate PS5", "R$ 500.00", "x", "3", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    assert reservas(lancamentos, cfg)["saldo_mensal"] == [
+        {"periodo": "2024-01", "saldo": 300.0},
+        {"periodo": "2024-02", "saldo": 500.0},
+        {"periodo": "2024-03", "saldo": 0.0},
+    ]
+
+
+def test_saldo_da_reserva_nao_pula_os_meses_parados(cfg):
+    """Saldo não some entre um depósito e o próximo: ele FICA.
+
+    Emitindo só os meses com movimento, o eixo punha fev/14 ao lado de jun/15
+    como se fossem consecutivos, e a linha desenhava uma subida suave onde
+    houve um ano de nada.
+    """
+    texto = ledger([
+        ("Jan-24", "Poupança", "Viagem", "R$ 100.00", "x", "1", "2024", "F"),
+        ("Apr-24", "Poupança", "Viagem", "R$ 50.00", "x", "4", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    assert reservas(lancamentos, cfg)["saldo_mensal"] == [
+        {"periodo": "2024-01", "saldo": 100.0},
+        {"periodo": "2024-02", "saldo": 100.0},
+        {"periodo": "2024-03", "saldo": 100.0},
+        {"periodo": "2024-04", "saldo": 150.0},
+    ]
+
+
+def test_saldo_da_reserva_atravessa_a_virada_de_ano(cfg):
+    texto = ledger([
+        ("Dec-23", "Poupança", "Viagem", "R$ 100.00", "x", "12", "2023", "F"),
+        ("Jan-24", "Poupança", "Viagem", "R$ 50.00", "x", "1", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    assert [p["periodo"] for p in reservas(lancamentos, cfg)["saldo_mensal"]] == [
+        "2023-12", "2024-01"]
+
+
+def test_separar_a_poupanca_nao_mexe_no_gasto_nem_no_fechamento(cfg):
+    """A separação é RÓTULO, não reclassificação: as três continuam
+    `carregamento`. Se mexesse no papel, o gasto total e a identidade do mês
+    mudariam — e é exatamente isso que não pode acontecer."""
+    texto = ledger([
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 5000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Luz", "R$ 200.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Poupança", "Transferido para o próximo mês", "R$ 4800.00", "x", "1", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    assert meses_que_nao_fecham(lancamentos) == []
+    assert analisar(texto, cfg)["resumo"]["total_gasto"] == 200.0
+
+
+def test_analise_devolve_as_reservas(cfg):
+    texto = ledger([
+        ("Jan-24", "Poupança", "Viagem", "R$ 700.00", "x", "1", "2024", "F"),
+    ])
+    assert analisar(texto, cfg)["reservas"]["objetivos"][0]["objetivo"] == "Viagem"
+
+
+# ---------------------------------------------------------------------------
+# Filtros: a leitura ao contrário
+# ---------------------------------------------------------------------------
+#
+# A pergunta "para onde vai o dinheiro" tem resposta única e inútil num
+# histórico com uma compra de imóvel de R$ 600 mil: vai para a casa. O que se
+# quer saber vem de TIRAR.
+
+def _com_um_outlier(cfg):
+    texto = ledger([
+        ("Jan-24", "Casa", "Pix para o vendedor", "R$ 600000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Luz", "R$ 200.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Alimentação", "Mercado", "R$ 300.00", "x", "1", "2024", "F"),
+        ("Feb-24", "Alimentação", "Feira", "R$ 100.00", "x", "2", "2024", "F"),
+    ])
+    return texto, read_ledger(texto, cfg)[0]
+
+
+def test_excluir_categoria_tira_ela_de_todas_as_contas(cfg):
+    texto, _ = _com_um_outlier(cfg)
+    assert analisar(texto, cfg)["resumo"]["total_gasto"] == 600600.0
+    sem_casa = analisar(texto, cfg, sem_categorias=["Casa"])
+    assert sem_casa["resumo"]["total_gasto"] == 400.0
+    assert [c["categoria"] for c in sem_casa["por_categoria"]] == ["Alimentação"]
+
+
+def test_excluir_categoria_ignora_acento_e_caixa(cfg):
+    """A lista vem da tela, mas nada garante a mesma grafia de sempre."""
+    texto, _ = _com_um_outlier(cfg)
+    assert analisar(texto, cfg, sem_categorias=["alimentacao"])[
+        "resumo"]["total_gasto"] == 600200.0
+
+
+def test_excluir_um_lancamento_avulso_tira_so_ele(cfg):
+    """O caso que a barra existe para resolver: a compra única sai, a categoria
+    fica. Sem isso, tirar o Pix de R$ 600 mil levaria a conta de luz junto."""
+    texto, lancamentos = _com_um_outlier(cfg)
+    alvo = next(identidade(l) for l in lancamentos if "vendedor" in l.descricao)
+    sem_pix = analisar(texto, cfg, sem_linhas=[alvo])
+    assert sem_pix["resumo"]["total_gasto"] == 600.0
+    casa = next(c for c in sem_pix["por_categoria"] if c["categoria"] == "Casa")
+    assert casa["total"] == 200.0, "a luz continua em Casa"
+
+
+def test_a_lista_oferecida_e_a_do_PERIODO_sem_as_exclusoes(cfg):
+    """Duas coisas que parecem detalhe e não são.
+
+    A lista sai do período na tela — oferecer uma compra de 2021 para excluir
+    num painel de 2026 não faz sentido. E ela ignora as exclusões em vigor: uma
+    categoria que some da lista quando você a exclui é uma que você não
+    consegue trazer de volta.
+    """
+    texto, _ = _com_um_outlier(cfg)
+    filtrado = analisar(texto, cfg, sem_categorias=["Casa"])
+    assert "Casa" in filtrado["disponiveis"]["categorias"]
+    assert any("vendedor" in l["descricao"]
+               for l in filtrado["disponiveis"]["lancamentos"])
+
+
+def test_os_maiores_lancamentos_vem_do_maior_para_o_menor(cfg):
+    texto, _ = _com_um_outlier(cfg)
+    valores = [l["valor"] for l in analisar(texto, cfg)["disponiveis"]["lancamentos"]]
+    assert valores == sorted(valores, reverse=True)
+    assert valores[0] == 600000.0
+
+
+def test_a_lista_de_exclusao_nao_oferece_receita(cfg):
+    """Remover o salário como "outlier" não conserta gráfico de gasto nenhum —
+    só produziria um mês que não fecha."""
+    texto = ledger([
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 90000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Luz", "R$ 200.00", "x", "1", "2024", "F"),
+    ])
+    oferecidos = analisar(texto, cfg)["disponiveis"]["lancamentos"]
+    assert [l["descricao"] for l in oferecidos] == ["Luz"]
+
+
+def test_filtro_que_tira_tudo_explica_em_vez_de_devolver_vazio(cfg):
+    texto, _ = _com_um_outlier(cfg)
+    with pytest.raises(AnalyticsError, match="os filtros tiraram tudo"):
+        analisar(texto, cfg, sem_categorias=["Casa", "Alimentação"])
+
+
+def test_identidade_distingue_lancamentos_parecidos(cfg):
+    """Mesma descrição, valores diferentes: excluir um não pode levar o outro."""
+    texto = ledger([
+        ("Jan-24", "Casa", "Obra", "R$ 100.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Obra", "R$ 900.00", "x", "1", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    ids = {identidade(l) for l in lancamentos}
+    assert len(ids) == 2
+    assert analisar(texto, cfg, sem_linhas=[
+        next(identidade(l) for l in lancamentos if l.valor == 900)
+    ])["resumo"]["total_gasto"] == 100.0
+
+
+def test_endpoint_aceita_os_filtros(client):
+    csv_bytes = ledger([
+        ("Jan-24", "Casa", "Luz", "R$ 200.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Alimentação", "Mercado", "R$ 300.00", "x", "1", "2024", "F"),
+    ]).encode()
+    resposta = client.post("/analytics",
+                           files={"file": ("all.csv", csv_bytes, "text/csv")},
+                           data={"sem_categorias": "Casa"})
+    assert resposta.status_code == 200
+    assert all(c["categoria"] != "Casa"
+               for c in resposta.json()["por_categoria"])
+
+
+def test_as_listas_do_form_separam_por_LINHA_nao_por_virgula(client):
+    """"Alimentação, bar" é um nome de categoria plausível. Separar por vírgula
+    transformaria uma exclusão em duas, e nenhuma delas existiria."""
+    csv_bytes = ledger([
+        ("Jan-24", "Casa", "Luz", "R$ 200.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Alimentação, bar", "Boteco", "R$ 80.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Lazer", "Cinema", "R$ 50.00", "x", "1", "2024", "F"),
+    ]).encode()
+    resposta = client.post("/analytics",
+                           files={"file": ("all.csv", csv_bytes, "text/csv")},
+                           data={"sem_categorias": "Casa\nAlimentação, bar"})
+    assert resposta.status_code == 200
+    assert [c["categoria"] for c in resposta.json()["por_categoria"]] == ["Lazer"]

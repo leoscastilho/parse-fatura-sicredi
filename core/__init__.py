@@ -20,7 +20,7 @@ from .statement import Entry, Statement, parse_amount, read_statement
 from .text import compact, merchant_key, merchant_of, normalize, purchase_date_of
 from .travel import (
     TRAVEL_CATEGORY, TravelError, TravelRange, annotate, apply_travel,
-    mark_travel, purchase_range, validate_ranges,
+    mark_travel, purchase_range, range_of, validate_ranges,
 )
 
 __all__ = [
@@ -31,5 +31,5 @@ __all__ = [
     "merchant_of", "normalize", "output_name", "parse_amount",
     "purchase_date_of", "read_statement", "sort_lines",
     "TRAVEL_CATEGORY", "TravelError", "TravelRange", "annotate", "apply_travel",
-    "mark_travel", "purchase_range", "validate_ranges",
+    "mark_travel", "purchase_range", "range_of", "validate_ranges",
 ]

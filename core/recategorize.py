@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from .pipeline import ClassifiedLine
+from .planilha import ANCORAS, ler_tabela, parse_valor, tabela_da_primeira_linha
 from .profiles import OutputSchema
 from .rules import LineState, Ruleset
 from .text import merchant_key, merchant_of, purchase_date_of
@@ -75,17 +76,42 @@ def read_output_csv(
     schema = schema or OutputSchema()
     texto = _decode(source)
 
-    reader = csv.DictReader(io.StringIO(texto))
-    if not reader.fieldnames:
+    # O arquivo pode vir direto do Sheets, com título acima do cabeçalho e uma
+    # coluna de margem à esquerda. É a MESMA limpeza que a aba de Análise faz
+    # (`core/planilha.py`), não uma segunda parecida: duas cópias divergiriam no
+    # dia em que a planilha ganhasse mais uma linha de enfeite, e aí uma aba
+    # aceitaria o arquivo e a outra não.
+    #
+    # A âncora inclui o nome que a coluna de categoria tem NESTE formato de
+    # saída: quem renomeou `Categoria` para `Classe` continua reprocessando os
+    # próprios arquivos. Sem âncora reconhecida, cai para "a primeira linha é o
+    # cabeçalho" — que é o formato de sempre, e deixa o erro seguinte dizer
+    # quais colunas faltam em vez de um genérico "não achei o cabeçalho".
+    tabela = (ler_tabela(texto, ANCORAS + (schema.coluna("categoria"),))
+              or tabela_da_primeira_linha(texto))
+    if tabela is None:
         raise RecategorizeError(f"{name}: arquivo vazio")
 
-    presentes = [c.strip() for c in reader.fieldnames]
+    presentes = [c.strip() for c in tabela.cabecalho]
     faltando = [c for c in schema.colunas if c not in presentes]
     if faltando:
         raise RecategorizeError(
             f"{name}: faltam as colunas {faltando}. "
             f"O arquivo tem {presentes} e o formato de saída espera {schema.colunas}"
         )
+
+    # Linha mais larga que o cabeçalho é coluna sem nome COM dado dentro, e
+    # reescrever o arquivo a perderia em silêncio — justamente o que este módulo
+    # promete não fazer. Melhor recusar e dizer em qual linha.
+    larga = next((i for i, l in enumerate(tabela.linhas) if len(l) > len(presentes)), None)
+    if larga is not None:
+        raise RecategorizeError(
+            f"{name}: a linha {tabela.linha_do_cabecalho + larga + 1} tem "
+            f"{len(tabela.linhas[larga])} colunas e o cabeçalho tem {len(presentes)}. "
+            "Exporte de novo com nome em todas as colunas — sem nome, elas se "
+            "perderiam no arquivo de volta.")
+
+    reader = tabela.dicionarios()
 
     # Os nomes vêm do formato de saída, não de constantes: quem renomeou a
     # coluna para `Item`/`Valor` na planilha continua conseguindo reprocessar.
@@ -103,13 +129,16 @@ def read_output_csv(
             continue
 
         bruto = (row.get(col_valor) or "").strip()
-        try:
-            valor = float(bruto.replace(",", ".") if bruto.count(",") == 1
-                          and "." not in bruto else bruto)
-        except ValueError:
+        # `parse_valor` é o mesmo leitor da aba de Análise: aceita tanto o
+        # `270.50` que este portal exporta quanto o `R$ 55,327.76` que a
+        # planilha formata, com o sinal antes ou depois do símbolo. A célula
+        # ORIGINAL continua indo para `origem_row` — o número aqui é só para
+        # somar e exibir, e o arquivo de volta leva a formatação que entrou.
+        valor = parse_valor(bruto)
+        if valor is None:
             raise RecategorizeError(
-                f"{name}: linha {numero + 2}, valor ilegível: {bruto!r}. "
-                "Esperado número com ponto decimal, como este portal exporta."
+                f"{name}: linha {tabela.linha_do_cabecalho + numero + 1}, "
+                f"valor ilegível: {bruto!r}."
             )
 
         data = (row.get(col_data) or "").strip()

@@ -1,9 +1,12 @@
 import { useRef, useState } from 'react'
 import * as api from '../api'
+import { gravarFiltros, lerFiltros } from '../filtrosSalvos'
 import {
-  BarrasEmpilhadas, BarrasH, DIVERGENTE, Heatmap, LineChart, SERIES, TabelaDados,
-  brlExato, eixoContinuo, rotuloPeriodo,
+  BarrasEmpilhadas, BarrasH, DIVERGENTE, Heatmap, Legenda, LineChart, SERIES,
+  TabelaDados, brlExato, eixoContinuo, rotuloPeriodo,
 } from './charts'
+import FiltrosLaterais from './FiltrosLaterais'
+import Reservas from './Reservas'
 import Residuos from './Residuos'
 
 const PRESETS = [
@@ -69,19 +72,50 @@ export default function AnalyticsView({ onError }) {
   // gráficos do período — e eles não bateriam.
   const [arquivo, setArquivo] = useState(null)
   const [preset, setPreset] = useState('tudo')
+  // Exclusões da barra lateral. Viajam para o servidor junto com o recorte,
+  // pelo mesmo motivo: o que importa é o número recalculado, não o fatiado.
+  // Nascem do que ficou salvo no navegador — a identidade do lançamento é de
+  // conteúdo, então reordenar a planilha não invalida nada (ver filtrosSalvos).
+  const salvos = useRef(lerFiltros())
+  const [semCategorias, setSemCategorias] = useState(salvos.current.semCategorias)
+  const [semLinhas, setSemLinhas] = useState(salvos.current.semLinhas)
+  const [rotulos, setRotulos] = useState(salvos.current.rotulos)
   const [excluidas, setExcluidas] = useState([])
   const [composicao, setComposicao] = useState(null)   // null = decide sozinho
+  const [porAnoNaSazonalidade, setPorAnoNaSazonalidade] = useState(true)
+  // Séries escondidas no gráfico de tendência. É só olhar: não muda número
+  // nenhum e não vai para o servidor, ao contrário dos filtros da barra.
+  const [ocultas, setOcultas] = useState([])
   const inputRef = useRef(null)
 
-  async function enviar(novoArquivo, intervalo = {}, novoPreset) {
+  async function enviar(novoArquivo, filtro = {}, novoPreset,
+                        { podeDesistirDosFiltros = false, rotulos: agora } = {}) {
     if (!novoArquivo) return
     setBusy(true)
     try {
-      const resposta = await api.analytics(novoArquivo, intervalo)
+      const resposta = await api.analytics(novoArquivo, filtro)
       setDados(resposta)
       setArquivo(novoArquivo)
+      setSemCategorias(filtro.semCategorias || [])
+      setSemLinhas(filtro.semLinhas || [])
+      // Os rótulos vêm por PARÂMETRO, não do estado: `setRotulos` só vale no
+      // próximo render, e ler o estado aqui gravaria o mapa de antes do clique
+      // — o cache ficava sempre um passo atrás e, na prática, vazio.
+      gravarFiltros({ semCategorias: filtro.semCategorias || [],
+                      semLinhas: filtro.semLinhas || [], rotulos: agora || rotulos })
       if (novoPreset) setPreset(novoPreset)
     } catch (e) {
+      // Filtro salvo de OUTRA planilha pode não casar com esta e derrubar o
+      // primeiro carregamento — e aí a aba parece quebrada, quando o problema é
+      // uma preferência velha. Tenta de novo limpo e diz o que aconteceu, em
+      // vez de deixar a dropzone recusando o arquivo para sempre.
+      if (podeDesistirDosFiltros
+          && ((filtro.semCategorias || []).length || (filtro.semLinhas || []).length)) {
+        onError(`${e.message} — os filtros salvos não valem para este arquivo,`
+                + ' então abri sem eles.')
+        return enviar(novoArquivo, { ...filtro, semCategorias: [], semLinhas: [] },
+                      novoPreset)
+      }
       // Recorte vazio devolve 400 com o texto do que o arquivo cobre. Manter os
       // dados anteriores é o que impede a tela de virar dropzone de novo e
       // obrigar a subir o arquivo outra vez por causa de um clique.
@@ -91,15 +125,36 @@ export default function AnalyticsView({ onError }) {
     }
   }
 
+  // Toda mudança de filtro reenvia o lote inteiro: recorte + exclusões. Mandar
+  // só o que mudou faria o servidor recalcular sobre um estado que a tela não
+  // tem — e os dois se desencontrariam no primeiro erro.
+  const filtroAtual = () => ({
+    inicio: dados?.filtro?.inicio || '', fim: dados?.filtro?.fim || '',
+    semCategorias, semLinhas,
+  })
+
   function escolherPeriodo(inicio, fim, id) {
-    enviar(arquivo, { inicio, fim }, id)
+    enviar(arquivo, { ...filtroAtual(), inicio, fim }, id)
+  }
+
+  function aplicarFiltros({ semCategorias: cats, semLinhas: linhas, rotulos: novos }) {
+    // O rótulo é cache de exibição: sem ele, um lançamento excluído que caiu
+    // fora do período em vigor não teria como aparecer na barra — e filtro que
+    // não dá para ver é filtro que não dá para desfazer.
+    const mesclados = novos ? { ...rotulos, ...novos } : rotulos
+    if (novos) setRotulos(mesclados)
+    enviar(arquivo, { ...filtroAtual(), semCategorias: cats, semLinhas: linhas },
+           undefined, { rotulos: mesclados })
   }
 
   function novoArquivo(f) {
     setPreset('tudo')
     setExcluidas([])
     setComposicao(null)
-    enviar(f)
+    // Os filtros salvos valem para o arquivo novo: as identidades são de
+    // conteúdo, então reexportar a mesma planilha mantém todas elas.
+    enviar(f, { semCategorias, semLinhas }, undefined,
+           { podeDesistirDosFiltros: true })
   }
 
   if (!dados) {
@@ -199,10 +254,36 @@ export default function AnalyticsView({ onError }) {
   const picosNaComposicao = modoComposicao === 'mes' && !comPicos
     && categoria_por_periodo.periodos.length !== composicaoSerie.length
 
+  // --- tendência por categoria ----------------------------------------------
+  //
+  // A COR SAI DO ÍNDICE ORIGINAL da categoria, não da posição entre as
+  // visíveis. É a regra que impede a legenda de virar um jogo de memória:
+  // esconder "Casa" não pode repintar Construção de azul.
+  const tendencia = (() => {
+    const nomes = categoria_por_periodo.categorias
+    const series = nomes.map((nome, i) => ({
+      chave: `c${i}`, rotulo: nome || '(sem categoria)', cor: SERIES[i % SERIES.length],
+    }))
+    const pontos = eixoContinuo(categoria_por_periodo.periodos.map((p) => {
+      const ponto = { periodo: p.periodo }
+      p.valores.forEach((v, i) => { ponto[`c${i}`] = v })
+      return ponto
+    }))
+    return {
+      pontos,
+      legenda: series.map((s) => ({ rotulo: s.rotulo, cor: s.cor })),
+      visiveis: series.filter((s) => !ocultas.includes(s.rotulo)),
+    }
+  })()
+
   return (
     <>
       <BarraDePeriodo disponivel={intervalo_disponivel} filtro={dados.filtro}
                       preset={preset} busy={busy} aoEscolher={escolherPeriodo} />
+
+      <FiltrosLaterais disponiveis={dados.disponiveis} busy={busy}
+                       semCategorias={semCategorias} semLinhas={semLinhas}
+                       rotulos={rotulos} aoAplicar={aplicarFiltros} />
 
       {/* 1. Dá para confiar nestes números? Vem antes de qualquer gráfico —
              ler um painel sem saber o que está faltando é pior que não ler. */}
@@ -395,12 +476,73 @@ export default function AnalyticsView({ onError }) {
         )}
       </section>
 
+      {/* Tendência: a mesma pergunta da composição, mas ao longo do tempo em
+          vez de empilhada. Empilhado responde "quanto foi o mês"; sobreposto
+          responde "esta categoria está subindo?", que é o que não dava para
+          ver. Clicar na legenda esconde a série — sem isso, uma categoria dez
+          vezes maior que as outras achata todas contra o chão. */}
+      {tendencia.pontos.length > 1 && (
+        <section className="card">
+          <div className="toolbar">
+            <h2 className="grow" style={{ margin: 0 }}>Tendência por categoria</h2>
+            {ocultas.length > 0 && (
+              <button className="ghost" onClick={() => setOcultas([])}>
+                Mostrar as {ocultas.length} escondidas
+              </button>
+            )}
+          </div>
+          <p className="muted small">
+            Gasto de cada categoria, mês a mês, no período escolhido. Clique na
+            legenda para esconder uma — as que ficam mantêm a cor, então a
+            legenda não precisa ser relida a cada clique.
+          </p>
+
+          {tabela ? (
+            <TabelaDados
+              colunas={['Mês', ...tendencia.visiveis.map((s) => s.rotulo)]}
+              linhas={tendencia.pontos.map((p) => [
+                rotuloPeriodo(p.periodo),
+                ...tendencia.visiveis.map((s) => p[s.chave] ?? 0),
+              ])} />
+          ) : tendencia.visiveis.length === 0 ? (
+            <p className="muted">
+              Todas escondidas — clique numa da legenda para trazê-la de volta.
+            </p>
+          ) : (
+            <LineChart pontos={tendencia.pontos} series={tendencia.visiveis} />
+          )}
+
+          <Legenda itens={tendencia.legenda} ocultas={ocultas}
+                   aoClicar={(rotulo) => setOcultas((atuais) =>
+                     atuais.includes(rotulo)
+                       ? atuais.filter((c) => c !== rotulo)
+                       : [...atuais, rotulo])} />
+          <p className="muted small">
+            As {categoria_por_periodo.categorias.length} maiores categorias do
+            período; o resto entra em “Outras”. Os filtros da barra lateral
+            valem aqui como em todo o resto — esconder na legenda é só para
+            olhar, e não muda número nenhum.
+          </p>
+        </section>
+      )}
+
       <section className="card">
-        <h2>Sazonalidade</h2>
+        <div className="toolbar">
+          <h2 className="grow" style={{ margin: 0 }}>Sazonalidade</h2>
+          {/* Ligado por padrão: com a régua única, 2012 a 2024 ficam todos
+              abaixo de 10% do máximo e o mapa responde "os anos recentes são
+              mais caros" — que já se sabia — em vez de "dezembro é caro". */}
+          <label className="checkbox">
+            <input type="checkbox" checked={porAnoNaSazonalidade}
+                   onChange={(e) => setPorAnoNaSazonalidade(e.target.checked)} />
+            Comparar dentro de cada ano
+          </label>
+        </div>
         <p className="muted small">
           Gasto de cada mês, ano a ano. Quanto mais escuro, mais caro.
         </p>
-        <Heatmap anos={sazonalidade.anos} celulas={sazonalidade.celulas} />
+        <Heatmap anos={sazonalidade.anos} celulas={sazonalidade.celulas}
+                 normalizar={porAnoNaSazonalidade} />
       </section>
 
       <section className="card">
@@ -508,7 +650,12 @@ export default function AnalyticsView({ onError }) {
         </section>
       )}
 
-      {/* 6. O que não fecha — por último, porque é trabalho de correção, não
+      {/* 6. O dinheiro que só muda de lugar. Fica depois do gasto porque não é
+             gasto — mas antes dos resíduos porque é o que explica boa parte
+             deles: o carry é justamente o mecanismo que faz o mês fechar. */}
+      <Reservas reservas={dados.reservas} totalInvestido={resumo.total_investido} />
+
+      {/* 7. O que não fecha — por último, porque é trabalho de correção, não
              leitura. Mas com painel próprio: enfiado numa linha do alerta de
              saúde, "69 meses não fecham" não dizia nem quais nem quanto. */}
       <Residuos saude={saude} />

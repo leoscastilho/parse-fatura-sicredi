@@ -44,6 +44,17 @@ export function upload(files, banco = '', vencimento = '') {
   return json('/upload', { method: 'POST', body: form })
 }
 
+// Pré-voo: de quando a quando vão as COMPRAS deste lote, e nada além disso.
+// Não abre transação e não grava nada — serve para a pergunta "viajou neste
+// período?" poder nomear as datas antes do processamento.
+export function uploadPeriodo(files, banco = '', vencimento = '') {
+  const form = new FormData()
+  for (const file of files) form.append('files', file)
+  form.append('banco', banco)
+  form.append('vencimento', vencimento)
+  return json('/upload/periodo', { method: 'POST', body: form })
+}
+
 // Recategorizar CSVs que já saíram daqui: mesma revisão, origem diferente.
 export function recategorize(files) {
   const form = new FormData()
@@ -54,14 +65,21 @@ export function recategorize(files) {
 // --- análise do histórico ---------------------------------------------------
 
 // Sem transaction_id: é leitura pura, nada fica guardado do outro lado.
-export function analytics(file, { inicio = '', fim = '' } = {}) {
+export function analytics(file, {
+  inicio = '', fim = '', semCategorias = [], semLinhas = [],
+} = {}) {
   const form = new FormData()
   form.append('file', file)
-  // O recorte vai para o servidor porque TODA métrica é recalculada sobre ele.
-  // Filtrar no cliente, depois de agregar, daria média mensal e custo fixo do
-  // arquivo inteiro ao lado de gráficos do período — números que não batem.
+  // Recorte e exclusões vão para o servidor porque TODA métrica é recalculada
+  // sobre eles. Filtrar no cliente, depois de agregar, daria média mensal e
+  // custo fixo do arquivo inteiro ao lado de gráficos do período — números que
+  // não batem.
   form.append('inicio', inicio)
   form.append('fim', fim)
+  // Uma por linha, não separadas por vírgula: nome de categoria e descrição de
+  // lançamento têm vírgula com frequência, e o separador não pode estar no dado.
+  form.append('sem_categorias', semCategorias.join('\n'))
+  form.append('sem_linhas', semLinhas.join('\n'))
   return json('/analytics', { method: 'POST', body: form })
 }
 

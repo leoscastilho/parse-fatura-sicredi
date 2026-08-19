@@ -97,6 +97,15 @@ export function ChangesSummary({ session, getAssignment, setAssignment,
   const [aberto, setAberto] = useState(true)
   const mudancas = session.changes || []
 
+  // Agrupadas pela categoria de DESTINO, que é como a decisão acontece: "tudo
+  // que virou Casa está certo, tudo que virou Lazer eu quero conferir". Na
+  // ordem do arquivo, as 618 mudanças de um histórico inteiro chegam
+  // embaralhadas e obrigam a reavaliar a mesma pergunta a cada linha.
+  // Desempate pelo maior valor: dentro da mesma categoria, o que pesa vem antes.
+  const ordenadas = [...mudancas].sort((a, b) =>
+    (a.para || '').localeCompare(b.para || '', 'pt-BR')
+    || Math.abs(b.valor) - Math.abs(a.valor))
+
   // Recusada = há uma atribuição de linha devolvendo a categoria de origem.
   const recusada = (m) => getAssignment('line', m.line_id)?.categoria === m.de
   const aceitas = mudancas.filter((m) => !recusada(m))
@@ -170,14 +179,26 @@ export function ChangesSummary({ session, getAssignment, setAssignment,
                   </tr>
                 </thead>
                 <tbody>
-                  {mudancas.map((m) => {
+                  {ordenadas.map((m, i) => {
                     const fora = recusada(m)
+                    // Primeira linha de cada categoria de destino ganha um
+                    // filete: é o que faz o agrupamento ser visto sem ler.
+                    const abreGrupo = i === 0 || ordenadas[i - 1].para !== m.para
                     return (
-                      <tr key={m.line_id} className={fora ? 'blank' : ''}>
+                      <tr key={m.line_id}
+                          className={`clicavel ${fora ? 'blank' : ''} ${abreGrupo ? 'abre-grupo' : ''}`}
+                          // A linha inteira é o alvo. Mirar num quadradinho de
+                          // 13px, 618 vezes, é trabalho que a tela criou e não
+                          // devolve nada — e o checkbox continua lá para quem
+                          // navega por teclado.
+                          onClick={() => alternar(m)}>
                         <td>
                           <input type="checkbox" checked={!fora}
                                  aria-label={`Aplicar em ${m.descricao}`}
-                                 onChange={() => alternar(m)} />
+                                 onChange={() => alternar(m)}
+                                 // Sem isto o clique no checkbox conta duas
+                                 // vezes — nele e na linha — e nada muda.
+                                 onClick={(e) => e.stopPropagation()} />
                         </td>
                         <td>{m.descricao}</td>
                         <td className="right money">{brl(m.valor)}</td>

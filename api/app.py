@@ -37,6 +37,7 @@ from core.analytics import AnalyticsConfig, AnalyticsError, analisar
 from core.recategorize import RecategorizeError
 from core.travel import (
     TravelError, TravelRange, apply_travel, mark_travel, purchase_range,
+    range_of,
     validate_ranges,
 )
 from core.text import compact, normalize
@@ -60,6 +61,7 @@ from .models import (
     PreviewRequest,
     PreviewResponse,
     PurchaseRange,
+    PurchaseRangeResponse,
     StatementSummary,
     TravelRangeItem,
     TravelRequest,
@@ -228,7 +230,8 @@ def _apply_assignments(
 
 
 def _apply_travel(
-    lines: list[ClassifiedLine], rejected: list[str] | set[str]
+    lines: list[ClassifiedLine], rejected: list[str] | set[str],
+    ranges: list[TravelRange] | None = None,
 ) -> list[ClassifiedLine]:
     """Converte em `Viagem` as linhas confirmadas, guardando a categoria real.
 
@@ -236,14 +239,22 @@ def _apply_travel(
     o parêntese é a final, já com as decisões do marketplace e as correções
     manuais aplicadas. Rodar antes gravaria a categoria da regra e perderia
     exatamente o que o usuário acabou de resolver.
+
+    O nome do período é resolvido aqui, redescobrindo qual janela pegou cada
+    linha, em vez de ser gravado em `lines_json` no upload. É a mesma razão de
+    `_lines_of` não gravar a marca de viagem: renomear um período passa a ser só
+    reenviar a lista, sem migrar linha nenhuma.
     """
     rejeitadas = set(rejected)
+    periodos = ranges or []
     saida: list[ClassifiedLine] = []
     for line in lines:
         if not line.viagem or line.line_id in rejeitadas:
             saida.append(line)
             continue
-        categoria, descricao = apply_travel(line, line.categoria)
+        periodo = range_of(line, periodos)
+        categoria, descricao = apply_travel(
+            line, line.categoria, periodo.rotulo if periodo else "")
         saida.append(replace(line, categoria=categoria, descricao=descricao))
     return saida
 
@@ -307,6 +318,51 @@ def _purchase_range(lines: list[ClassifiedLine]) -> PurchaseRange | None:
     return PurchaseRange(inicio=inicio.isoformat(), fim=fim.isoformat())
 
 
+def _linhas_do_form(bruto: str) -> list[str]:
+    """Uma lista que veio num campo de formulário, uma entrada por linha."""
+    return [item for item in (l.strip() for l in (bruto or "").splitlines()) if item]
+
+
+def _vencimento(bruto: str, profile) -> datetime | None:
+    if bruto.strip():
+        try:
+            return datetime.strptime(bruto.strip(), "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(422, detail="vencimento deve ser AAAA-MM-DD")
+    if profile.pede_vencimento:
+        raise HTTPException(
+            422,
+            detail=f"{profile.nome} não traz a data de vencimento no arquivo — "
+                   "informe a data no upload")
+    return None
+
+
+async def _fontes(files: list[UploadFile], profile,
+                  settings: Settings) -> list[tuple[str, io.BytesIO]]:
+    """Lê os arquivos para memória, validando extensão e tamanho.
+
+    Extraído porque `/upload` e `/upload/periodo` precisam ler o MESMO lote com
+    as mesmas regras. Duas cópias divergiriam no dia em que uma ganhasse um
+    limite novo, e o portal passaria a aceitar no pré-voo o que rejeita no
+    processamento — ou pior, o contrário.
+    """
+    if len(files) > settings.max_files_per_upload:
+        raise HTTPException(413, detail=f"máximo {settings.max_files_per_upload} arquivos")
+
+    fontes = []
+    for upload_file in files:
+        if not profile.accepts(upload_file.filename):
+            raise HTTPException(
+                415,
+                detail=f"{upload_file.filename}: {profile.nome} espera "
+                       f"{', '.join(profile.extensoes)}")
+        blob = await upload_file.read()
+        if len(blob) > settings.max_upload_bytes:
+            raise HTTPException(413, detail=f"{upload_file.filename} excede o limite")
+        fontes.append((upload_file.filename, io.BytesIO(blob)))
+    return fontes
+
+
 def _period_of(record: dict) -> str:
     periods = sorted({s["due_date"][:7] for s in record["statements"]})
     if not periods:
@@ -361,9 +417,6 @@ async def upload(
     store: Store = Depends(get_store),
 ) -> UploadResponse:
     """Lê os extratos com o perfil do banco e abre a transação."""
-    if len(files) > settings.max_files_per_upload:
-        raise HTTPException(413, detail=f"máximo {settings.max_files_per_upload} arquivos")
-
     cfg = load_config(settings)
     try:
         profile = cfg.bank(banco or None)
@@ -374,34 +427,15 @@ async def upload(
     yaml_sha = GitHubSync(settings).current_sha() if settings.github_enabled else None
     rules = Ruleset.from_text(text)
 
-    due = None
-    if vencimento.strip():
-        try:
-            due = datetime.strptime(vencimento.strip(), "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(422, detail="vencimento deve ser AAAA-MM-DD")
-    elif profile.pede_vencimento:
-        raise HTTPException(
-            422,
-            detail=f"{profile.nome} não traz a data de vencimento no arquivo — "
-                   "informe a data no upload")
+    due = _vencimento(vencimento, profile)
 
-    sources, warnings = [], []
+    warnings = []
     if not profile.validado:
         warnings.append(
             f"O perfil de {profile.nome} ainda não foi validado contra uma fatura real. "
             "Confira os totais antes de colar na planilha.")
 
-    for upload_file in files:
-        if not profile.accepts(upload_file.filename):
-            raise HTTPException(
-                415,
-                detail=f"{upload_file.filename}: {profile.nome} espera "
-                       f"{', '.join(profile.extensoes)}")
-        blob = await upload_file.read()
-        if len(blob) > settings.max_upload_bytes:
-            raise HTTPException(413, detail=f"{upload_file.filename} excede o limite")
-        sources.append((upload_file.filename, io.BytesIO(blob)))
+    sources = await _fontes(files, profile, settings)
 
     try:
         lines, dropped, statements = classify_sources(
@@ -455,6 +489,51 @@ async def upload(
         warnings=warnings,
         purchase_range=_purchase_range(lines),
     )
+
+
+# ---------------------------------------------------------------------------
+# 2a. POST /upload/periodo — pré-voo
+# ---------------------------------------------------------------------------
+
+@app.post("/upload/periodo", response_model=PurchaseRangeResponse)
+async def upload_periodo(
+    files: list[UploadFile] = File(..., description="extrato do banco escolhido"),
+    banco: str = Form(""),
+    vencimento: str = Form(""),
+    settings: Settings = Depends(get_settings),
+) -> PurchaseRangeResponse:
+    """De quando a quando vão as COMPRAS deste lote — e nada além disso.
+
+    Existe para a pergunta "viajou neste período?" poder nomear as datas antes
+    do processamento. Sem isto, os seletores de data da tela de upload ficam
+    soltos: dá para escolher uma viagem em 2019 num lote que cobre julho de
+    2026, e o erro só aparece do outro lado.
+
+    É uma LEITURA, não uma transação: nada vai para o SQLite, nada é gravado,
+    não há `transaction_id` para expirar. Roda a mesma `classify_sources` do
+    /upload de propósito — um caminho paralelo mais barato acabaria devolvendo
+    uma data que o processamento depois contradiz, que é pior do que não ter
+    data nenhuma.
+    """
+    cfg = load_config(settings)
+    try:
+        profile = cfg.bank(banco or None)
+    except Exception as exc:
+        raise HTTPException(422, detail=str(exc))
+
+    # O vencimento pode não ter sido preenchido ainda: aqui ele não faz falta,
+    # porque a data comparada é a da COMPRA, não a do vencimento da fatura.
+    due = _vencimento(vencimento, profile) if vencimento.strip() else None
+    sources = await _fontes(files, profile, settings)
+
+    try:
+        lines, _, _ = classify_sources(
+            sources, Ruleset.from_text(cfg.categories_text),
+            profile=profile, schema=cfg.output, due_date=due)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc))
+
+    return PurchaseRangeResponse(purchase_range=_purchase_range(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +627,8 @@ async def analytics(
     file: UploadFile = File(..., description="CSV com o histórico completo"),
     inicio: str = Form("", description="AAAA-MM, inclusivo"),
     fim: str = Form("", description="AAAA-MM, inclusivo"),
+    sem_categorias: str = Form("", description="categorias a excluir, uma por linha"),
+    sem_linhas: str = Form("", description="ids de lançamento a excluir, um por linha"),
     settings: Settings = Depends(get_settings),
 ) -> dict:
     """Analisa um histórico inteiro e devolve tudo já agregado.
@@ -577,8 +658,13 @@ async def analytics(
         # depois de agregar daria totais que não batem com os gráficos: média
         # mensal, custo fixo e anomalias precisam ser recalculados sobre o
         # período escolhido, não fatiados a posteriori.
+        # As listas viajam separadas por quebra de linha, não por vírgula: nome
+        # de categoria e descrição de lançamento têm vírgula com frequência
+        # ("Alimentação, bar"), e o separador não pode aparecer no dado.
         resultado = analisar(blob.decode("utf-8-sig", errors="replace"), cfg,
-                             inicio=inicio.strip() or None, fim=fim.strip() or None)
+                             inicio=inicio.strip() or None, fim=fim.strip() or None,
+                             sem_categorias=_linhas_do_form(sem_categorias),
+                             sem_linhas=_linhas_do_form(sem_linhas))
     except AnalyticsError as exc:
         raise HTTPException(422, detail=str(exc))
 
@@ -847,7 +933,7 @@ def preview(payload: PreviewRequest, store: Store = Depends(get_store)) -> Previ
     resolvidas = _apply_assignments(_lines_of(record), payload.assignments)
     # A viagem entra por ÚLTIMO: a categoria que vai para o parêntese é a
     # final, já com marketplace e correções manuais resolvidos.
-    resolvidas = _apply_travel(resolvidas, payload.travel_rejected)
+    resolvidas = _apply_travel(resolvidas, payload.travel_rejected, _ranges_of(record))
     # Recategorização não reordena: o compromisso é que só a coluna Categoria
     # mude em relação ao arquivo de entrada.
     resolved = (resolvidas if record["modo"] == "recategorizacao"
@@ -890,7 +976,8 @@ def export(
         else record["travel_rejected"]
     )
     resolved = _apply_travel(
-        _apply_assignments(_lines_of(record), assignments), rejected)
+        _apply_assignments(_lines_of(record), assignments), rejected,
+        _ranges_of(record))
     cfg = load_config(settings)
     blob = (lines_to_csv_preserving_order(resolved, schema=cfg.output,
                                           encoding=payload.encoding)

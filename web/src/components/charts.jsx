@@ -203,9 +203,12 @@ export function LineChart({ pontos, series, altura = 240, formato = brlCompacto 
                 fontSize="11" fill={MUTED}>{rotuloPeriodo(p.periodo)}</text>
         ))}
 
+        {/* `s.cor` quando vier: a cor tem que seguir a ENTIDADE, não a posição
+            na lista. Esconder uma série no gráfico de tendência repintaria
+            todas as outras se a cor saísse do índice do array. */}
         {series.map((s, si) => (
           <path key={s.chave} d={caminho(s.chave)} fill="none"
-                stroke={SERIES[si]} strokeWidth="2"
+                stroke={s.cor || SERIES[si]} strokeWidth="2"
                 strokeLinejoin="round" strokeLinecap="round" />
         ))}
 
@@ -218,16 +221,16 @@ export function LineChart({ pontos, series, altura = 240, formato = brlCompacto 
                 onMouseEnter={(e) => setTip({
                   x: e.nativeEvent.offsetX + 12, y: e.nativeEvent.offsetY - 8,
                   titulo: rotuloPeriodo(p.periodo),
-                  linhas: series.filter((s) => p[s.chave] != null).map((s, si) => ({
+                  linhas: series.filter((s) => p[s.chave] != null).map((s) => ({
                     rotulo: s.rotulo, valor: brlExato(p[s.chave]),
-                    cor: SERIES[series.indexOf(s)],
+                    cor: s.cor || SERIES[series.indexOf(s)],
                   })),
                 })}
                 onMouseLeave={() => setTip(null)} />
         ))}
         {series.map((s, si) => pontos.map((p, i) => p[s.chave] != null && (
           <circle key={`${s.chave}-${i}`} cx={x(i)} cy={y(p[s.chave])} r="2.5"
-                  fill={SERIES[si]} />
+                  fill={s.cor || SERIES[si]} />
         )))}
       </svg>
       <Tooltip dados={tip} />
@@ -407,7 +410,7 @@ export function BarrasEmpilhadas({ periodos, categorias, altura = 260,
  */
 const RAMPA = ['#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#256abf', '#184f95', '#0d366b']
 
-export function Heatmap({ anos, celulas, altura = 30 }) {
+export function Heatmap({ anos, celulas, altura = 30, normalizar = false }) {
   const [tip, setTip] = useState(null)
   const mapa = new Map(celulas.map((c) => [`${c.ano}-${c.mes}`, c.total]))
 
@@ -418,9 +421,28 @@ export function Heatmap({ anos, celulas, altura = 30 }) {
     ? Array.from({ length: anos[anos.length - 1] - anos[0] + 1 },
                  (_, i) => anos[0] + i)
     : []
-  const maximo = Math.max(...celulas.map((c) => c.total), 1)
-  const tom = (v) => RAMPA[Math.min(RAMPA.length - 1,
-                                    Math.floor((v / maximo) ** 0.5 * RAMPA.length))]
+  /**
+   * Contra o que cada célula é comparada.
+   *
+   * `normalizar` troca a régua do mapa inteiro pela régua DO ANO. Num histórico
+   * em que o gasto cresceu dez vezes, a régua única não mostra sazonalidade
+   * nenhuma: 2012 a 2024 ficam todos abaixo de 10% do máximo — o mapa vira "os
+   * anos recentes são mais caros", que já se sabia, e a pergunta de dezembro
+   * contra julho fica sem resposta.
+   *
+   * O preço é que a MESMA cor passa a significar dinheiro diferente em linhas
+   * diferentes, e isso não pode ficar implícito: o rodapé diz, e o tooltip
+   * continua mostrando o valor absoluto.
+   */
+  const maximoGlobal = Math.max(...celulas.map((c) => c.total), 1)
+  const maximoDoAno = new Map()
+  for (const c of celulas) {
+    maximoDoAno.set(c.ano, Math.max(maximoDoAno.get(c.ano) || 0, c.total))
+  }
+  const regua = (ano) =>
+    (normalizar ? maximoDoAno.get(ano) || maximoGlobal : maximoGlobal) || 1
+  const tom = (v, ano) => RAMPA[Math.min(RAMPA.length - 1,
+                                         Math.floor((v / regua(ano)) ** 0.5 * RAMPA.length))]
 
   return (
     <div className="viz-wrap">
@@ -436,7 +458,8 @@ export function Heatmap({ anos, celulas, altura = 30 }) {
               const v = mapa.get(`${ano}-${i + 1}`)
               return (
                 <span key={i} className={`viz-heat-cel ${v == null ? 'vazia' : ''}`}
-                      style={{ background: v == null ? undefined : tom(v), height: altura }}
+                      style={{ background: v == null ? undefined : tom(v, ano),
+                               height: altura }}
                       onMouseEnter={(e) => v != null && setTip({
                         x: e.nativeEvent.offsetX + 12, y: e.nativeEvent.offsetY - 8,
                         titulo: `${MES_CURTO[i]}/${ano}`,
@@ -451,22 +474,55 @@ export function Heatmap({ anos, celulas, altura = 30 }) {
       </div>
       <Tooltip dados={tip} />
       <p className="muted small">
-        Célula vazia = mês sem lançamento nenhum, que é diferente de mês com
+        {normalizar
+          ? <>Cada ano tem a <strong>própria régua</strong>: o mês mais escuro é
+             o mais caro <em>daquele ano</em>, então a mesma cor em linhas
+             diferentes não é o mesmo dinheiro. Passe o mouse para o valor.</>
+          : <>Régua única para o mapa inteiro: a mesma cor é o mesmo dinheiro em
+             qualquer linha.</>}
+        {' '}Célula vazia = mês sem lançamento nenhum, que é diferente de mês com
         gasto zero.
       </p>
     </div>
   )
 }
 
-export function Legenda({ itens }) {
+/**
+ * Legenda. Com `aoClicar`, cada item vira botão e some do gráfico.
+ *
+ * A cor do item NÃO sai da posição na lista: ela vem junto com o item. É o que
+ * garante que esconder "Casa" não repinte todas as outras — cor que troca de
+ * dono a cada clique obriga a reler a legenda a cada clique.
+ */
+export function Legenda({ itens, aoClicar, ocultas = [] }) {
+  if (!aoClicar) {
+    return (
+      <div className="viz-legenda">
+        {itens.map((i) => (
+          <span key={i.rotulo}>
+            <span className="viz-dot" style={{ background: i.cor }} />
+            {i.rotulo}
+          </span>
+        ))}
+      </div>
+    )
+  }
   return (
     <div className="viz-legenda">
-      {itens.map((i) => (
-        <span key={i.rotulo}>
-          <span className="viz-dot" style={{ background: i.cor }} />
-          {i.rotulo}
-        </span>
-      ))}
+      {itens.map((i) => {
+        const oculta = ocultas.includes(i.rotulo)
+        return (
+          <button key={i.rotulo} type="button"
+                  className={`viz-legenda-item ${oculta ? 'oculta' : ''}`}
+                  aria-pressed={!oculta}
+                  onClick={() => aoClicar(i.rotulo)}>
+            <span className="viz-dot"
+                  style={{ background: oculta ? 'transparent' : i.cor,
+                           boxShadow: `inset 0 0 0 2px ${i.cor}` }} />
+            {i.rotulo}
+          </button>
+        )
+      })}
     </div>
   )
 }

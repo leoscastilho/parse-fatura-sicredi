@@ -68,12 +68,51 @@ def test_recusa_arquivo_sem_as_colunas_do_formato(tmp_path, config_dir):
         read_output_csv(ruim, name="outro.csv", schema=cfg.output)
 
 
+def test_aceita_o_numero_como_a_planilha_formata(tmp_path, config_dir):
+    """`R$ 55,327.76` e `1.234,56` entram — é assim que o Sheets exporta.
+
+    Antes só passava o `270.50` que este portal escreve, e o arquivo baixado da
+    própria planilha era recusado por causa do símbolo da moeda. O leitor de
+    valor agora é o MESMO da aba de Análise.
+    """
+    cfg = ConfigSet.load(config_dir)
+    arquivo = tmp_path / "planilha.csv"
+    arquivo.write_text(csv_de_saida_texto(cfg.output, [
+        {"data": "08/10/2026", "categoria": "Casa",
+         "descricao": "[Cartão] A {Em 1/Jul}", "valor": "R$ 55,327.76"},
+        {"data": "08/10/2026", "categoria": "Casa",
+         "descricao": "[Cartão] B {Em 1/Jul}", "valor": "1.234,56"},
+        {"data": "08/10/2026", "categoria": "Casa",
+         "descricao": "[Cartão] C {Em 1/Jul}", "valor": "-R$ 0.27"},
+    ]), encoding="utf-8")
+    linhas = read_output_csv(arquivo, name="planilha.csv", schema=cfg.output)
+    assert [l.valor for l in linhas] == [55327.76, 1234.56, -0.27]
+
+
+def test_valor_reescrito_e_o_ORIGINAL_com_formatacao_e_tudo(tmp_path, config_dir):
+    """Ler `R$ 55,327.76` como número não autoriza reescrevê-lo como `55327.76`.
+
+    A garantia é que só a coluna Categoria muda: a célula de valor volta byte a
+    byte, com símbolo, vírgula de milhar e o que mais estiver lá.
+    """
+    cfg = ConfigSet.load(config_dir)
+    arquivo = tmp_path / "planilha.csv"
+    arquivo.write_text(csv_de_saida_texto(cfg.output, [
+        {"data": "08/10/2026", "categoria": "Casa",
+         "descricao": "[Cartão] A {Em 1/Jul}", "valor": "R$ 55,327.76"}]),
+        encoding="utf-8")
+    linhas = read_output_csv(arquivo, name="planilha.csv", schema=cfg.output)
+    saida = lines_to_csv_preserving_order(linhas, schema=cfg.output).decode("utf-8")
+    assert "R$ 55,327.76" in saida
+
+
 def test_recusa_valor_ilegivel(tmp_path, config_dir):
+    """Tolerância tem limite: célula sem número nenhum continua sendo erro."""
     ruim = tmp_path / "x.csv"
     cfg = ConfigSet.load(config_dir)
     ruim.write_text(csv_de_saida_texto(cfg.output, [
         {"data": "08/10/2026", "categoria": "Casa",
-         "descricao": "[Cartão] X {Em 1/Jul}", "valor": "1.234,56"}]),
+         "descricao": "[Cartão] X {Em 1/Jul}", "valor": "sei lá"}]),
         encoding="utf-8")
     with pytest.raises(RecategorizeError, match="valor ilegível"):
         read_output_csv(ruim, name="x.csv", schema=cfg.output)
@@ -580,3 +619,149 @@ def test_recategoriza_arquivo_com_colunas_renomeadas(config_renomeada, tmp_path)
     coluna_cat = antes[0].index("Classe")
     for a, b in zip(antes[1:], depois[1:]):
         assert [i for i in range(len(a)) if a[i] != b[i]] in ([], [coluna_cat])
+
+
+# ---------------------------------------------------------------------------
+# O CSV como a PLANILHA exporta
+# ---------------------------------------------------------------------------
+#
+# O Sheets não baixa a tabela: baixa a aba, com a formatação que existe para
+# ficar bonita na tela. É a mesma tolerância que a aba de Análise já tinha, e
+# agora é literalmente o mesmo código (`core/planilha.py`) — duas cópias
+# divergiriam no dia em que a planilha ganhasse mais uma linha de enfeite.
+
+def _como_o_sheets_exporta(schema, linhas: list[dict]) -> str:
+    """Título acima do cabeçalho, coluna de margem à esquerda, colunas a mais."""
+    cabecalho = [""] + list(schema.colunas) + ["Mês", "Ano", "Filtro"]
+    corpo = [
+        [""] + [linha.get(papel, "") for papel in
+                ("data", "categoria", "descricao", "valor", "pago")]
+        + ["7", "2026", "TRUE"]
+        for linha in linhas
+    ]
+    saida = io.StringIO()
+    escritor = csv.writer(saida, lineterminator="\n")
+    escritor.writerow(["a", "", "", "", "", "", "", "", ""])
+    escritor.writerow(["", "Minhas contas", "", "", "", "", "", "", ""])
+    escritor.writerow(cabecalho)
+    escritor.writerows(corpo)
+    return saida.getvalue()
+
+
+@pytest.fixture
+def do_sheets(tmp_path, config_dir):
+    cfg = ConfigSet.load(config_dir)
+    caminho = tmp_path / "financeiro.csv"
+    caminho.write_text(_como_o_sheets_exporta(cfg.output, [
+        {"data": "08/10/2026", "categoria": "Alimentação",
+         "descricao": "[Cartão] Supermercados Alvora {Em 2/Jul}",
+         "valor": "R$ 270.51", "pago": "x"},
+        {"data": "08/10/2026", "categoria": "Outros",
+         "descricao": "[Cartão] Amazon Br {Em 7/Jul}",
+         "valor": '"R$ 1,059.13"'.strip('"'), "pago": "x"},
+    ]), encoding="utf-8")
+    return caminho
+
+
+def test_le_o_csv_baixado_direto_da_planilha(do_sheets, config_dir):
+    """Título em cima, coluna de margem à esquerda, valor com R$: tudo entra."""
+    cfg = ConfigSet.load(config_dir)
+    linhas = read_output_csv(do_sheets, name="financeiro.csv", schema=cfg.output)
+    assert len(linhas) == 2
+    assert [l.valor for l in linhas] == [270.51, 1059.13]
+    assert [l.categoria_anterior for l in linhas] == ["Alimentação", "Outros"]
+    assert linhas[0].merchant == "SUPERMERCADOS ALVORA"
+
+
+def test_a_coluna_de_margem_nao_volta_no_arquivo(do_sheets, config_dir):
+    """A margem da esquerda é enfeite, não dado.
+
+    Mantê-la custaria duas vezes: o leitor a chamaria `''` e ela reapareceria no
+    arquivo reescrito como uma vírgula solta no começo de toda linha.
+    """
+    cfg = ConfigSet.load(config_dir)
+    linhas = read_output_csv(do_sheets, name="financeiro.csv", schema=cfg.output)
+    assert list(linhas[0].origem_row) == list(cfg.output.colunas) + ["Mês", "Ano", "Filtro"]
+
+    saida = lines_to_csv_preserving_order(linhas, schema=cfg.output).decode("utf-8")
+    assert not saida.startswith(",")
+    assert saida.splitlines()[0].startswith(cfg.output.colunas[0])
+
+
+def test_as_colunas_extras_da_planilha_sobrevivem(do_sheets, config_dir):
+    """`Mês`, `Ano` e `Filtro` são fórmulas da planilha. Perdê-las no arquivo de
+    volta quebraria as tabelas dinâmicas que dependem delas."""
+    cfg = ConfigSet.load(config_dir)
+    linhas = read_output_csv(do_sheets, name="financeiro.csv", schema=cfg.output)
+    saida = lines_to_csv_preserving_order(linhas, schema=cfg.output).decode("utf-8")
+    assert "Mês,Ano,Filtro" in saida.splitlines()[0]
+    assert saida.splitlines()[1].endswith("7,2026,TRUE")
+
+
+def test_o_titulo_acima_do_cabecalho_nao_vira_lancamento(do_sheets, config_dir):
+    """"a" e "Minhas contas" moram acima do cabeçalho e não são dados."""
+    cfg = ConfigSet.load(config_dir)
+    linhas = read_output_csv(do_sheets, name="financeiro.csv", schema=cfg.output)
+    assert all("Minhas contas" not in l.descricao for l in linhas)
+    saida = lines_to_csv_preserving_order(linhas, schema=cfg.output).decode("utf-8")
+    assert "Minhas contas" not in saida
+
+
+def test_recategorizar_o_arquivo_da_planilha_de_ponta_a_ponta(do_sheets, config_dir):
+    """A garantia de sempre continua valendo no formato novo: só a Categoria
+    muda, e o valor volta com a formatação que entrou."""
+    cfg = ConfigSet.load(config_dir)
+    rules = Ruleset.from_text((config_dir / "categories.yml").read_text("utf-8"))
+    linhas = read_output_csv(do_sheets, name="financeiro.csv", schema=cfg.output)
+    recategorizadas, _ = recategorize(linhas, rules)
+    saida = lines_to_csv_preserving_order(recategorizadas, schema=cfg.output).decode("utf-8")
+    assert "R$ 270.51" in saida
+    assert "[Cartão] Supermercados Alvora {Em 2/Jul}" in saida
+
+
+def test_endpoint_aceita_o_arquivo_da_planilha(client, do_sheets):
+    with do_sheets.open("rb") as fh:
+        resposta = client.post("/recategorize",
+                               files={"files": ("financeiro.csv", fh, "text/csv")})
+    assert resposta.status_code == 200, resposta.text
+    assert resposta.json()["source_files"][0]["rows"] == 2
+
+
+def test_coluna_sem_nome_com_dado_e_recusada_em_vez_de_sumir(tmp_path, config_dir):
+    """O `all.csv` antigo declara 5 nomes e traz 8 colunas.
+
+    Reescrevê-lo perderia `Mês`/`Ano`/`Filtro` em silêncio — e silêncio é
+    exatamente o que este módulo promete não fazer. Melhor recusar e dizer onde.
+    """
+    cfg = ConfigSet.load(config_dir)
+    caminho = tmp_path / "curto.csv"
+    caminho.write_text(
+        ",".join(cfg.output.colunas) + "\n"
+        + "08/10/2026,Casa,[Cartão] X {Em 1/Jul},R$ 10.00,x,7,2026,TRUE\n",
+        encoding="utf-8")
+    with pytest.raises(RecategorizeError, match="colunas e o cabeçalho tem"):
+        read_output_csv(caminho, name="curto.csv", schema=cfg.output)
+
+
+def test_planilha_do_Sheets_com_a_coluna_renomeada(config_renomeada, tmp_path):
+    """As duas tolerâncias juntas: título acima do cabeçalho E `Classe` no lugar
+    de `Categoria`.
+
+    Separadas, cada uma se vira sozinha — sem título, a primeira linha é o
+    cabeçalho e o nome não importa; com `Categoria`, a âncora acha a linha. É a
+    combinação que exige que a âncora conheça o nome DESTE formato de saída, e
+    é a combinação que acontece de verdade em quem renomeou as colunas da
+    própria planilha.
+    """
+    cfg = ConfigSet.load(config_renomeada)
+    caminho = tmp_path / "renomeado.csv"
+    caminho.write_text(_como_o_sheets_exporta(cfg.output, [
+        {"data": "08/10/2026", "categoria": "Casa",
+         "descricao": "[Cartão] Loja Xpto {Em 8/Jul}",
+         "valor": "R$ 42.00", "pago": "x"},
+    ]), encoding="utf-8")
+
+    linhas = read_output_csv(caminho, name="renomeado.csv", schema=cfg.output)
+    assert [l.valor for l in linhas] == [42.0]
+    assert linhas[0].categoria_anterior == "Casa"
+    assert list(linhas[0].origem_row)[0] == "Quando"

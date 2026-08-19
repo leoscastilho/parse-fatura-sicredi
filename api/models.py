@@ -53,6 +53,9 @@ class LineItem(BaseModel):
     # A compra caiu dentro de um período de viagem. Sugestão para a etapa de
     # confirmação; não implica que a linha já esteja como `Viagem`.
     viagem: bool = False
+    # "03/05" da coluna Parcela — o que separa uma compra deste ciclo da data
+    # original de uma parcela antiga.
+    parcela: str | None = None
 
     @classmethod
     def from_core(cls, line: ClassifiedLine) -> "LineItem":
@@ -175,6 +178,16 @@ class PurchaseRange(BaseModel):
 
     inicio: str
     fim: str
+
+
+class PurchaseRangeResponse(BaseModel):
+    """Resposta do pré-voo: só o intervalo, sem transação e sem estado.
+
+    `None` quando nenhuma linha do lote tem data de compra legível — o que não é
+    erro, e a tela trata como "não consegui limitar, siga solto".
+    """
+
+    purchase_range: PurchaseRange | None = None
 
 
 class TravelRangeItem(BaseModel):

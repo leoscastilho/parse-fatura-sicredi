@@ -89,9 +89,24 @@ export default function TravelStep({
                 <tbody>
                   {items.map((item) => {
                     const marcada = !rejected.has(item.line_id)
-                    // A categoria que vai para o parêntese é a FINAL: se o
-                    // usuário resolveu esta linha no marketplace, é a dele.
-                    const manual = getAssignment('line', item.line_id)?.categoria
+                    // A categoria que vai para o parêntese é a FINAL, na mesma
+                    // ordem de precedência que o backend usa em
+                    // `_apply_assignments`: decisão de LINHA (marketplace) vence
+                    // decisão de ESTABELECIMENTO (Novos), que vence a da regra.
+                    //
+                    // Olhar só o escopo `line` era o bug: a categoria escolhida
+                    // na aba "Novos" fica em `merchant`, então a linha chegava
+                    // aqui em branco e pedia para escolher de novo. O export
+                    // saía certo — quem estava errado era esta tela, o que é
+                    // pior, porque manda refazer um trabalho já feito.
+                    //
+                    // A escolha é do OBJETO decisão, não do campo: é assim que
+                    // `_apply_assignments` resolve (`by_line or by_merchant`),
+                    // e escolher pelo campo faria uma decisão de linha com
+                    // categoria vazia cair de volta na do estabelecimento.
+                    const decisao = getAssignment('line', item.line_id)
+                      || getAssignment('merchant', item.merchant)
+                    const manual = decisao?.categoria
                     const real = manual || item.categoria
                     return (
                       <tr key={item.line_id} className={marcada ? '' : 'blank'}>

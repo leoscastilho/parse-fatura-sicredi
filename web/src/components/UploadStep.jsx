@@ -1,7 +1,11 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import * as api from '../api'
 import TravelRanges from './TravelRanges'
 
-const brl = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+const diaMesAno = (iso) => {
+  const [a, m, d] = (iso || '').split('-')
+  return d ? `${d}/${m}/${a}` : iso
+}
 
 export default function UploadStep({
   onUpload, busy, banco, travelRanges = [], onTravelRangesChange,
@@ -9,6 +13,10 @@ export default function UploadStep({
   const [files, setFiles] = useState([])
   const [dragging, setDragging] = useState(false)
   const [vencimento, setVencimento] = useState('')
+  // Intervalo de COMPRAS do lote, lido antes do processamento. `null` = ainda
+  // não sei (ou não deu para saber), e aí o editor de viagem fica solto.
+  const [limites, setLimites] = useState(null)
+  const [lendoPeriodo, setLendoPeriodo] = useState(false)
   const inputRef = useRef(null)
 
   const extensoes = banco?.extensoes || ['.xls', '.xlsx']
@@ -21,6 +29,34 @@ export default function UploadStep({
     setFiles([...list].filter((f) =>
       extensoes.some((ext) => f.name.toLowerCase().endsWith(ext))))
   }
+
+  // Pré-voo: as faturas são lidas assim que escolhidas, só para saber de quando
+  // a quando vão as compras. Sem isto os seletores de data ficam soltos e dá
+  // para marcar uma viagem de 2019 num lote de julho de 2026 — erro que só
+  // apareceria do outro lado, depois de todo o trabalho de revisão.
+  //
+  // Depende do vencimento além dos arquivos porque em banco que não traz a data
+  // no arquivo é ela que ancora o ano da compra: "{Em 15/Jul}" não diz o ano.
+  useEffect(() => {
+    if (!files.length) return setLimites(null)
+    let cancelado = false
+    // Espera a digitação parar: `input[type=date]` dispara onChange a cada
+    // pedaço da data em alguns navegadores, e cada disparo reenvia os arquivos.
+    const timer = setTimeout(async () => {
+      setLendoPeriodo(true)
+      try {
+        const r = await api.uploadPeriodo(files, banco?.id || '', vencimento)
+        if (!cancelado) setLimites(r.purchase_range || null)
+      } catch {
+        // Conveniência, não pré-requisito: falhou, o editor volta a ficar solto
+        // e a validação real continua acontecendo no processamento.
+        if (!cancelado) setLimites(null)
+      } finally {
+        if (!cancelado) setLendoPeriodo(false)
+      }
+    }, 300)
+    return () => { cancelado = true; clearTimeout(timer) }
+  }, [files, banco?.id, vencimento])
 
   return (
     <section className="card">
@@ -86,13 +122,16 @@ export default function UploadStep({
       )}
 
       {/* A viagem se declara aqui porque é agora que você lembra dela — não
-          depois de revisar 130 estabelecimentos. Ainda não há intervalo de
-          compras para limitar os seletores (as faturas nem foram lidas), então
-          a validação acontece do outro lado, na etapa Viagem. */}
-      {onTravelRangesChange && (
+          depois de revisar 130 estabelecimentos. E a pergunta nomeia as datas
+          do lote: "viajou neste período?" sem dizer qual período obriga a
+          conferir a fatura noutra janela para responder. */}
+      {onTravelRangesChange && files.length > 0 && (
         <details className="viagem-upload" open={travelRanges.length > 0}>
           <summary>
-            Viajou neste período?
+            {lendoPeriodo ? 'Lendo as datas das compras…'
+              : limites
+                ? `Viajou entre ${diaMesAno(limites.inicio)} e ${diaMesAno(limites.fim)}?`
+                : 'Viajou neste período?'}
             {travelRanges.length > 0 && (
               <span className="badge">{travelRanges.length}</span>
             )}
@@ -100,7 +139,8 @@ export default function UploadStep({
           <TravelRanges
             ranges={travelRanges}
             onChange={onTravelRangesChange}
-            busy={busy}
+            limites={limites}
+            busy={busy || lendoPeriodo}
           />
         </details>
       )}

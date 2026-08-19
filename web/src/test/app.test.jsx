@@ -19,8 +19,12 @@ import TravelStep from '../components/TravelStep'
 import FinalReview from '../components/FinalReview'
 import UnmappedStep from '../components/UnmappedStep'
 import {
-  BarrasDivergentes, BarrasEmpilhadas, LineChart, brlCompacto, eixoContinuo, escala,
+  BarrasDivergentes, BarrasEmpilhadas, Heatmap, LineChart, brlCompacto,
+  eixoContinuo, escala,
 } from '../components/charts'
+import FiltrosLaterais from '../components/FiltrosLaterais'
+import { gravarFiltros, lerFiltros } from '../filtrosSalvos'
+import Reservas from '../components/Reservas'
 import Residuos from '../components/Residuos'
 
 // ---------------------------------------------------------------- tema
@@ -288,8 +292,10 @@ describe('ChangesSummary', () => {
 
 const VIAGEM_ITENS = [
   { line_id: '0:2', purchase_date: '2026-07-02', valor: 270.51, categoria: 'Alimentação',
+    merchant: 'SUPERMERCADOS ALVORA',
     descricao: '[Cartão] Supermercados Alvora {Em 2/Jul}', viagem: true },
   { line_id: '0:5', purchase_date: '2026-07-03', valor: 59.13, categoria: '',
+    merchant: 'AMAZON BR',
     descricao: '[Cartão] Amazon Br {Em 3/Jul}', viagem: true },
 ]
 
@@ -310,7 +316,13 @@ function montarViagem({
       warnings={warnings}
       rejected={rejected}
       onRangesChange={onRangesChange}
-      getAssignment={(scope, target) => atribuicoes[target] || null}
+      // O escopo importa: a aba "Novos" grava em `merchant`, o marketplace em
+      // `line`. Um mock que ignora o escopo esconderia exatamente o bug de a
+      // tela só olhar um deles.
+      getAssignment={(scope, target) => {
+        const decisao = atribuicoes[target]
+        return decisao && decisao.scope === scope ? decisao : null
+      }}
       setAssignment={setAssignment}
       onToggle={onToggle}
       onNext={onNext}
@@ -406,6 +418,35 @@ describe('TravelStep', () => {
     const [, amazon] = screen.getAllByRole('row').slice(1)
     expect(within(amazon).queryByRole('combobox')).toBeNull()
     expect(within(amazon).getByText('Hobby')).toBeInTheDocument()
+  })
+
+  it('carrega a categoria escolhida na aba "Novos"', () => {
+    // O bug: a aba "Novos" grava a decisão no escopo `merchant` e esta tela só
+    // consultava `line`. A linha chegava aqui em branco pedindo para escolher
+    // de novo — o CSV até saía certo, mas a tela mandava refazer trabalho
+    // pronto, e nada garantia que a segunda escolha fosse a mesma.
+    montarViagem({
+      atribuicoes: {
+        'AMAZON BR': { scope: 'merchant', target: 'AMAZON BR', categoria: 'Hobby' },
+      },
+    })
+    const [, amazon] = screen.getAllByRole('row').slice(1)
+    expect(within(amazon).queryByRole('combobox')).toBeNull()
+    expect(within(amazon).getByText('Hobby')).toBeInTheDocument()
+  })
+
+  it('decisão de LINHA vence decisão de estabelecimento', () => {
+    // Mesma precedência do backend (`by_line or by_merchant`): a correção mais
+    // específica não pode ser desfeita pela decisão do lote.
+    montarViagem({
+      atribuicoes: {
+        'AMAZON BR': { scope: 'merchant', target: 'AMAZON BR', categoria: 'Hobby' },
+        '0:5': { scope: 'line', target: '0:5', categoria: 'Outros' },
+      },
+    })
+    const [, amazon] = screen.getAllByRole('row').slice(1)
+    expect(within(amazon).getByText('Outros')).toBeInTheDocument()
+    expect(within(amazon).queryByText('Hobby')).toBeNull()
   })
 
   it('mostra os avisos do backend', () => {
@@ -733,16 +774,69 @@ describe('UnmappedStep', () => {
 // ------------------------------------------ períodos de viagem no upload
 
 describe('TravelRanges na tela de upload', () => {
-  const sicredi = { nome: 'Sicredi', extensoes: ['.xls'], validado: true }
+  const sicredi = { id: 'sicredi', nome: 'Sicredi', extensoes: ['.xls'], validado: true }
+  const fatura = () => new File(['x'], 'fatura.xls', { type: 'application/vnd.ms-excel' })
+
+  // O pré-voo lê as faturas só para saber de quando a quando vão as COMPRAS.
+  // Sem ele a pergunta "viajou neste período?" não diz qual período, e os
+  // seletores aceitam uma viagem de 2019 num lote de julho de 2026.
+  async function montar({ range = { inicio: '2026-07-02', fim: '2026-07-15' },
+                          erro = false, props = {} } = {}) {
+    vi.resetModules()
+    const uploadPeriodo = erro
+      ? vi.fn().mockRejectedValue(new Error('415'))
+      : vi.fn().mockResolvedValue({ purchase_range: range })
+    vi.doMock('../api', () => ({ uploadPeriodo }))
+    const { default: Step } = await import('../components/UploadStep')
+    const onTravelRangesChange = vi.fn()
+    render(<Step onUpload={vi.fn()} busy={false} banco={sicredi} travelRanges={[]}
+                 onTravelRangesChange={onTravelRangesChange} {...props} />)
+    return { uploadPeriodo, onTravelRangesChange }
+  }
+
+  it('a pergunta nomeia as datas do lote', async () => {
+    // "Viajou neste período?" sem dizer QUAL período obriga a abrir a fatura
+    // noutra janela para responder.
+    const { uploadPeriodo } = await montar()
+    await userEvent.upload(document.querySelector('input[type=file]'), fatura())
+    expect(await screen.findByText(/Viajou entre 02\/07\/2026 e 15\/07\/2026/))
+      .toBeInTheDocument()
+    expect(uploadPeriodo).toHaveBeenCalledWith([expect.any(File)], 'sicredi', '')
+  })
+
+  it('os seletores só oferecem datas dentro do lote', async () => {
+    await montar()
+    await userEvent.upload(document.querySelector('input[type=file]'), fatura())
+    await screen.findByText(/Viajou entre/)
+    await userEvent.click(screen.getByText(/Viajou entre/))
+    const [ida, volta] = document.querySelectorAll('input[type="date"]')
+    expect(ida).toHaveAttribute('min', '2026-07-02')
+    expect(ida).toHaveAttribute('max', '2026-07-15')
+    expect(volta).toHaveAttribute('max', '2026-07-15')
+  })
+
+  it('não pergunta nada antes de haver arquivo', async () => {
+    // Sem lote não há intervalo, e sem intervalo a pergunta não tem sentido.
+    await montar()
+    expect(screen.queryByText(/Viajou/)).toBeNull()
+  })
+
+  it('se o pré-voo falhar, o editor fica solto em vez de sumir', async () => {
+    // Ler as datas é conveniência, não pré-requisito: quem lembrou da viagem
+    // agora não pode perder o registro porque uma leitura extra deu erro.
+    await montar({ erro: true })
+    await userEvent.upload(document.querySelector('input[type=file]'), fatura())
+    expect(await screen.findByText(/Viajou neste período/)).toBeInTheDocument()
+    await userEvent.click(screen.getByText(/Viajou neste período/))
+    expect(document.querySelector('input[type="date"]')).not.toHaveAttribute('min')
+  })
 
   it('deixa registrar a viagem antes de processar', async () => {
     // É agora que se lembra da viagem — não depois de revisar 130
     // estabelecimentos.
-    const onTravelRangesChange = vi.fn()
-    render(<UploadStep onUpload={vi.fn()} busy={false} banco={sicredi}
-                       travelRanges={[]} onTravelRangesChange={onTravelRangesChange} />)
-
-    await userEvent.click(screen.getByText(/Viajou neste período/))
+    const { onTravelRangesChange } = await montar()
+    await userEvent.upload(document.querySelector('input[type=file]'), fatura())
+    await userEvent.click(await screen.findByText(/Viajou entre/))
     const [ida, volta] = document.querySelectorAll('input[type="date"]')
     await userEvent.type(ida, '2026-07-02')
     await userEvent.type(volta, '2026-07-05')
@@ -752,17 +846,10 @@ describe('TravelRanges na tela de upload', () => {
       { inicio: '2026-07-02', fim: '2026-07-05', rotulo: '' }])
   })
 
-  it('sem faturas lidas ainda, os seletores não têm limite', () => {
-    render(<UploadStep onUpload={vi.fn()} busy={false} banco={sicredi}
-                       travelRanges={[]} onTravelRangesChange={vi.fn()} />)
-    const [ida] = document.querySelectorAll('input[type="date"]')
-    expect(ida).not.toHaveAttribute('min')
-    expect(ida).not.toHaveAttribute('max')
-  })
-
-  it('não aparece quando o pai não oferece o controle', () => {
-    render(<UploadStep onUpload={vi.fn()} busy={false} banco={sicredi} />)
-    expect(screen.queryByText(/Viajou neste período/)).toBeNull()
+  it('não aparece quando o pai não oferece o controle', async () => {
+    await montar({ props: { onTravelRangesChange: undefined } })
+    await userEvent.upload(document.querySelector('input[type=file]'), fatura())
+    expect(screen.queryByText(/Viajou/)).toBeNull()
   })
 })
 
@@ -830,6 +917,125 @@ describe('App — navegação travada até confirmar', () => {
     await montarApp()
     expect(screen.getByRole('button', { name: /\d\s*Revisão/ }))
       .toHaveAttribute('title', expect.stringMatching(/Conclua a etapa anterior/))
+  })
+
+  it('trocar de etapa volta a rolagem para o topo', async () => {
+    // Quem confirma o último item de uma lista de 130 está no rodapé da página.
+    // Sem isto a etapa nova abre com a rolagem onde estava — ou seja, já no fim
+    // dela, olhando para o próprio botão "Continuar".
+    vi.resetModules()
+    const rolar = vi.fn()
+    window.scrollTo = rolar
+    vi.doMock('../api', () => ({
+      getCategories: vi.fn().mockResolvedValue({ categories: ['Casa'] }),
+      getRules: vi.fn().mockResolvedValue({ flagged_count: 0 }),
+      getConfig: vi.fn().mockResolvedValue({
+        banks: [{ id: 'sicredi', nome: 'Sicredi', extensoes: ['.xls'],
+                  validado: true, tema: { primaria: '#3FA110' } }],
+        banco_padrao: 'sicredi',
+      }),
+      uploadPeriodo: vi.fn().mockResolvedValue({ purchase_range: null }),
+      upload: vi.fn().mockResolvedValue({
+        transaction_id: 't1', modo: 'fatura', statements: [],
+        unmapped_items: [], auto_classified_items: [], marketplace_items: [],
+        ignored_items: [], dropped: [], warnings: [],
+      }),
+      travel: vi.fn(), preview: vi.fn(), exportCsv: vi.fn(),
+    }))
+    const { default: App } = await import('../App')
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Importar fatura' })
+
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['x'], 'fatura.xls'))
+    await userEvent.click(screen.getByRole('button', { name: 'Processar' }))
+
+    await screen.findByRole('button', { name: /\d\s*Novos/ })
+    expect(rolar).toHaveBeenCalledWith(expect.objectContaining({ top: 0 }))
+  })
+})
+
+// ------------------------------------------------- poupança, carry e reserva
+
+describe('Reservas', () => {
+  const BASE = {
+    grupos: {
+      carry: { guardado: 792626.7, resgatado: 791154.71, saldo: 1471.99, movimentos: 65 },
+      reserva: { guardado: 155568.72, resgatado: 66842.69, saldo: 88726.03, movimentos: 161 },
+      aplicacao: { guardado: 0, resgatado: 438008.56, saldo: -438008.56, movimentos: 6 },
+    },
+    objetivos: [
+      { objetivo: 'Reserva de Emergência', total: 50666, movimentos: 28 },
+      { objetivo: 'Viagem', total: 24946, movimentos: 21 },
+    ],
+    saldo_mensal: [{ periodo: '2024-01', saldo: 300 }, { periodo: '2024-02', saldo: 500 }],
+    corrente: { elos: 33, total_saiu: 792626.7, total_entrou: 791154.71,
+                quebrados: [{ de: '2021-08', para: '2021-09', saiu: 1471.99,
+                              entrou: 0, diferenca: 1471.99 }],
+                sem_origem: [] },
+  }
+
+  it('mostra o saldo da RESERVA, não a soma dos três mecanismos', async () => {
+    // Somados, o "saldo da poupança" dava -R$ 349 mil: um número que não
+    // descreve nada, porque o resgate de aplicação tem o aporte noutra
+    // categoria e o carry zera todo mês por definição.
+    render(<Reservas reservas={BASE} totalInvestido={512621} />)
+    expect(screen.getByText('Guardado em reserva').nextSibling.textContent)
+      .toMatch(/88\.726,03/)
+  })
+
+  it('aponta o elo do carry que não fecha, com os dois meses', async () => {
+    // É a checagem que só passa a existir quando o carry é separado da
+    // caixinha: misturado com "PS5", não há como saber qual poupança devia
+    // reaparecer no mês seguinte.
+    render(<Reservas reservas={BASE} totalInvestido={512621} />)
+    const aviso = screen.getByText(/Saiu de um mês e não entrou no seguinte/)
+    expect(aviso.textContent).toContain('ago/21 → set/21')
+    expect(aviso.textContent).toMatch(/32 elos fecham/)
+  })
+
+  it('quando a corrente fecha inteira, diz isso em vez de calar', async () => {
+    render(<Reservas totalInvestido={0} reservas={{
+      ...BASE, corrente: { ...BASE.corrente, quebrados: [], sem_origem: [] } }} />)
+    expect(screen.getByText(/Os 33 elos do saldo fecham/)).toBeInTheDocument()
+  })
+
+  it('acha o carry que chegou sem ter saído', async () => {
+    render(<Reservas totalInvestido={0} reservas={{
+      ...BASE,
+      corrente: { ...BASE.corrente, quebrados: [],
+                  sem_origem: [{ periodo: '2024-02', entrou: 900, origem: '2024-01' }] } }} />)
+    expect(screen.getByText(/Entrou sem ter saído do mês anterior/).textContent)
+      .toContain('fev/24')
+  })
+
+  it('os objetivos são o que ENTROU, e o texto não deixa isso ambíguo', async () => {
+    // Saldo por objetivo não dá para calcular: os depósitos nomeiam o objetivo
+    // e os resgates não. Prometer saldo aqui seria um número exato e errado.
+    render(<Reservas reservas={BASE} totalInvestido={512621} />)
+    expect(screen.getByText(/Reserva de Emergência · 28x/)).toBeInTheDocument()
+    // O <strong> parte o texto em vários nós, então a busca é pelo parágrafo.
+    const nota = [...document.querySelectorAll('p')]
+      .find((p) => /em cada objetivo, não o que\s+sobrou nele/.test(p.textContent))
+    expect(nota).toBeTruthy()
+    expect(nota.textContent).toMatch(/Saldo por objetivo não dá para calcular/)
+  })
+
+  it('explica o resgate de aplicação em vez de contá-lo como poupança', async () => {
+    render(<Reservas reservas={BASE} totalInvestido={512621} />)
+    const nota = screen.getByText(/são, na verdade, aplicação voltando/)
+    // 512.621 aportados − 438.008,56 resgatados = 74.612,44 ainda aplicados.
+    expect(nota.textContent).toMatch(/74\.612,44/)
+  })
+
+  it('some quando não há movimentação nenhuma', () => {
+    const { container } = render(<Reservas totalInvestido={0} reservas={{
+      grupos: { carry: { movimentos: 0, guardado: 0, resgatado: 0, saldo: 0 },
+                reserva: { movimentos: 0, guardado: 0, resgatado: 0, saldo: 0 },
+                aplicacao: { movimentos: 0, guardado: 0, resgatado: 0, saldo: 0 } },
+      objetivos: [], saldo_mensal: [],
+      corrente: { elos: 0, quebrados: [], sem_origem: [] } }} />)
+    expect(container).toBeEmptyDOMElement()
   })
 })
 
@@ -1065,8 +1271,8 @@ describe('AnalyticsView — recorte de período fixo no topo', () => {
     // razoável viraria um erro no lugar do gráfico.
     const { analytics } = await montar()
     await userEvent.click(screen.getByRole('button', { name: '1 ano' }))
-    expect(analytics).toHaveBeenLastCalledWith(expect.any(File),
-                                               { inicio: '2023-07', fim: '2024-06' })
+    expect(analytics).toHaveBeenLastCalledWith(
+      expect.any(File), expect.objectContaining({ inicio: '2023-07', fim: '2024-06' }))
   })
 
   it('pedir mais período do que o arquivo tem devolve o arquivo inteiro', async () => {
@@ -1074,18 +1280,18 @@ describe('AnalyticsView — recorte de período fixo no topo', () => {
     await userEvent.click(screen.getByRole('button', { name: '5 anos' }))
     // 60 meses antes de jun/24 seria jul/19, mas o arquivo começa em mar/19:
     // pedir 5 anos de um arquivo de 3 não é erro, é pedir tudo.
-    expect(analytics).toHaveBeenLastCalledWith(expect.any(File),
-                                               { inicio: '2019-07', fim: '2024-06' })
+    expect(analytics).toHaveBeenLastCalledWith(
+      expect.any(File), expect.objectContaining({ inicio: '2019-07', fim: '2024-06' }))
     await userEvent.click(screen.getByRole('button', { name: '2 anos' }))
-    expect(analytics).toHaveBeenLastCalledWith(expect.any(File),
-                                               { inicio: '2022-07', fim: '2024-06' })
+    expect(analytics).toHaveBeenLastCalledWith(
+      expect.any(File), expect.objectContaining({ inicio: '2022-07', fim: '2024-06' }))
   })
 
   it('"1 mês" é um mês, não zero', async () => {
     const { analytics } = await montar()
     await userEvent.click(screen.getByRole('button', { name: '1 mês' }))
-    expect(analytics).toHaveBeenLastCalledWith(expect.any(File),
-                                               { inicio: '2024-06', fim: '2024-06' })
+    expect(analytics).toHaveBeenLastCalledWith(
+      expect.any(File), expect.objectContaining({ inicio: '2024-06', fim: '2024-06' }))
   })
 
   it('"Tudo" limpa o recorte em vez de mandar as pontas do arquivo', async () => {
@@ -1094,8 +1300,8 @@ describe('AnalyticsView — recorte de período fixo no topo', () => {
     const { analytics } = await montar()
     await userEvent.click(screen.getByRole('button', { name: '1 ano' }))
     await userEvent.click(screen.getByRole('button', { name: 'Tudo' }))
-    expect(analytics).toHaveBeenLastCalledWith(expect.any(File),
-                                               { inicio: '', fim: '' })
+    expect(analytics).toHaveBeenLastCalledWith(
+      expect.any(File), expect.objectContaining({ inicio: '', fim: '' }))
   })
 
   it('o seletor de datas não deixa pedir mês que o arquivo não cobre', async () => {
@@ -1158,7 +1364,8 @@ describe('AnalyticsView — recorte de período fixo no topo', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Outro arquivo' }))
     await userEvent.upload(document.querySelector('input[type=file]'),
                            new File(['b'], 'outro.csv', { type: 'text/csv' }))
-    expect(analytics).toHaveBeenLastCalledWith(expect.any(File), {})
+    expect(analytics).toHaveBeenLastCalledWith(
+      expect.any(File), { semCategorias: [], semLinhas: [] })
   })
 })
 
@@ -1550,5 +1757,533 @@ describe('charts — rótulos da barra empilhada', () => {
     const rotulos = [...container.querySelectorAll('svg text')]
       .filter((t) => /^\d{4}$/.test(t.textContent))
     expect(rotulos.map((t) => t.textContent)).toEqual(['2023', '2024'])
+  })
+})
+
+
+// ------------------------------------------ recategorizar: o que já existia
+
+describe('ChangesSummary — agrupado pelo destino, linha inteira clicável', () => {
+  const MUITAS = [
+    { line_id: '0:1', descricao: 'Padaria', valor: 20, de: '', para: 'Lazer' },
+    { line_id: '0:2', descricao: 'Aluguel', valor: 900, de: 'Outros', para: 'Casa' },
+    { line_id: '0:3', descricao: 'Luz', valor: 300, de: 'Outros', para: 'Casa' },
+    { line_id: '0:4', descricao: 'Cinema', valor: 50, de: '', para: 'Lazer' },
+  ]
+
+  function montar({ atribuicoes = {} } = {}) {
+    const setAssignment = vi.fn()
+    render(<ChangesSummary
+      session={{ changes: MUITAS, unchanged: 0,
+                 source_files: [{ name: 'h.csv', rows: 4, total: 1 }] }}
+      getAssignment={(scope, target) => atribuicoes[target] || null}
+      setAssignment={setAssignment} setManyAssignments={vi.fn()} onNext={vi.fn()} />)
+    return { setAssignment }
+  }
+
+  it('ordena pelo PARA, e por valor dentro de cada destino', () => {
+    // A decisão acontece por categoria de destino: "tudo que virou Casa está
+    // certo". Na ordem do arquivo, 618 mudanças chegam embaralhadas e obrigam a
+    // refazer a mesma pergunta a cada linha.
+    montar()
+    const linhas = [...document.querySelectorAll('tbody tr')]
+      .map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent))
+    expect(linhas.map((l) => l[4])).toEqual(['Casa', 'Casa', 'Lazer', 'Lazer'])
+    expect(linhas.map((l) => l[1])).toEqual(['Aluguel', 'Luz', 'Cinema', 'Padaria'])
+  })
+
+  it('clicar na linha alterna, sem precisar acertar o checkbox', async () => {
+    const { setAssignment } = montar()
+    await userEvent.click(screen.getByText('Aluguel'))
+    expect(setAssignment).toHaveBeenCalledWith('line', '0:2',
+      { categoria: 'Outros', persist_keyword: null })
+  })
+
+  it('clicar no checkbox não conta duas vezes', async () => {
+    // Sem parar a propagação, o clique dispara no checkbox E na linha — as duas
+    // alternâncias se cancelam e nada muda na tela.
+    const { setAssignment } = montar()
+    await userEvent.click(screen.getAllByRole('checkbox')[0])
+    expect(setAssignment).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('UnmappedStep — categoria que já vinha no arquivo', () => {
+  // Na recategorização o arquivo chega com centenas de linhas categorizadas à
+  // mão que as regras não reconhecem. Elas caem aqui, e o "Continuar e aplicar
+  // Outros" apagava todas de uma vez.
+  const DO_ARQUIVO = [
+    { merchant: 'PADARIA CENTRAL', count: 3, total: 60, categoria: 'Alimentação',
+      samples: ['[Cartão] Padaria Central'], line_ids: ['0:1'] },
+    { merchant: 'LOJA NOVA', count: 1, total: 40, categoria: '',
+      samples: ['[Cartão] Loja Nova'], line_ids: ['0:2'] },
+  ]
+
+  function montar({ atribuicoes = {} } = {}) {
+    const setManyAssignments = vi.fn()
+    render(<UnmappedStep
+      session={{ transaction_id: 't1', unmapped_items: DO_ARQUIVO }}
+      categories={['Alimentação', 'Outros']}
+      getAssignment={(scope, target) => atribuicoes[target] || null}
+      setAssignment={vi.fn()} setManyAssignments={setManyAssignments}
+      assignmentList={[]} onCategoriesChanged={vi.fn()} onNext={vi.fn()}
+      onError={vi.fn()} />)
+    return { setManyAssignments }
+  }
+
+  it('chega pré-selecionada em vez de em branco', () => {
+    montar()
+    const [padaria] = screen.getAllByRole('row').slice(1)
+    expect(within(padaria).getByRole('combobox')).toHaveValue('Alimentação')
+    expect(within(padaria).getByText(/já vinha no arquivo/)).toBeInTheDocument()
+  })
+
+  it('só conta como pendente quem está mesmo sem categoria', () => {
+    montar()
+    expect(screen.getByRole('button', { name: /Continuar e aplicar Outros em 1/ }))
+      .toBeInTheDocument()
+  })
+
+  it('continuar NÃO aplica o lote sobre quem já tinha categoria', async () => {
+    // O bug: aplicava Outros nas duas e apagava a decisão que veio do arquivo.
+    const { setManyAssignments } = montar()
+    await userEvent.click(screen.getByRole('button', { name: /Continuar e aplicar/ }))
+    expect(setManyAssignments).toHaveBeenCalledWith([
+      { scope: 'merchant', target: 'LOJA NOVA',
+        patch: { categoria: 'Outros', mark_unknown: false } },
+    ])
+  })
+
+  it('"esconder os que já preenchi" deixa só os que faltam', async () => {
+    montar()
+    await userEvent.click(screen.getByRole('checkbox', { name: /Esconder os que já preenchi/ }))
+    const nomes = screen.getAllByRole('row').slice(1)
+      .map((tr) => tr.querySelector('strong').textContent)
+    expect(nomes).toEqual(['LOJA NOVA'])
+  })
+
+  it('a escolha do usuário vence a que veio no arquivo', () => {
+    montar({ atribuicoes: {
+      'PADARIA CENTRAL': { scope: 'merchant', target: 'PADARIA CENTRAL',
+                           categoria: 'Outros' } } })
+    const [padaria] = screen.getAllByRole('row').slice(1)
+    expect(within(padaria).getByRole('combobox')).toHaveValue('Outros')
+    expect(within(padaria).queryByText(/já vinha no arquivo/)).toBeNull()
+  })
+})
+
+describe('MarketplaceStep — categoria que já vinha no arquivo', () => {
+  const ITENS = [
+    { line_id: '0:1', descricao: 'Amazon livro', valor: 40, statement: 'h.csv',
+      categoria: 'Hobby' },
+    { line_id: '0:2', descricao: 'Amazon cabo', valor: 20, statement: 'h.csv',
+      categoria: '' },
+  ]
+
+  function montar() {
+    const setManyAssignments = vi.fn()
+    render(<MarketplaceStep
+      session={{ marketplace_items: ITENS }}
+      categories={['Hobby', 'Outros']}
+      getAssignment={() => null} setAssignment={vi.fn()}
+      setManyAssignments={setManyAssignments} onNext={vi.fn()} />)
+    return { setManyAssignments }
+  }
+
+  it('não pede para reclassificar o que o arquivo já trazia', () => {
+    montar()
+    const [livro] = screen.getAllByRole('row').slice(1)
+    expect(within(livro).getByRole('combobox')).toHaveValue('Hobby')
+    expect(screen.getByRole('button', { name: /Continuar e aplicar Outros em 1/ }))
+      .toBeInTheDocument()
+  })
+
+  it('o lote não sobrescreve a categoria do arquivo', async () => {
+    const { setManyAssignments } = montar()
+    await userEvent.click(screen.getByRole('button', { name: /^Aplicar Outros em 1/ }))
+    expect(setManyAssignments).toHaveBeenCalledWith([
+      { scope: 'line', target: '0:2', patch: { categoria: 'Outros' } },
+    ])
+  })
+
+  it('"limpar tudo" fica apagado enquanto você não editou nada', () => {
+    montar()
+    expect(screen.getByRole('button', { name: 'Limpar tudo' })).toBeDisabled()
+  })
+})
+
+// ----------------------------------------------------- sazonalidade e filtros
+
+describe('Heatmap — régua por ano', () => {
+  // 14 anos em que o gasto cresceu dez vezes: com régua única, todo ano antigo
+  // fica no tom mais claro e o mapa responde "os anos recentes são mais caros",
+  // que já se sabia. A pergunta era dezembro contra julho.
+  const celulas = [
+    { ano: 2012, mes: 1, total: 100 }, { ano: 2012, mes: 12, total: 400 },
+    { ano: 2026, mes: 1, total: 10000 }, { ano: 2026, mes: 12, total: 40000 },
+  ]
+  const tons = (container) => [...container.querySelectorAll('.viz-heat-cel')]
+    .map((c) => c.style.background).filter(Boolean)
+
+  it('com régua única, o ano antigo some no tom mais claro', () => {
+    const { container } = render(
+      <Heatmap anos={[2012, 2026]} celulas={celulas} normalizar={false} />)
+    const [jan12, dez12, jan26, dez26] = tons(container)
+    expect(jan12).toBe(dez12)          // 100 e 400 contra 40.000: mesmo tom
+    expect(dez26).not.toBe(jan26)
+  })
+
+  it('normalizando dentro do ano, 2012 volta a ter contraste', () => {
+    const { container } = render(
+      <Heatmap anos={[2012, 2026]} celulas={celulas} normalizar />)
+    const [jan12, dez12, jan26, dez26] = tons(container)
+    expect(jan12).not.toBe(dez12)
+    expect(dez12).toBe(dez26)          // o mês mais caro de cada ano, no topo
+    expect(jan12).toBe(jan26)
+  })
+
+  it('avisa que a mesma cor deixou de ser o mesmo dinheiro', () => {
+    render(<Heatmap anos={[2012]} celulas={celulas} normalizar />)
+    expect(screen.getByText(/não é o mesmo dinheiro/)).toBeInTheDocument()
+  })
+})
+
+describe('FiltrosLaterais', () => {
+  const DISPONIVEIS = {
+    categorias: ['Casa', 'Alimentação', 'Lazer'],
+    lancamentos: Array.from({ length: 25 }, (_, i) => ({
+      id: `2024-01|Casa|Gasto ${i}|${1000 - i}.00`,
+      periodo: '2024-01', categoria: 'Casa',
+      descricao: `Gasto ${i}`, valor: 1000 - i,
+    })),
+  }
+
+  async function abrir({ semCategorias = [], semLinhas = [] } = {}) {
+    const aoAplicar = vi.fn()
+    render(<FiltrosLaterais disponiveis={DISPONIVEIS} busy={false}
+                            semCategorias={semCategorias} semLinhas={semLinhas}
+                            aoAplicar={aoAplicar} />)
+    await userEvent.click(screen.getByRole('button', { name: /Filtros/ }))
+    return { aoAplicar }
+  }
+
+  it('começa fechada e sem bolha', () => {
+    render(<FiltrosLaterais disponiveis={DISPONIVEIS} busy={false}
+                            semCategorias={[]} semLinhas={[]} aoAplicar={vi.fn()} />)
+    expect(screen.queryByRole('complementary')).toBeNull()
+    expect(screen.getByRole('button', { name: /Filtros/ }).textContent).toBe('Filtros')
+  })
+
+  it('a bolha conta os filtros em vigor', () => {
+    // Um painel filtrado que parece um painel completo é a pior tela possível.
+    render(<FiltrosLaterais disponiveis={DISPONIVEIS} busy={false}
+                            semCategorias={['Casa']} semLinhas={['x', 'y']}
+                            aoAplicar={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /Filtros/ }).textContent).toContain('3')
+  })
+
+  it('todas as categorias começam dentro', async () => {
+    await abrir()
+    const marcadas = screen.getAllByRole('checkbox').slice(0, 3)
+    expect(marcadas.every((c) => c.checked)).toBe(true)
+  })
+
+  it('desmarcar uma categoria manda a lista nova para cima', async () => {
+    const { aoAplicar } = await abrir()
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Casa' }))
+    expect(aoAplicar).toHaveBeenCalledWith({
+      semCategorias: ['Casa'], semLinhas: [] })
+  })
+
+  it('mostra 10 lançamentos e revela mais 10 sob demanda', async () => {
+    await abrir()
+    const linhas = () => screen.getAllByRole('checkbox')
+      .filter((c) => c.closest('label').textContent.includes('Gasto'))
+    expect(linhas()).toHaveLength(10)
+    await userEvent.click(screen.getByRole('button', { name: 'Ver mais 10' }))
+    expect(linhas()).toHaveLength(20)
+  })
+
+  it('excluir um lançamento revela o próximo — a lista não encurta', async () => {
+    // "Sempre 10 na tela": os já excluídos saem da fila em vez de ocupar vaga.
+    const excluido = DISPONIVEIS.lancamentos[0].id
+    await abrir({ semLinhas: [excluido] })
+    const visiveis = screen.getAllByRole('checkbox')
+      .filter((c) => c.closest('label').textContent.includes('Gasto'))
+    expect(visiveis).toHaveLength(10)
+    expect(screen.getByText(/Gasto 10/)).toBeInTheDocument()
+    expect(visiveis.every((c) => !c.checked)).toBe(true)
+  })
+
+  it('o que saiu vira chip e volta com um clique', async () => {
+    const excluido = DISPONIVEIS.lancamentos[0].id
+    const { aoAplicar } = await abrir({ semLinhas: [excluido] })
+    await userEvent.click(screen.getByRole('button', { name: /Trazer de volta Gasto 0/ }))
+    expect(aoAplicar).toHaveBeenCalledWith({ semCategorias: [], semLinhas: [] })
+  })
+
+  it('dá para trazer tudo de volta de uma vez', async () => {
+    const { aoAplicar } = await abrir({ semCategorias: ['Casa'], semLinhas: ['z'] })
+    await userEvent.click(screen.getByRole('button', { name: /trazer tudo de volta/ }))
+    expect(aoAplicar).toHaveBeenCalledWith({ semCategorias: [], semLinhas: [] })
+  })
+})
+
+
+// ---------------------------------------------- filtros salvos no navegador
+
+describe('filtrosSalvos', () => {
+  beforeEach(() => window.localStorage.clear())
+
+  it('a identidade é de CONTEÚDO, então reordenar a planilha não invalida', () => {
+    // É o ponto todo: o que fica salvo não é "a linha 4.312", é
+    // `período|categoria|descrição|valor`. Ordenar por data, por valor ou
+    // reexportar do Sheets mantém o mesmo nome para o mesmo lançamento.
+    const id = '2025-10|Casa|Pix da Casa 123|600000.00'
+    gravarFiltros({ semCategorias: ['Casa'], semLinhas: [id],
+                    rotulos: { [id]: 'Pix da Casa 123' } })
+    expect(lerFiltros()).toEqual({
+      semCategorias: ['Casa'], semLinhas: [id],
+      rotulos: { [id]: 'Pix da Casa 123' } })
+  })
+
+  it('o mapa de rótulos guarda só o que ainda está excluído', () => {
+    // Sem a poda ele cresceria para sempre com o nome de tudo que já passou.
+    gravarFiltros({ semLinhas: ['a'], rotulos: { a: 'Fica', b: 'Sai' } })
+    expect(lerFiltros().rotulos).toEqual({ a: 'Fica' })
+  })
+
+  it('conteúdo corrompido recomeça em branco em vez de derrubar a aba', () => {
+    window.localStorage.setItem('fatura:analise:filtros:v1', '{isso não é json')
+    expect(lerFiltros()).toEqual({ semCategorias: [], semLinhas: [], rotulos: {} })
+  })
+
+  it('formato inesperado não vira filtro inválido', () => {
+    window.localStorage.setItem('fatura:analise:filtros:v1',
+                                '{"semCategorias":"Casa","semLinhas":null}')
+    expect(lerFiltros()).toEqual({ semCategorias: [], semLinhas: [], rotulos: {} })
+  })
+
+  it('sem localStorage, a aba abre sem filtro em vez de quebrar', () => {
+    const real = Object.getOwnPropertyDescriptor(window, 'localStorage')
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() { throw new Error('navegação privada') },
+    })
+    expect(lerFiltros()).toEqual({ semCategorias: [], semLinhas: [], rotulos: {} })
+    expect(() => gravarFiltros({ semLinhas: ['x'] })).not.toThrow()
+    Object.defineProperty(window, 'localStorage', real)
+  })
+})
+
+describe('AnalyticsView — filtros que sobrevivem ao refresh', () => {
+  const RESPOSTA = () => ({
+    ...RESPOSTA_BASE(),
+    disponiveis: {
+      categorias: ['Casa', 'Lazer'],
+      lancamentos: [{ id: '2024-01|Casa|Pix|600000.00', periodo: '2024-01',
+                      categoria: 'Casa', descricao: 'Pix', valor: 600000 }],
+    },
+  })
+
+  beforeEach(() => window.localStorage.clear())
+
+  async function montar(analytics) {
+    vi.resetModules()
+    vi.doMock('../api', () => ({ analytics }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={vi.fn()} />)
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['a'], 'all.csv', { type: 'text/csv' }))
+    await screen.findByText('all.csv')
+  }
+
+  it('o filtro escolhido já sobe no próximo carregamento do arquivo', async () => {
+    gravarFiltros({ semCategorias: ['Casa'], semLinhas: [], rotulos: {} })
+    const analytics = vi.fn().mockResolvedValue(RESPOSTA())
+    await montar(analytics)
+    expect(analytics).toHaveBeenCalledWith(
+      expect.any(File), expect.objectContaining({ semCategorias: ['Casa'] }))
+  })
+
+  it('filtro salvo que não vale para este arquivo não trava a aba', async () => {
+    // O caso que faria a tela parecer quebrada: exclusões de outra planilha
+    // tiram tudo, o backend recusa, e a dropzone passaria a recusar o arquivo
+    // para sempre. Tenta de novo limpo e conta o que houve.
+    gravarFiltros({ semCategorias: ['Casa', 'Lazer'], semLinhas: [], rotulos: {} })
+    const analytics = vi.fn()
+      .mockRejectedValueOnce(new Error('os filtros tiraram tudo'))
+      .mockResolvedValueOnce(RESPOSTA())
+    vi.resetModules()
+    vi.doMock('../api', () => ({ analytics }))
+    const onError = vi.fn()
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={onError} />)
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['a'], 'all.csv', { type: 'text/csv' }))
+
+    expect(await screen.findByText('all.csv')).toBeInTheDocument()
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('abri sem eles'))
+    expect(analytics).toHaveBeenLastCalledWith(
+      expect.any(File), expect.objectContaining({ semCategorias: [], semLinhas: [] }))
+  })
+})
+
+describe('FiltrosLaterais — o excluído fora do período continua removível', () => {
+  it('o chip aparece mesmo quando o lançamento não está na lista do período', async () => {
+    // Excluí uma compra de 2021 e depois recortei para "últimos 6 meses": ela
+    // sai da lista de candidatos. Sem o chip não haveria como desfazer a
+    // exclusão sem limpar tudo — filtro que não dá para ver não dá para desfazer.
+    const aoAplicar = vi.fn()
+    render(<FiltrosLaterais busy={false}
+                            disponiveis={{ categorias: ['Casa'], lancamentos: [] }}
+                            semCategorias={[]}
+                            semLinhas={['2021-06|Casa|Terreno|72000.00']}
+                            rotulos={{ '2021-06|Casa|Terreno|72000.00': 'Terreno' }}
+                            aoAplicar={aoAplicar} />)
+    await userEvent.click(screen.getByRole('button', { name: /Filtros/ }))
+    await userEvent.click(screen.getByRole('button', { name: /Trazer de volta Terreno/ }))
+    expect(aoAplicar).toHaveBeenCalledWith(
+      expect.objectContaining({ semLinhas: [] }))
+  })
+
+  it('sem rótulo salvo, o nome sai da própria identidade', async () => {
+    // A identidade é `período|categoria|descrição|valor`: a descrição está lá
+    // dentro, então nem o cache é indispensável.
+    render(<FiltrosLaterais busy={false}
+                            disponiveis={{ categorias: [], lancamentos: [] }}
+                            semCategorias={[]}
+                            semLinhas={['2021-06|Casa|Terreno I05|72000.00']}
+                            aoAplicar={vi.fn()} />)
+    await userEvent.click(screen.getByRole('button', { name: /Filtros/ }))
+    expect(screen.getByRole('button', { name: /Trazer de volta Terreno I05/ }))
+      .toBeInTheDocument()
+  })
+
+  it('marcar um lançamento manda o rótulo junto', async () => {
+    const aoAplicar = vi.fn()
+    render(<FiltrosLaterais busy={false} semCategorias={[]} semLinhas={[]}
+                            disponiveis={{ categorias: [], lancamentos: [
+                              { id: 'i1', periodo: '2024-01', categoria: 'Casa',
+                                descricao: 'Pix grande', valor: 600000 }] }}
+                            aoAplicar={aoAplicar} />)
+    await userEvent.click(screen.getByRole('button', { name: /Filtros/ }))
+    await userEvent.click(screen.getByRole('checkbox', { name: /Pix grande/ }))
+    expect(aoAplicar).toHaveBeenCalledWith(
+      expect.objectContaining({ semLinhas: ['i1'], rotulos: { i1: 'Pix grande' } }))
+  })
+})
+
+// ------------------------------------------------- tendência por categoria
+
+describe('AnalyticsView — tendência por categoria', () => {
+  const COM_TENDENCIA = () => ({
+    ...RESPOSTA_BASE(),
+    resumo: { ...RESPOSTA_BASE().resumo, periodo_inicio: '2024-01', periodo_fim: '2024-03' },
+    categoria_por_periodo: {
+      categorias: ['Casa', 'Lazer', 'Saúde'],
+      periodos: [
+        { periodo: '2024-01', valores: [90000, 300, 100] },
+        { periodo: '2024-02', valores: [1000, 400, 120] },
+        { periodo: '2024-03', valores: [1200, 500, 140] },
+      ],
+    },
+  })
+
+  async function montar() {
+    vi.resetModules()
+    vi.doMock('../api', () => ({
+      analytics: vi.fn().mockResolvedValue(COM_TENDENCIA()) }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={vi.fn()} />)
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['a'], 'all.csv', { type: 'text/csv' }))
+    await screen.findByText('all.csv')
+  }
+
+  const legenda = () => screen.getByRole('heading', { name: /Tendência por categoria/ })
+    .closest('section').querySelectorAll('.viz-legenda-item')
+
+  it('desenha uma série por categoria', async () => {
+    await montar()
+    expect([...legenda()].map((b) => b.textContent)).toEqual(['Casa', 'Lazer', 'Saúde'])
+  })
+
+  it('clicar na legenda esconde a série', async () => {
+    // Casa vale 90x as outras no primeiro mês: sem poder escondê-la, Lazer e
+    // Saúde ficam coladas no chão e a tendência delas não existe na tela.
+    await montar()
+    const secao = screen.getByRole('heading', { name: /Tendência/ }).closest('section')
+    const antes = secao.querySelectorAll('svg path[stroke]').length
+    await userEvent.click([...legenda()].find((b) => b.textContent === 'Casa'))
+    expect(secao.querySelectorAll('svg path[stroke]').length).toBe(antes - 1)
+    expect([...legenda()].find((b) => b.textContent === 'Casa'))
+      .toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('esconder uma série NÃO repinta as outras', async () => {
+    // A regra que impede a legenda de virar jogo de memória: a cor segue a
+    // entidade, não a posição entre as visíveis.
+    await montar()
+    const secao = () => screen.getByRole('heading', { name: /Tendência/ }).closest('section')
+    const corDe = (nome) => [...legenda()].find((b) => b.textContent === nome)
+      .querySelector('.viz-dot').style.boxShadow
+    const lazerAntes = corDe('Lazer')
+    const traçoDeLazer = () => [...secao().querySelectorAll('svg path[stroke]')]
+      .map((p) => p.getAttribute('stroke'))
+    const antes = traçoDeLazer()[1]
+
+    await userEvent.click([...legenda()].find((b) => b.textContent === 'Casa'))
+    expect(corDe('Lazer')).toBe(lazerAntes)
+    expect(traçoDeLazer()[0]).toBe(antes)
+  })
+
+  it('esconder tudo diz o que fazer em vez de mostrar um quadro vazio', async () => {
+    await montar()
+    for (const nome of ['Casa', 'Lazer', 'Saúde']) {
+      await userEvent.click([...legenda()].find((b) => b.textContent === nome))
+    }
+    expect(screen.getByText(/Todas escondidas/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Mostrar as 3 escondidas/ }))
+      .toBeInTheDocument()
+  })
+
+  it('a tabela acompanha o que está visível', async () => {
+    await montar()
+    await userEvent.click([...legenda()].find((b) => b.textContent === 'Casa'))
+    await userEvent.click(screen.getByRole('checkbox', { name: /Ver como tabela/ }))
+    const cabecalhos = [...screen.getByRole('heading', { name: /Tendência/ })
+      .closest('section').querySelectorAll('th')].map((th) => th.textContent)
+    expect(cabecalhos).toEqual(['Mês', 'Lazer', 'Saúde'])
+  })
+})
+
+
+describe('AnalyticsView — o rótulo do excluído chega ao armazenamento', () => {
+  beforeEach(() => window.localStorage.clear())
+
+  it('grava o nome junto com o id, não um passo atrás', async () => {
+    // `setRotulos` só vale no próximo render: lendo o estado na hora de gravar,
+    // o mapa ia sempre com o valor de ANTES do clique — na prática, vazio.
+    vi.resetModules()
+    const analytics = vi.fn().mockResolvedValue({
+      ...RESPOSTA_BASE(),
+      disponiveis: { categorias: ['Casa'], lancamentos: [
+        { id: 'i1', periodo: '2024-01', categoria: 'Casa',
+          descricao: 'Pix grande', valor: 600000 }] },
+    })
+    vi.doMock('../api', () => ({ analytics }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={vi.fn()} />)
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['a'], 'all.csv', { type: 'text/csv' }))
+    await screen.findByText('all.csv')
+
+    await userEvent.click(screen.getByRole('button', { name: /Filtros/ }))
+    await userEvent.click(screen.getByRole('checkbox', { name: /Pix grande/ }))
+    await screen.findByRole('button', { name: /Trazer de volta Pix grande/ })
+
+    expect(lerFiltros()).toEqual({
+      semCategorias: [], semLinhas: ['i1'], rotulos: { i1: 'Pix grande' } })
   })
 })

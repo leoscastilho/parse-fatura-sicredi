@@ -54,9 +54,12 @@ export default function TravelRanges({
       <p className="muted small">
         {limites
           ? <>As compras deste lote vão de <strong>{porExtenso(limites.inicio)}</strong>{' '}
-             a <strong>{porExtenso(limites.fim)}</strong>.</>
-          : <>Opcional. Você também pode adicionar (ou ajustar) depois, na etapa
-             <strong> Viagem</strong>, já com o intervalo real das compras à vista.</>}
+             a <strong>{porExtenso(limites.fim)}</strong> — os seletores só
+             oferecem datas dentro disso, porque viagem fora do intervalo não
+             pegaria compra nenhuma.</>
+          : <>Não consegui ler as datas das compras deste lote, então os
+             seletores ficam soltos. Dá para ajustar depois, na etapa
+             <strong> Viagem</strong>.</>}
       </p>
 
       <div className="toolbar">

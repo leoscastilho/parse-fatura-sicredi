@@ -79,11 +79,49 @@ def purchase_dates(linhas: list[ClassifiedLine]) -> list[date]:
     return saida
 
 
+# "03/05" — a coluna Parcela do extrato. Formato aberto de propósito: o Nubank
+# não tem essa coluna e o valor chega None, o que aqui significa "compra
+# normal".
+PARCELA_RE = re.compile(r"^\s*(\d+)\s*/\s*(\d+)\s*$")
+
+
+def parcela_seguinte(parcela: str | None) -> bool:
+    """`03/05` sim; `01/05`, vazio ou formato estranho, não.
+
+    Só a PRIMEIRA parcela foi comprada no ciclo desta fatura. Da segunda em
+    diante a linha carrega a data da compra ORIGINAL, que pode ser de meses
+    atrás — a fatura de julho traz uma parcela 06/06 comprada em 3 de janeiro.
+
+    Formato irreconhecível devolve `False` de propósito: na dúvida, a linha
+    conta como compra do ciclo. Errar para o lado de um intervalo mais largo
+    apenas oferece datas a mais; errar para o outro esconderia datas em que a
+    viagem realmente aconteceu.
+    """
+    if not parcela:
+        return False
+    achado = PARCELA_RE.match(str(parcela))
+    return bool(achado) and int(achado.group(1)) > 1
+
+
 def purchase_range(linhas: list[ClassifiedLine]) -> tuple[date | None, date | None]:
     """Menor e maior data de COMPRA do lote — o intervalo em que faz sentido
     marcar uma viagem. É o que a interface usa para limitar os seletores de data.
+
+    PARCELAS ANTIGAS FICAM DE FORA. Uma fatura cobre um mês, mas traz parcelas
+    de compras de até um ano atrás com a data original: a de julho ia de 3 de
+    janeiro a 28 de junho, quando as compras dela mesma vão de 26 de maio a 28
+    de junho. O seletor então oferecia seis meses para marcar uma viagem que só
+    poderia ter caído em um.
+
+    Isto muda o que é OFERECIDO, não o que é pego: `mark_travel` continua olhando
+    todas as linhas, então uma parcela cuja compra original caiu dentro da
+    janela escolhida continua entrando na viagem — que é o certo, porque ela foi
+    comprada lá.
     """
-    dias = purchase_dates(linhas)
+    do_ciclo = [l for l in linhas if not parcela_seguinte(l.parcela)]
+    # Lote só de parcelas antigas (uma fatura sem nenhuma compra nova) ainda
+    # precisa de um intervalo: sem isto o seletor ficaria desabilitado.
+    dias = purchase_dates(do_ciclo) or purchase_dates(linhas)
     return (min(dias), max(dias)) if dias else (None, None)
 
 
@@ -134,30 +172,56 @@ def mark_travel(
     return marcadas
 
 
-def annotate(descricao: str, categoria_real: str) -> str:
-    """Insere `(Categoria)` logo antes do `{Em 15/Jul}`.
+def range_of(linha: ClassifiedLine, ranges: list[TravelRange]) -> TravelRange | None:
+    """Qual período pegou esta linha — o primeiro que contém a data da COMPRA.
 
-        [Cartão] B91 Supremo Pizzaria {Em 15/Jul}
-        [Cartão] B91 Supremo Pizzaria (Alimentação) {Em 15/Jul}
+    Períodos sobrepostos: vence o primeiro da lista. A compra em comum já conta
+    uma vez só (é o que `validate_ranges` avisa), então o único efeito aqui é
+    qual dos dois nomes vai para a descrição — e escolher um em silêncio é
+    melhor do que escrever os dois.
+    """
+    try:
+        dia = date.fromisoformat(linha.purchase_date)
+    except (ValueError, TypeError):
+        return None
+    if dia == date.min:
+        return None
+    return next((p for p in ranges if p.contains(dia)), None)
 
-    Sem categoria real não há o que anexar — a linha vira Viagem e fica sem o
-    parêntese em vez de ganhar um rótulo inventado.
+
+def annotate(descricao: str, categoria_real: str, rotulo: str = "") -> str:
+    """Insere `(Categoria)` e `{Nome da viagem}` logo antes do `{Em 15/Jul}`.
+
+        [Cartão] Campo Belo Country C {Em 23/Mar}
+        [Cartão] Campo Belo Country C (Lazer) {Campo Belo} {Em 23/Mar}
+
+    As duas marcas são independentes e as duas são opcionais: quem não nomeou a
+    viagem não ganha chave nenhuma, e sem categoria real não há parêntese — em
+    vez de um rótulo inventado. Uma viagem nomeada cuja linha ficou sem
+    categoria ainda recebe `{Campo Belo}`.
     """
     categoria_real = (categoria_real or "").strip()
-    if not categoria_real:
+    rotulo = (rotulo or "").strip()
+
+    # Idempotente nas duas marcas: refazer o /preview não empilha parênteses
+    # nem chaves.
+    partes = []
+    if categoria_real and f"({categoria_real})" not in descricao:
+        partes.append(f"({categoria_real})")
+    if rotulo and f"{{{rotulo}}}" not in descricao:
+        partes.append(f"{{{rotulo}}}")
+    if not partes:
         return descricao
 
-    # Idempotente: reanotar não empilha parênteses.
-    if f"({categoria_real})" in descricao:
-        return descricao
-
+    extra = " ".join(partes)
     sufixo = DATE_SUFFIX_RE.search(descricao)
     if sufixo:
         base = descricao[:sufixo.start()].rstrip()
-        return f"{base} ({categoria_real}){sufixo.group(0).rstrip()}"
-    return f"{descricao.rstrip()} ({categoria_real})"
+        return f"{base} {extra}{sufixo.group(0).rstrip()}"
+    return f"{descricao.rstrip()} {extra}"
 
 
-def apply_travel(linha: ClassifiedLine, categoria_real: str) -> tuple[str, str]:
+def apply_travel(linha: ClassifiedLine, categoria_real: str,
+                 rotulo: str = "") -> tuple[str, str]:
     """(categoria, descrição) de uma linha confirmada como viagem."""
-    return TRAVEL_CATEGORY, annotate(linha.descricao, categoria_real)
+    return TRAVEL_CATEGORY, annotate(linha.descricao, categoria_real, rotulo)

@@ -56,6 +56,12 @@ class ClassifiedLine:
     # A COMPRA caiu dentro de um período de viagem. É candidatura, não
     # sentença: quem decide é a etapa de confirmação (ver core/travel.py).
     viagem: bool = False
+    # "03/05" como veio da coluna Parcela, ou None. Fica aqui, e não só dentro
+    # da descrição, porque `purchase_range` precisa saber se a data desta linha
+    # é uma compra DESTE ciclo ou a data original de uma parcela antiga — e
+    # extrair isso de volta do texto dependeria do modelo de descrição, que é
+    # configurável pelo usuário.
+    parcela: str | None = None
 
     def as_csv_row(self, schema: OutputSchema | None = None) -> dict:
         """A linha no formato de saída — com os nomes de coluna DO schema.
@@ -152,6 +158,7 @@ def classify_statement(
                 categoria=match.categoria,
                 state=match.state,
                 matched=match.matched,
+                parcela=entry.installment,
             )
         )
 

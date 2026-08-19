@@ -25,14 +25,28 @@ export default function UnmappedStep({
   const [categoriaLote, setCategoriaLote] = useState('Outros')
   const items = session.unmapped_items
 
+  // A categoria em vigor, na mesma precedência do backend: o que o usuário
+  // escolheu agora vence o que já vinha no arquivo.
+  //
+  // `item.categoria` só é preenchida na RECATEGORIZAÇÃO — numa fatura nova,
+  // "não mapeado" quer dizer que nenhuma regra opinou e a categoria é vazia.
+  // Ignorá-la era o bug: um arquivo com 400 linhas já categorizadas à mão, que
+  // as regras simplesmente não reconhecem, chegava aqui todo em branco, e o
+  // "Continuar e aplicar Outros" apagava anos de decisão de uma vez.
+  const categoriaDe = (item) =>
+    getAssignment('merchant', item.merchant)?.categoria || item.categoria || ''
+
   // "Resolvido" inclui o "não sei": decidir que não se sabe também é decidir,
   // e a linha não deve continuar pedindo atenção.
   const resolvido = (item) => {
     const a = getAssignment('merchant', item.merchant)
-    return Boolean(a?.categoria || a?.mark_unknown)
+    return Boolean(categoriaDe(item) || a?.mark_unknown)
   }
   const pendentes = items.filter((i) => !resolvido(i))
   const visiveis = esconderResolvidos ? pendentes : items
+  // Quantos chegaram já preenchidos pelo arquivo, sem o usuário ter tocado.
+  const doArquivo = items.filter(
+    (i) => i.categoria && !getAssignment('merchant', i.merchant)?.categoria).length
 
   async function checkImpact(item) {
     const assignment = getAssignment('merchant', item.merchant)
@@ -113,6 +127,10 @@ export default function UnmappedStep({
         {items.length > pendentes.length && (
           <> <strong>{items.length - pendentes.length} de {items.length} resolvido(s).</strong></>
         )}
+        {doArquivo > 0 && (
+          <> {doArquivo} já tinham categoria no arquivo e ficam como estão —
+            marque “esconder os que já preenchi” para ver só os que faltam.</>
+        )}
       </p>
 
       <div className="toolbar">
@@ -150,13 +168,16 @@ export default function UnmappedStep({
                 <td className="right money">{brl(item.total)}</td>
                 <td>
                   <CategorySelect
-                    value={assignment?.categoria || ''}
+                    value={categoriaDe(item)}
                     categories={categories}
                     onChange={(categoria) =>
                       setAssignment('merchant', item.merchant, {
                         categoria, mark_unknown: false,
                       })}
                   />
+                  {item.categoria && !assignment?.categoria && (
+                    <div className="muted small">já vinha no arquivo</div>
+                  )}
                 </td>
                 <td>
                   <label className="checkbox">

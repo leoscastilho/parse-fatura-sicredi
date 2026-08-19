@@ -34,6 +34,18 @@ const STEPS = [
 // /export esperam. Uma estrutura só, do primeiro clique ao download.
 const keyOf = (scope, target) => `${scope}:${target}`
 
+/**
+ * Leva a rolagem para o começo da etapa seguinte.
+ *
+ * Quem confirma o último item de uma lista de 130 está no rodapé da página. Sem
+ * isto, a etapa nova abre com a rolagem onde estava — ou seja, já no fim dela,
+ * olhando para o próprio botão "Continuar" sem ter visto o que a tela pede.
+ * `?.` porque o jsdom dos testes não implementa rolagem.
+ */
+function aoTopo() {
+  window.scrollTo?.({ top: 0, behavior: 'smooth' })
+}
+
 export default function App() {
   const [section, setSection] = useState('importar')
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -138,6 +150,7 @@ export default function App() {
       setTravelRejected(new Set())
       setLiberadas(['upload', proximaEtapa])
       setStep(proximaEtapa)
+      aoTopo()
       // Os períodos digitados na tela de upload só podem ser enviados agora,
       // que existe transação. Falhar aqui não invalida o upload.
       if (travelRanges.length && sessao.modo !== 'recategorizacao') {
@@ -155,6 +168,7 @@ export default function App() {
     setLiberadas((atuais) =>
       atuais.includes(destino) ? atuais : [...atuais, destino])
     setStep(destino)
+    aoTopo()
   }
 
   function limparViagem() {

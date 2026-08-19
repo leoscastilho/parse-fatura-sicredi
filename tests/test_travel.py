@@ -37,12 +37,13 @@ from .conftest import _sicredi_workbook, csv_de_saida_texto
 # ---------------------------------------------------------------------------
 
 def _linha(purchase_date: str, categoria: str = "Alimentação",
-           descricao: str = "", line_id: str = "0:0") -> ClassifiedLine:
+           descricao: str = "", line_id: str = "0:0",
+           parcela: str | None = None) -> ClassifiedLine:
     return ClassifiedLine(
         line_id=line_id, statement="x.xls", data="08/10/2026",
         purchase_date=purchase_date, merchant_raw="X", merchant="X",
         descricao=descricao or f"[Cartão] X {{Em 15/Jul}}", valor=10.0,
-        pago="", categoria=categoria, state=LineState.AUTO,
+        pago="", categoria=categoria, state=LineState.AUTO, parcela=parcela,
     )
 
 
@@ -72,15 +73,17 @@ def _baseline(client, tid) -> dict[str, dict]:
     return {l["descricao"]: l for l in linhas}
 
 
-def _anotada(descricao: str, categoria: str) -> str:
-    """`(Categoria)` antes do `{Em ...}` — reimplementado de propósito.
+def _anotada(descricao: str, categoria: str, rotulo: str = "") -> str:
+    """`(Categoria) {Rótulo}` antes do `{Em ...}` — reimplementado de propósito.
 
     Se o teste chamasse `annotate`, estaria comparando a função com ela mesma.
     """
-    if not categoria:
+    marcas = " ".join(m for m in (f"({categoria})" if categoria else "",
+                                  f"{{{rotulo}}}" if rotulo else "") if m)
+    if not marcas:
         return descricao
     base, marcador, sufixo = descricao.partition(" {Em ")
-    return f"{base} ({categoria}){marcador}{sufixo}" if marcador else f"{base} ({categoria})"
+    return f"{base} {marcas}{marcador}{sufixo}" if marcador else f"{base} {marcas}"
 
 
 def _linhas_da_fixture(tmp_path) -> list[ClassifiedLine]:
@@ -193,9 +196,52 @@ def test_linha_sem_data_de_compra_nunca_e_marcada():
 # purchase_range / validate_ranges
 # ---------------------------------------------------------------------------
 
-def test_purchase_range_do_lote(tmp_path):
+def test_purchase_range_ignora_parcelas_antigas(tmp_path):
+    """A fatura cobre UM mês, mas traz parcelas de compras de anos atrás.
+
+    A fixture tem uma parcela 08/10 comprada em 21/08/2024. Contando-a, o
+    seletor de viagem oferecia dois anos para marcar uma viagem que só poderia
+    ter caído nas semanas desta fatura. No arquivo real dele o efeito era o
+    mesmo: a fatura de julho ia de 03/01 a 28/06, quando as compras dela vão de
+    26/05 a 28/06.
+    """
     linhas = _linhas_da_fixture(tmp_path)
-    assert purchase_range(linhas) == (date(2024, 8, 21), date(2026, 7, 8))
+    assert purchase_range(linhas) == (date(2026, 6, 26), date(2026, 7, 8))
+    # A data antiga continua existindo na linha — o que mudou é o que o seletor
+    # OFERECE, não o que o lote contém.
+    assert date(2024, 8, 21) in purchase_dates(linhas)
+
+
+def test_a_primeira_parcela_e_compra_deste_ciclo():
+    """`01/10` foi comprada agora; `02/10` em diante carrega a data original."""
+    linhas = [
+        _linha("2026-07-02", parcela="01/10"),
+        _linha("2024-08-21", parcela="08/10", line_id="0:1"),
+    ]
+    assert purchase_range(linhas) == (date(2026, 7, 2), date(2026, 7, 2))
+
+
+def test_parcela_em_formato_estranho_conta_como_compra():
+    """Na dúvida, intervalo mais largo: oferecer data a mais só dá opção,
+    esconder data esconderia a viagem que de fato aconteceu."""
+    linhas = [_linha("2024-08-21", parcela="Parcela 8 de 10")]
+    assert purchase_range(linhas) == (date(2024, 8, 21), date(2024, 8, 21))
+
+
+def test_fatura_so_de_parcelas_antigas_ainda_tem_intervalo():
+    """Sem isto o seletor ficaria desabilitado num mês sem compra nova."""
+    linhas = [
+        _linha("2024-08-21", parcela="08/10"),
+        _linha("2024-09-21", parcela="09/10", line_id="0:1"),
+    ]
+    assert purchase_range(linhas) == (date(2024, 8, 21), date(2024, 9, 21))
+
+
+def test_parcela_antiga_dentro_da_janela_continua_virando_viagem():
+    """O filtro é do SELETOR, não da marcação. Uma parcela cuja compra original
+    caiu na viagem foi comprada na viagem — e tem que entrar."""
+    linhas = [_linha("2026-07-03", parcela="03/05")]
+    assert mark_travel(linhas, [_periodo("2026-07-02", "2026-07-05")])[0].viagem
 
 
 def test_purchase_range_vazio_quando_nenhuma_data_e_legivel():
@@ -211,9 +257,14 @@ def test_aviso_periodo_fora_do_lote(tmp_path):
 
 
 def test_aviso_periodo_sem_compras(tmp_path):
-    """Dentro do lote, mas caiu num buraco entre as compras."""
+    """Dentro do lote, mas caiu num buraco entre as compras.
+
+    O buraco fica entre 26/06 e 02/07 — dentro do intervalo oferecido, que
+    agora é o ciclo desta fatura e não os dois anos que a parcela 08/10
+    esticava.
+    """
     linhas = _linhas_da_fixture(tmp_path)
-    avisos = validate_ranges([_periodo("2025-01-01", "2025-01-05")], linhas)
+    avisos = validate_ranges([_periodo("2026-06-27", "2026-06-30")], linhas)
     assert len(avisos) == 1
     assert "não tem nenhuma compra" in avisos[0]
 
@@ -239,6 +290,36 @@ def test_periodo_valido_nao_gera_aviso(tmp_path):
 def test_categoria_entra_antes_da_data_da_compra():
     assert annotate("[Cartão] B91 Supremo Pizzaria {Em 15/Jul}", "Alimentação") == (
         "[Cartão] B91 Supremo Pizzaria (Alimentação) {Em 15/Jul}")
+
+
+def test_nome_da_viagem_entra_entre_a_categoria_e_a_data():
+    """O nome do período existia só na tela e não chegava à planilha — depois de
+    exportar, nada dizia de qual viagem a linha era."""
+    assert annotate("[Cartão] Campo Belo Country C {Em 23/Mar}",
+                    "Lazer", "Campo Belo") == (
+        "[Cartão] Campo Belo Country C (Lazer) {Campo Belo} {Em 23/Mar}")
+
+
+def test_viagem_sem_nome_nao_ganha_chave_vazia():
+    """O nome é opcional no editor de períodos; vazio não pode virar `{}`."""
+    assert annotate("[Cartão] Hotel Serra {Em 15/Jul}", "Lazer") == (
+        "[Cartão] Hotel Serra (Lazer) {Em 15/Jul}")
+    assert annotate("[Cartão] Hotel Serra {Em 15/Jul}", "Lazer", "   ") == (
+        "[Cartão] Hotel Serra (Lazer) {Em 15/Jul}")
+
+
+def test_nome_da_viagem_sozinho_quando_nao_ha_categoria():
+    """As duas marcas são independentes: sem categoria real ainda dá para saber
+    de qual viagem a linha veio."""
+    assert annotate("[Cartão] Amazon Br {Em 7/Jul}", "", "Campo Belo") == (
+        "[Cartão] Amazon Br {Campo Belo} {Em 7/Jul}")
+
+
+def test_anotar_com_nome_e_idempotente():
+    """Refazer o /preview não empilha nem parênteses nem chaves."""
+    uma_vez = annotate("[Cartão] X {Em 15/Jul}", "Hobby", "Gramado")
+    assert annotate(uma_vez, "Hobby", "Gramado") == uma_vez
+    assert uma_vez.count("{Gramado}") == 1
 
 
 def test_anotar_e_idempotente():
@@ -278,8 +359,9 @@ def test_linha_que_ja_era_viagem_ganha_o_parentese():
 # ---------------------------------------------------------------------------
 
 def test_upload_devolve_o_intervalo_de_compras(client, tmp_path):
+    """O ciclo desta fatura, não os dois anos que a parcela 08/10 esticava."""
     dados = _fatura(client, tmp_path)
-    assert dados["purchase_range"] == {"inicio": "2024-08-21", "fim": "2026-07-08"}
+    assert dados["purchase_range"] == {"inicio": "2026-06-26", "fim": "2026-07-08"}
 
 
 def test_travel_marca_e_soma(client, tmp_path):
@@ -386,6 +468,31 @@ def test_preview_converte_confirmadas_em_viagem(client, tmp_path):
     posto = next(d for d in antes if "Posto" in d)
     assert linhas[posto]["categoria"] == antes[posto]["categoria"]
     assert linhas[posto]["descricao"] == posto
+
+
+def test_preview_escreve_o_nome_do_periodo_na_descricao(client, tmp_path):
+    """O nome da viagem existia só na tela do portal. Depois de exportar, nada
+    na planilha dizia de qual viagem a linha era — e é justamente a pergunta
+    que se faz um ano depois."""
+    dados = _fatura(client, tmp_path)
+    tid = dados["transaction_id"]
+    antes = _baseline(client, tid)
+
+    marcadas = client.post("/travel", json={"transaction_id": tid, "ranges": [
+        {"inicio": "2026-07-02", "fim": "2026-07-03", "rotulo": "Campo Belo"}]
+    }).json()["items"]
+    assert marcadas, "a janela precisa pegar alguma compra para o teste valer"
+
+    linhas = {l["descricao"]: l for l in client.post("/preview", json={
+        "transaction_id": tid, "assignments": [], "travel_rejected": [],
+    }).json()["rows"]}
+
+    for item in marcadas:
+        original = antes[item["descricao"]]
+        esperada = _anotada(original["descricao"], original["categoria"],
+                            "Campo Belo")
+        assert esperada in linhas, f"{esperada!r} não saiu no preview"
+        assert "{Campo Belo} {Em " in esperada, "a chave vai ANTES da data"
 
 
 def test_desmarcar_reverte_categoria_e_descricao(client, tmp_path):

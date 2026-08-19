@@ -185,6 +185,7 @@ palavras:
     - BRASEIRO
     - EMPORIO GRAOS DE MIN
     - SUP TEIXEIRA
+    - VAGNER DE SOUZA RESC
 
   Lazer:
     - SYMPLA
@@ -205,6 +206,7 @@ palavras:
     - ACAI
     - DIAS ADAMI CHOCOLATE
     - FAIR PLAY
+    - OGGI
 
   Viagem:
     - AIRBNB
@@ -227,6 +229,7 @@ palavras:
     - GOOGLE STORAGE
     - LIVELO
     - QUINDIM
+    - EC MELIMAI
 
   Seguros:
     - PRUDENT                  # seguro de vida (antes estava em Saúde)
@@ -418,7 +421,6 @@ marketplaces:
   - SHOPEE
   - ALIEXPRESS
   - MAGALU
-  - AMERICANAS
 
 
 # -----------------------------------------------------------------------------
@@ -427,25 +429,3 @@ marketplaces:
 #     Apague uma linha daqui para voltar a ser perguntado.
 # -----------------------------------------------------------------------------
 desconhecidos:
-  - 17 506 867 WESLEY LU
-  - 45 085 527 JOAO VITO
-  - 50267406 GIOVANA CAR
-  - ADRIANA RIBEIRO PIVO
-  - ATELIE DETALLI
-  - ATEMPORAL
-  - BLING BLING SHOP PRE
-  - EC MELIMAI
-  - EURIPEDES DA SILVEIR
-  - FARABBUD MOEMA
-  - FGK COMERCIO VAREJIS
-  - FOTO SANTA RITA
-  - JIM COM 59506579 JU
-  - LACAPAS
-  - LOJA DO JAPONES
-  - MP JANE
-  - RAFAELA ELISEU MAGLI
-  - SERRA SUL SHOPPING
-  - TETELESTAI
-  - YAGO VICENTE DE ALME
-  - TST CC 101 NORTH TRY
-  - JOSEWESLLEY

@@ -76,6 +76,62 @@ papeis:
 nao_detalhado:
   - Cartão de crédito
 
+# =============================================================================
+#  Dentro de `carregamento`: três mecanismos na mesma categoria
+# =============================================================================
+#
+#  `Poupança` e `Resgate Poupança` guardam coisas diferentes, e só a DESCRIÇÃO
+#  as separa. Medido no histórico:
+#
+#    carry       33 depósitos (R$ 792.627) e 32 resgates (R$ 791.155)
+#                É o mês sendo zerado: sai de um mês e entra no seguinte pelo
+#                mesmo valor. Separado, vira uma CORRENTE conferível elo a elo —
+#                e 32 dos 33 elos fecham (o de ago/21 perdeu R$ 1.472 no
+#                caminho). Misturado com "PS5", esse pareamento é impossível.
+#
+#    aplicacao   0 aportes e 6 resgates (R$ 438.009)
+#                Dinheiro voltando de investimento — "Resgate Aplicação
+#                Sicredi", "Resgate Rico". Zero aportes deste lado NÃO é erro: o
+#                aporte correspondente está na categoria `Investimento`
+#                (R$ 512.621), não em `Poupança`. Sem separar, a poupança
+#                aparecia com saldo de -R$ 349 mil, que era exatamente essa
+#                diferença. Com a separação: ainda aplicado ≈ R$ 75 mil, e a
+#                reserva fica positiva em R$ 90 mil.
+#
+#    reserva     124 depósitos (R$ 137.131) e 24 resgates (R$ 66.843)
+#                Caixinha com objetivo escrito na descrição: Documentos
+#                Veículos, Viagem, Reserva de Emergência, PS5, Comprar Carro.
+#
+#  NADA aqui muda o papel das linhas: as três continuam `carregamento` e a
+#  identidade do mês zerado continua idêntica (resíduo mediano de R$ 117).
+#  Isto é rótulo para leitura, não reclassificação contábil.
+#
+#  Os padrões são comparados sem acento e sem caixa, por CONTÊM. Se um dia você
+#  renomear as categorias na planilha (`Saldo do mês` / `Resgate do saldo`),
+#  acrescente os nomes novos em `papeis.carregamento` e um padrão aqui — as duas
+#  formas conviverão, que é o que permite mudar a planilha aos poucos.
+# =============================================================================
+movimentos:
+  carry:
+    - transferido para o proximo
+    - transferido para proximo    # sem o "o", 1 vez
+    - transferido proximo
+    - transferio proximo          # digitado assim 3 vezes
+    - transferido pra o proximo
+    - transferido do mes anterior
+    - tranferido do mes anterior  # idem, 1 vez
+    - resgatado do mes anterior
+    - resgate do mes anterior
+    - resgate mes anterior
+    - recebido mes anterior
+    - saldo do mes                # nomes novos, se você adotar a separação
+    - resgate do saldo
+
+  aplicacao:
+    - aplicacao
+    - resgate investimento
+    - resgate rico
+
 # -----------------------------------------------------------------------------
 #  Categorias equivalentes escritas de formas diferentes ao longo dos anos.
 #  A esquerda vira a direita antes de qualquer soma; sem isto, `hobby` e `Hobby`

@@ -55,6 +55,13 @@ from typing import Iterable
 
 import yaml
 
+# A limpeza do que o Sheets exporta (título acima do cabeçalho, coluna de
+# margem, número formatado como moeda) mora em `planilha` porque a
+# Recategorização usa exatamente a mesma — não uma segunda parecida.
+from .planilha import (
+    chave as _chave, ler_tabela, parse_valor, tabela_da_primeira_linha,
+)
+
 # Papéis. Só `gasto` entra na conta de "quanto gastei".
 GASTO = "gasto"
 RECEITA = "receita"
@@ -89,6 +96,10 @@ class AnalyticsConfig:
     anomalia_desvios: float = 3.5
     anomalia_minimo_meses: int = 6
     anomalia_minimo_valor: float = 200.0
+    # Dentro de `carregamento`, o que a DESCRIÇÃO diz que a linha é. Ver
+    # `movimento()` — a categoria sozinha não separa essas três coisas.
+    padroes_carry: tuple[str, ...] = ()
+    padroes_aplicacao: tuple[str, ...] = ()
 
     @classmethod
     def from_text(cls, text: str) -> "AnalyticsConfig":
@@ -104,6 +115,7 @@ class AnalyticsConfig:
         cfg = cls()
         rec = raw.get("recorrentes") or {}
         ano = raw.get("anomalias") or {}
+        mov = raw.get("movimentos") or {}
         return cls(
             papel_por_categoria=papel,
             nao_detalhado={_chave(c) for c in (raw.get("nao_detalhado") or [])},
@@ -114,6 +126,8 @@ class AnalyticsConfig:
             anomalia_desvios=float(ano.get("desvios", cfg.anomalia_desvios)),
             anomalia_minimo_meses=int(ano.get("minimo_meses", cfg.anomalia_minimo_meses)),
             anomalia_minimo_valor=float(ano.get("minimo_valor", cfg.anomalia_minimo_valor)),
+            padroes_carry=tuple(_chave(p) for p in (mov.get("carry") or [])),
+            padroes_aplicacao=tuple(_chave(p) for p in (mov.get("aplicacao") or [])),
         )
 
     def papel(self, categoria: str) -> str:
@@ -126,11 +140,38 @@ class AnalyticsConfig:
     def canonica(self, categoria: str) -> str:
         return self.sinonimos.get(_chave(categoria), categoria.strip())
 
+    def movimento(self, categoria: str, descricao: str) -> str:
+        """Que TIPO de carregamento é esta linha: carry, aplicação ou reserva.
 
-def _chave(texto: str) -> str:
-    """Compara categorias sem depender de acento, caixa ou espaço sobrando."""
-    t = unicodedata.normalize("NFKD", str(texto)).encode("ascii", "ignore").decode()
-    return re.sub(r"\s+", " ", t).strip().upper()
+        `Poupança` e `Resgate Poupança` guardam três mecanismos diferentes na
+        mesma categoria, e só a descrição os separa:
+
+          carry      "Transferido para o próximo mês" / "Resgatado do mês
+                     anterior" — o mês sendo zerado. Sai de um mês e entra no
+                     seguinte pelo mesmo valor, então dá para CONFERIR a
+                     corrente elo a elo.
+          aplicacao  "Resgate Aplicação Sicredi", "Resgate Rico" — dinheiro
+                     voltando de investimento. O aporte correspondente está em
+                     `Investimento`, não em `Poupança`; sem separar, a poupança
+                     aparece com saldo negativo de R$ 349 mil, que é a diferença
+                     entre o que voltou de aplicação e o que foi guardado.
+          reserva    o resto: caixinha com objetivo escrito na descrição
+                     ("PS5", "Viagem", "Reserva de Emergência").
+
+        Todos continuam com papel `carregamento` — nada aqui muda a identidade
+        do mês zerado, que hoje fecha com resíduo mediano de R$ 117. Isto é
+        rótulo para leitura, não reclassificação contábil.
+        """
+        if self.papel(categoria) != CARREGAMENTO:
+            return ""
+        chave = _chave(descricao)
+        if any(p in chave for p in self.padroes_carry):
+            return "carry"
+        if any(p in chave for p in self.padroes_aplicacao):
+            return "aplicacao"
+        return "reserva"
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -154,44 +195,6 @@ class Lancamento:
         if self.ano is None or self.mes is None:
             return None
         return f"{self.ano:04d}-{self.mes:02d}"
-
-
-# `-R$ 1.234,56` / `R$ 1,234.56` / `(R$ 10)` — o sinal pode vir antes do símbolo.
-_LIMPA = re.compile(r"[^\d,.\-]")
-
-
-def parse_valor(bruto: str) -> float | None:
-    """Número a partir do que o Sheets exporta.
-
-    Devolve `None` em vez de levantar: uma célula ilegível numa planilha de 14
-    anos é normal, e derrubar a análise inteira por causa dela seria pior do que
-    contá-la como faltante e avisar.
-    """
-    if bruto is None:
-        return None
-    texto = str(bruto).strip()
-    if not texto:
-        return None
-    negativo = texto.startswith("-") or (texto.startswith("(") and texto.endswith(")"))
-    limpo = _LIMPA.sub("", texto).lstrip("-")
-    if not limpo:
-        return None
-
-    # Qual separador é o decimal: o ÚLTIMO que aparecer, se sobrar 1-2 dígitos.
-    ultimo_ponto, ultima_virgula = limpo.rfind("."), limpo.rfind(",")
-    corte = max(ultimo_ponto, ultima_virgula)
-    if corte >= 0 and len(limpo) - corte - 1 in (1, 2):
-        inteiro = re.sub(r"[.,]", "", limpo[:corte])
-        decimal = limpo[corte + 1:]
-        limpo = f"{inteiro}.{decimal}"
-    else:
-        limpo = re.sub(r"[.,]", "", limpo)
-
-    try:
-        valor = float(limpo)
-    except ValueError:
-        return None
-    return -valor if negativo else valor
 
 
 def parse_periodo(data: str, mes: str = "", ano: str = "") -> tuple[int | None, int | None]:
@@ -275,17 +278,16 @@ def _mapear_colunas(cabecalho: list[str], largura: int) -> dict[str, int]:
 
 def read_ledger(texto: str, cfg: AnalyticsConfig) -> tuple[list[Lancamento], list[str]]:
     """Lê o CSV histórico. Devolve os lançamentos e os avisos do que não deu."""
-    linhas = [r for r in csv.reader(io.StringIO(texto)) if any(c.strip() for c in r)]
-    if not linhas:
+    # A limpeza do que o Sheets exporta é a MESMA da Recategorização (ver
+    # `core/planilha.py`): título acima do cabeçalho, coluna de margem à
+    # esquerda, número formatado como moeda.
+    # Sem coluna Categoria em lugar nenhum, tenta a primeira linha como
+    # cabeçalho: é o formato antigo, sem título nenhum em cima.
+    tabela = ler_tabela(texto) or tabela_da_primeira_linha(texto)
+    if tabela is None:
         raise AnalyticsError("arquivo vazio")
-
-    # O cabeçalho pode não ser a primeira linha (a planilha tem títulos acima).
-    idx_cab = 0
-    for i, linha in enumerate(linhas[:10]):
-        if any(_chave(c).lower() in ("categoria", "category") for c in linha):
-            idx_cab = i
-            break
-    cabecalho, corpo = linhas[idx_cab], linhas[idx_cab + 1:]
+    idx_cab = tabela.linha_do_cabecalho - 1
+    cabecalho, corpo = tabela.cabecalho, tabela.linhas
     if not corpo:
         raise AnalyticsError("nenhuma linha de dados abaixo do cabeçalho")
 
@@ -653,6 +655,150 @@ def meses_faltando(lancamentos: list[Lancamento]) -> list[str]:
     return vazios
 
 
+def _e_resgate(categoria: str) -> bool:
+    """Dentro de `carregamento`, resgate é dinheiro voltando; o resto é guardar."""
+    return "RESGATE" in _chave(categoria)
+
+
+def _proximo_mes(periodo: str) -> str:
+    ano, mes = int(periodo[:4]), int(periodo[5:]) + 1
+    return f"{ano + 1}-01" if mes == 13 else f"{ano}-{mes:02d}"
+
+
+def _mes_anterior(periodo: str) -> str:
+    ano, mes = int(periodo[:4]), int(periodo[5:]) - 1
+    return f"{ano - 1}-12" if mes == 0 else f"{ano}-{mes:02d}"
+
+
+def corrente_do_carry(lancamentos: list[Lancamento], cfg: AnalyticsConfig,
+                      tolerancia: float = 1.0) -> dict:
+    """Confere a corrente do saldo: o que sai de um mês tem que entrar no outro.
+
+    Esta é a checagem mais barata e mais afiada do arquivo inteiro, e existe só
+    porque o carry foi separado da poupança com objetivo. "Transferido para o
+    próximo mês" e "Resgatado do mês anterior" são as DUAS PONTAS DO MESMO
+    LANÇAMENTO: se o elo não fecha, alguém digitou um valor errado ou esqueceu a
+    contrapartida — e o mês seguinte inteiro passa a mentir.
+
+    Misturado com "PS5" e "Reserva de Emergência" na mesma categoria, esse
+    pareamento é impossível: não há como saber qual poupança devia reaparecer no
+    mês seguinte e qual é caixinha de longo prazo.
+    """
+    saiu: dict[str, float] = defaultdict(float)
+    entrou: dict[str, float] = defaultdict(float)
+    for l in lancamentos:
+        if not l.periodo or cfg.movimento(l.categoria, l.descricao) != "carry":
+            continue
+        (entrou if _e_resgate(l.categoria) else saiu)[l.periodo] += l.valor
+
+    # Um elo é (mês que manda, mês que recebe), e ele é conferido pelos DOIS
+    # lados: "saiu e não chegou" e "chegou sem ter saído" são erros diferentes.
+    quebrados = []
+    for periodo in sorted(saiu):
+        destino = _proximo_mes(periodo)
+        diferenca = round(saiu[periodo] - entrou.get(destino, 0.0), 2)
+        if abs(diferenca) > tolerancia:
+            quebrados.append({"de": periodo, "para": destino,
+                              "saiu": round(saiu[periodo], 2),
+                              "entrou": round(entrou.get(destino, 0.0), 2),
+                              "diferenca": diferenca})
+
+    orfaos = [{"periodo": p, "entrou": round(entrou[p], 2),
+               "origem": _mes_anterior(p)}
+              for p in sorted(entrou)
+              if abs(entrou[p]) > tolerancia
+              and abs(saiu.get(_mes_anterior(p), 0.0)) <= tolerancia]
+
+    return {
+        "elos": len(saiu),
+        "total_saiu": round(sum(saiu.values()), 2),
+        "total_entrou": round(sum(entrou.values()), 2),
+        "quebrados": sorted(quebrados, key=lambda d: -abs(d["diferenca"])),
+        # Mês que recebeu carry sem que o mês anterior tenha mandado nada.
+        "sem_origem": orfaos,
+    }
+
+
+def reservas(lancamentos: list[Lancamento], cfg: AnalyticsConfig) -> dict:
+    """Quanto está guardado, para quê, e o que na verdade é resgate de aplicação.
+
+    O saldo por objetivo NÃO é calculado, e não é esquecimento: os depósitos
+    nomeiam o objetivo ("PS5", "Documentos Veículos") mas os resgates quase
+    nunca usam o mesmo nome ("Resgate manutenção carro" contra "Documentos
+    Veículos"). Parear os dois daria um saldo que parece exato e está errado.
+    O que se pode afirmar com os dados como estão é para onde o dinheiro FOI
+    guardado, e qual o saldo total — os dois vêm abaixo, cada um no seu nome.
+    """
+    grupos = {t: {"guardado": 0.0, "resgatado": 0.0, "movimentos": 0}
+              for t in ("carry", "reserva", "aplicacao")}
+    objetivos: dict[str, dict] = {}
+    por_mes: dict[str, float] = defaultdict(float)
+
+    for l in lancamentos:
+        tipo = cfg.movimento(l.categoria, l.descricao)
+        if not tipo:
+            continue
+        saida = _e_resgate(l.categoria)
+        grupos[tipo]["resgatado" if saida else "guardado"] += l.valor
+        grupos[tipo]["movimentos"] += 1
+
+        if tipo != "reserva":
+            continue
+        if l.periodo:
+            por_mes[l.periodo] += -l.valor if saida else l.valor
+        if saida:
+            continue   # o resgate não nomeia o objetivo; ver docstring
+        nome = l.descricao.strip() or "(sem descrição)"
+        alvo = objetivos.setdefault(_chave(nome), {
+            "objetivo": nome, "total": 0.0, "movimentos": 0,
+            "primeiro": l.periodo, "ultimo": l.periodo,
+            # "Reserva de Emergência" e "Reserva de emergência" são o mesmo
+            # objetivo; o rótulo exibido é a grafia mais usada, não a primeira
+            # que apareceu — senão um deslize de digitação de 2019 batiza a
+            # linha que aparece no gráfico.
+            "grafias": Counter(),
+        })
+        alvo["total"] += l.valor
+        alvo["movimentos"] += 1
+        alvo["grafias"][nome] += 1
+        if l.periodo:
+            alvo["primeiro"] = min(alvo["primeiro"] or l.periodo, l.periodo)
+            alvo["ultimo"] = max(alvo["ultimo"] or l.periodo, l.periodo)
+
+    for g in grupos.values():
+        g["guardado"] = round(g["guardado"], 2)
+        g["resgatado"] = round(g["resgatado"], 2)
+        g["saldo"] = round(g["guardado"] - g["resgatado"], 2)
+
+    # Saldo mês a mês, SEM pular os meses parados.
+    #
+    # Emitir só os meses com movimento faria o eixo colocar fev/14 ao lado de
+    # jun/15 como se fossem consecutivos — e a linha desenharia uma subida
+    # suave onde houve quatro anos de nada. Aqui o valor é carregado para
+    # frente, que é o que de fato acontece com um saldo: ele não some, ele fica.
+    corrida, acumulado = [], 0.0
+    if por_mes:
+        periodo = min(por_mes)
+        fim = max(por_mes)
+        while True:
+            acumulado += por_mes.get(periodo, 0.0)
+            corrida.append({"periodo": periodo, "saldo": round(acumulado, 2)})
+            if periodo == fim:
+                break
+            periodo = _proximo_mes(periodo)
+
+    return {
+        "grupos": grupos,
+        "objetivos": sorted(({**{k: v for k, v in o.items() if k != "grafias"},
+                              "objetivo": o["grafias"].most_common(1)[0][0],
+                              "total": round(o["total"], 2)}
+                             for o in objetivos.values()),
+                            key=lambda d: -d["total"]),
+        "saldo_mensal": corrida,
+        "corrente": corrente_do_carry(lancamentos, cfg),
+    }
+
+
 def meses_que_nao_fecham(lancamentos: list[Lancamento],
                          tolerancia: float = 1.0) -> list[dict]:
     """A identidade do mês zerado: receita − gasto − poupança + resgate ≈ 0.
@@ -665,7 +811,7 @@ def meses_que_nao_fecham(lancamentos: list[Lancamento],
         if not l.periodo:
             continue
         if l.papel == CARREGAMENTO:
-            chave = "resgate" if "RESGATE" in _chave(l.categoria) else "poupanca"
+            chave = "resgate" if _e_resgate(l.categoria) else "poupanca"
         else:
             chave = l.papel
         balde[l.periodo][chave] += l.valor
@@ -781,20 +927,80 @@ def recortar(lancamentos: list[Lancamento], inicio: str | None,
             and (not fim or l.periodo <= fim)]
 
 
+def identidade(l: Lancamento) -> str:
+    """Um nome estável para UM lançamento, para poder excluí-lo por fora.
+
+    A planilha não tem coluna de id, então a identidade é o conteúdo: período,
+    categoria, descrição e valor. Duas linhas idênticas nos quatro campos são
+    indistinguíveis — e excluir uma exclui as duas, o que é o comportamento
+    certo: se elas são iguais em tudo, o usuário não teria como escolher entre
+    elas na tela.
+    """
+    return f"{l.periodo or '?'}|{l.categoria}|{l.descricao.strip()}|{l.valor:.2f}"
+
+
+def excluir(lancamentos: list[Lancamento], categorias: Iterable[str] = (),
+            linhas: Iterable[str] = ()) -> list[Lancamento]:
+    """Tira de cena categorias inteiras e lançamentos avulsos.
+
+    É a leitura ao contrário: em vez de perguntar "quanto gastei em Casa?", tira
+    Casa e pergunta como fica o resto. Num histórico com uma compra de imóvel de
+    R$ 635 mil, é a única forma de enxergar a rotina — e o número que sobra é
+    honesto desde que a tela diga o que saiu, que é o que a barra de filtros faz.
+    """
+    fora_cat = {_chave(c) for c in categorias}
+    fora_linha = set(linhas)
+    if not fora_cat and not fora_linha:
+        return lancamentos
+    return [l for l in lancamentos
+            if _chave(l.categoria) not in fora_cat
+            and identidade(l) not in fora_linha]
+
+
+def maiores_lancamentos(lancamentos: list[Lancamento], limite: int = 60) -> list[dict]:
+    """Os maiores GASTOS avulsos, para a lista de exclusão da barra de filtros.
+
+    Só gasto: receita e carregamento não distorcem gráfico de gasto, e oferecer
+    a linha de salário para "remover outlier" só confundiria.
+    """
+    gastos = sorted((l for l in lancamentos if l.papel == GASTO),
+                    key=lambda l: -l.valor)[:limite]
+    return [{"id": identidade(l), "periodo": l.periodo, "categoria": l.categoria,
+             "descricao": l.descricao, "valor": round(l.valor, 2)} for l in gastos]
+
+
 def analisar(texto: str, cfg: AnalyticsConfig, inicio: str | None = None,
-             fim: str | None = None) -> dict:
+             fim: str | None = None, sem_categorias: Iterable[str] = (),
+             sem_linhas: Iterable[str] = ()) -> dict:
     completos, avisos = read_ledger(texto, cfg)
 
     # Os limites do ARQUIVO, calculados antes do recorte: é o que o seletor de
     # datas usa para não oferecer um período que não existe.
     disponivel = periodos(completos)
 
-    lancamentos = recortar(completos, inicio, fim)
-    if not lancamentos:
+    # A ORDEM importa. O recorte de tempo vem primeiro, depois as exclusões:
+    # a lista de "maiores lançamentos" que a barra de filtros oferece tem que
+    # ser a do período na tela, não a do arquivo inteiro — senão ela sugere
+    # excluir uma compra de 2021 num painel que mostra 2026.
+    no_periodo = recortar(completos, inicio, fim)
+    if not no_periodo:
         raise AnalyticsError(
             f"nenhum lançamento entre {inicio or 'início'} e {fim or 'fim'}. "
             f"O arquivo cobre {disponivel[0]} a {disponivel[-1]}."
             if disponivel else "nenhum lançamento no período")
+
+    # As categorias e os maiores lançamentos OFERECIDOS pela barra são os do
+    # período sem exclusão nenhuma: uma categoria que some da lista quando você
+    # a exclui é uma categoria que você não consegue trazer de volta.
+    oferecidos = {
+        "categorias": [c["categoria"] for c in por_categoria(no_periodo)],
+        "lancamentos": maiores_lancamentos(no_periodo),
+    }
+
+    lancamentos = excluir(no_periodo, sem_categorias, sem_linhas)
+    if not lancamentos:
+        raise AnalyticsError(
+            "os filtros tiraram tudo — sobrou nenhum lançamento no período")
 
     todos = periodos(lancamentos)
     gastos = [l for l in lancamentos if l.papel == GASTO]
@@ -811,7 +1017,11 @@ def analisar(texto: str, cfg: AnalyticsConfig, inicio: str | None = None,
             "inicio": disponivel[0] if disponivel else None,
             "fim": disponivel[-1] if disponivel else None,
         },
-        "filtro": {"inicio": inicio, "fim": fim},
+        "filtro": {"inicio": inicio, "fim": fim,
+                   "sem_categorias": list(sem_categorias),
+                   "sem_linhas": list(sem_linhas)},
+        # O que a barra de filtros oferece para tirar de cena.
+        "disponiveis": oferecidos,
         "resumo": {
             "periodo_inicio": todos[0] if todos else None,
             "periodo_fim": todos[-1] if todos else None,
@@ -848,5 +1058,6 @@ def analisar(texto: str, cfg: AnalyticsConfig, inicio: str | None = None,
         "variacao_recente": (contribuicao_da_variacao(lancamentos, anos[-2], anos[-1])
                              if len(anos) >= 2 else []),
         "concentracao": concentracao(lancamentos),
+        "reservas": reservas(lancamentos, cfg),
         "saude": saude(lancamentos, avisos),
     }

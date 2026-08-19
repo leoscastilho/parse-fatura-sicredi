@@ -22,12 +22,26 @@ export default function MarketplaceStep({
   const [bulkCategory, setBulkCategory] = useState('Outros')
   const items = session.marketplace_items
 
+  // A categoria em vigor: a escolha do usuário vence a que veio no arquivo.
+  //
+  // `line.categoria` só chega preenchida na RECATEGORIZAÇÃO — numa fatura nova,
+  // marketplace quer dizer que a regra se recusou a opinar e a linha está
+  // vazia. Ignorá-la era o bug: as compras de Amazon que você já tinha
+  // classificado à mão na planilha voltavam em branco, e o "Continuar e aplicar
+  // Outros" as apagava.
+  const categoriaDe = (line) =>
+    getAssignment('line', line.line_id)?.categoria || line.categoria || ''
+
   const pending = useMemo(
-    () => items.filter((i) => !getAssignment('line', i.line_id)?.categoria),
+    () => items.filter((i) => !categoriaDe(i)),
     [items, getAssignment],
   )
   const visible = hideResolved ? pending : items
   const resolved = items.length - pending.length
+  // "Limpar tudo" desfaz o que VOCÊ escolheu; a categoria que veio no arquivo
+  // não é sua para limpar aqui, então o botão fica apagado quando você ainda
+  // não editou nada.
+  const editadas = items.filter((i) => getAssignment('line', i.line_id)?.categoria).length
   const total = items.reduce((sum, i) => sum + i.valor, 0)
   const pendingTotal = pending.reduce((sum, i) => sum + i.valor, 0)
 
@@ -94,7 +108,7 @@ export default function MarketplaceStep({
                 disabled={!pending.length || !bulkCategory}>
           Aplicar {bulkCategory || '…'} em {pending.length}
         </button>
-        <button className="ghost danger" onClick={clearAll} disabled={!resolved}>
+        <button className="ghost danger" onClick={clearAll} disabled={!editadas}>
           Limpar tudo
         </button>
       </div>
@@ -127,12 +141,15 @@ export default function MarketplaceStep({
                 <td className="muted small">{line.statement}</td>
                 <td>
                   <CategorySelect
-                    value={assignment?.categoria || ''}
+                    value={categoriaDe(line)}
                     categories={categories}
                     placeholder="— deixar em branco —"
                     onChange={(categoria) =>
                       setAssignment('line', line.line_id, categoria ? { categoria } : null)}
                   />
+                  {line.categoria && !assignment?.categoria && (
+                    <div className="muted small">já vinha no arquivo</div>
+                  )}
                 </td>
               </tr>
             )
