@@ -33,6 +33,7 @@ from core import (
     lines_to_csv_preserving_order, output_name, read_output_csv, recategorize,
     sort_lines,
 )
+from core.analytics import AnalyticsConfig, AnalyticsError, analisar
 from core.recategorize import RecategorizeError
 from core.travel import (
     TravelError, TravelRange, apply_travel, mark_travel, purchase_range,
@@ -75,7 +76,7 @@ from .models import (
     ValidateResponse,
     ValidationIssue,
 )
-from .config_routes import load_config, router as config_router
+from .config_routes import config_root, load_config, router as config_router
 from .settings import Settings, get_settings
 from .store import Store, TransactionNotFound
 
@@ -539,6 +540,53 @@ async def recategorize_csv(
 
 
 # ---------------------------------------------------------------------------
+# 2b. POST /analytics
+# ---------------------------------------------------------------------------
+
+@app.post("/analytics")
+async def analytics(
+    file: UploadFile = File(..., description="CSV com o histórico completo"),
+    inicio: str = Form("", description="AAAA-MM, inclusivo"),
+    fim: str = Form("", description="AAAA-MM, inclusivo"),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """Analisa um histórico inteiro e devolve tudo já agregado.
+
+    SEM ESTADO: não há `transaction_id`, nada vai para o SQLite e nada é
+    gravado. O arquivo é lido, virado em números e esquecido — é uma leitura,
+    não uma revisão, e não faz sentido poder "voltar uma etapa" nela.
+    """
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(415, detail="a análise aceita .csv")
+
+    blob = await file.read()
+    if len(blob) > settings.max_upload_bytes:
+        raise HTTPException(413, detail="arquivo grande demais")
+
+    caminho = config_root(settings) / "analytics.yml"
+    try:
+        cfg = AnalyticsConfig.from_text(caminho.read_text(encoding="utf-8"))
+    except OSError:
+        # Sem o arquivo a análise ainda roda: todo mundo vira gasto, que é o
+        # padrão declarado. Melhor um número explicado do que uma tela vazia.
+        cfg = AnalyticsConfig()
+
+    try:
+        # utf-8-sig come o BOM que o Excel adora deixar no começo.
+        # O recorte acontece AQUI, antes de qualquer soma. Filtrar no cliente
+        # depois de agregar daria totais que não batem com os gráficos: média
+        # mensal, custo fixo e anomalias precisam ser recalculados sobre o
+        # período escolhido, não fatiados a posteriori.
+        resultado = analisar(blob.decode("utf-8-sig", errors="replace"), cfg,
+                             inicio=inicio.strip() or None, fim=fim.strip() or None)
+    except AnalyticsError as exc:
+        raise HTTPException(422, detail=str(exc))
+
+    resultado["arquivo"] = file.filename
+    return resultado
+
+
+# ---------------------------------------------------------------------------
 # 2c. POST /travel
 # ---------------------------------------------------------------------------
 
@@ -724,6 +772,12 @@ def update_mapping(
         payload.transaction_id, text, [c.model_dump() for c in merged]
     )
 
+    # Grava no disco JÁ. Marcar "lembrar" e clicar em continuar é a decisão;
+    # esperar o export para persistir significava perder tudo se a revisão
+    # fosse abandonada — e, sem GitHub, perder para sempre.
+    if changes:
+        _persistir_local(settings, text)
+
     committed, url = False, None
     if payload.commit_now and changes:
         url = _commit(settings, store, payload.transaction_id, text, merged, record)
@@ -733,6 +787,24 @@ def update_mapping(
         staged=changes, total_staged=len(merged), yaml_valid=True,
         committed=committed, commit_url=url,
     )
+
+
+def _persistir_local(settings: Settings, text: str) -> None:
+    """Grava o `categories.yml` no volume — independente do GitHub.
+
+    Isto ficava DENTRO do `_commit`, depois do push. Sem token (ou com o push
+    falhando), o "lembrar" não chegava a lugar nenhum: vivia só no
+    `yaml_working` da transação, que expira em 24h. O usuário marcava, via
+    `200 OK`, e no mês seguinte o estabelecimento voltava como novo.
+
+    Publicar no GitHub é sincronização; gravar no disco é a persistência. São
+    coisas diferentes e a segunda não pode depender da primeira.
+    """
+    try:
+        settings.rules_path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(
+            500, detail=f"não consegui gravar {settings.rules_path}: {exc}")
 
 
 def _commit(settings, store, transaction_id, text, changes, record) -> str:
@@ -755,7 +827,6 @@ def _commit(settings, store, transaction_id, text, changes, record) -> str:
         # /export não é — o CSV vale mais que o commit.
         raise HTTPException(502, detail=f"falha ao publicar no GitHub: {exc}")
 
-    settings.rules_path.write_text(text, encoding="utf-8")
     store.mark_committed(transaction_id, url)
     return url
 
@@ -833,6 +904,9 @@ def export(
     commit_url, commit_error = None, None
     changes = [MappingChange(**c) for c in record["mapping_changes"]]
     if payload.commit_mapping and changes:
+        # O disco primeiro, sempre. O GitHub é sincronização e é best-effort;
+        # a persistência não pode ficar refém dele.
+        _persistir_local(settings, record["yaml_working"])
         if not settings.github_enabled:
             commit_error = ("GitHub não configurado — o categories.yml foi "
                             "gravado no volume local, mas não publicado")

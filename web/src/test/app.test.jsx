@@ -18,6 +18,10 @@ import RecategorizeStep, { ChangesSummary } from '../components/RecategorizeStep
 import TravelStep from '../components/TravelStep'
 import FinalReview from '../components/FinalReview'
 import UnmappedStep from '../components/UnmappedStep'
+import {
+  BarrasDivergentes, BarrasEmpilhadas, LineChart, brlCompacto, eixoContinuo, escala,
+} from '../components/charts'
+import Residuos from '../components/Residuos'
 
 // ---------------------------------------------------------------- tema
 
@@ -639,6 +643,7 @@ describe('UnmappedStep', () => {
         categories={['Casa', 'Alimentação']}
         getAssignment={(scope, target) => atribuicoes[target] || null}
         setAssignment={vi.fn()}
+        setManyAssignments={vi.fn()}
         onCategoriesChanged={vi.fn()}
         onNext={vi.fn()}
         onError={vi.fn()}
@@ -672,8 +677,56 @@ describe('UnmappedStep', () => {
 
   it('conta quantos faltam', () => {
     montarNovos({ atribuicoes: { BRASEIRO: { categoria: 'Alimentação' } } })
-    expect(screen.getByText(/1 sem categoria/)).toBeInTheDocument()
     expect(screen.getByText(/1 de 2 resolvido/)).toBeInTheDocument()
+    expect(screen.getAllByText(/1 sem categoria/).length).toBeGreaterThan(0)
+  })
+
+  it('não deixa continuar deixando estabelecimento em branco', () => {
+    // Mesma regra do Marketplace: o botão diz o que vai aplicar.
+    montarNovos()
+    expect(screen.getByRole('button', { name: /Continuar e aplicar Outros em 2/ }))
+      .toBeEnabled()
+  })
+
+  it('continuar aplica o lote só nos pendentes e avança', async () => {
+    const setManyAssignments = vi.fn()
+    const onNext = vi.fn()
+    render(
+      <UnmappedStep
+        session={{ transaction_id: 't1', unmapped_items: NOVOS }}
+        categories={['Casa', 'Alimentação', 'Outros']}
+        getAssignment={(scope, target) =>
+          target === 'BRASEIRO' ? { categoria: 'Alimentação' } : null}
+        setAssignment={vi.fn()}
+        setManyAssignments={setManyAssignments}
+        onCategoriesChanged={vi.fn()}
+        onNext={onNext}
+        onError={vi.fn()}
+      />)
+
+    await userEvent.click(
+      screen.getByRole('button', { name: /Continuar e aplicar Outros em 1/ }))
+
+    const enviado = setManyAssignments.mock.calls[0][0]
+    expect(enviado.map((a) => a.target)).toEqual(['LOJA XPTO'])
+    expect(enviado[0].patch.categoria).toBe('Outros')
+    // Nada para persistir (ninguém marcou lembrar) -> segue direto.
+    expect(onNext).toHaveBeenCalled()
+  })
+
+  it('com tudo resolvido o botão vira só "Continuar"', () => {
+    montarNovos({ atribuicoes: {
+      BRASEIRO: { categoria: 'Alimentação' },
+      'LOJA XPTO': { categoria: '', mark_unknown: true },
+    } })
+    expect(screen.getByRole('button', { name: 'Continuar' })).toBeEnabled()
+  })
+
+  it('o preenchimento em lote não vira regra no categories.yml', () => {
+    // "Outros" não é conhecimento sobre o estabelecimento: vale para esta
+    // fatura e não deve ser gravado como palavra-chave.
+    montarNovos()
+    expect(screen.getByText(/não vira regra no/)).toBeInTheDocument()
   })
 })
 
@@ -777,5 +830,725 @@ describe('App — navegação travada até confirmar', () => {
     await montarApp()
     expect(screen.getByRole('button', { name: /\d\s*Revisão/ }))
       .toHaveAttribute('title', expect.stringMatching(/Conclua a etapa anterior/))
+  })
+})
+
+// ---------------------------------------------------------------- análise
+
+describe('charts — eixo contínuo', () => {
+  it('preenche os meses ausentes para o buraco aparecer', () => {
+    // Sem isto, jan e abr ficam lado a lado no eixo e a linha os liga como se
+    // fossem meses consecutivos — o gráfico mente sobre o tempo.
+    const preenchido = eixoContinuo([
+      { periodo: '2024-01', gasto: 10 },
+      { periodo: '2024-04', gasto: 40 },
+    ])
+    expect(preenchido.map((p) => p.periodo)).toEqual([
+      '2024-01', '2024-02', '2024-03', '2024-04'])
+    expect(preenchido[1].gasto).toBeUndefined()
+    expect(preenchido[3].gasto).toBe(40)
+  })
+
+  it('atravessa a virada de ano', () => {
+    const preenchido = eixoContinuo([
+      { periodo: '2023-11' }, { periodo: '2024-02' }])
+    expect(preenchido.map((p) => p.periodo)).toEqual([
+      '2023-11', '2023-12', '2024-01', '2024-02'])
+  })
+
+  it('não mexe numa série de um ponto só', () => {
+    expect(eixoContinuo([{ periodo: '2024-01' }])).toHaveLength(1)
+  })
+})
+
+describe('charts — formato curto do eixo', () => {
+  it('abrevia sem perder o "R$"', () => {
+    // "R$ 2.000.000" não cabe na margem e o navegador cortava o R, deixando
+    // "$ 2.000.000" — outra moeda, não uma abreviação.
+    expect(brlCompacto(2_000_000)).toBe('R$ 2 mi')
+    expect(brlCompacto(200_000)).toBe('R$ 200 mil')
+    expect(brlCompacto(0)).toBe('R$ 0')
+    expect(brlCompacto(-1500)).toBe('-R$ 2 mil')
+  })
+})
+
+/**
+ * Resposta mínima do /analytics — só o que a tela precisa para montar.
+ *
+ * É uma FUNÇÃO, não um objeto: cada teste altera um pedaço com spread, e uma
+ * constante compartilhada viraria estado entre testes na primeira vez que
+ * alguém empurrasse num array aninhado.
+ */
+const RESPOSTA_BASE = () => ({
+  arquivo: 'all.csv',
+  resumo: {
+    periodo_inicio: '2024-01', periodo_fim: '2024-06', meses_com_dado: 6,
+    total_gasto: 2_179_679, media_mensal: 1000, total_receita: 0,
+    total_investido: 0, gasto_no_cartao: 0, custo_fixo_mensal: 0,
+    gasto_nao_detalhado: 0, meses_nao_detalhados: [],
+    excluido: { artefato: 0, carregamento: 0 },
+  },
+  serie_mensal: [{ periodo: '2024-01', gasto: 1000, receita: 0,
+                   no_cartao: 0, nao_detalhado: 0 }],
+  por_categoria: [{ categoria: 'Casa', total: 1000 }],
+  categoria_por_periodo: { categorias: ['Casa'], periodos: [] },
+  sazonalidade: { anos: [2024], celulas: [], media_por_mes: [] },
+  top_estabelecimentos: [], recorrentes: [], anomalias: [],
+  variacao_recente: [], concentracao: { top_10: 0.4, mediana: 300 },
+  saude: { total_lancamentos: 18, avisos: [], meses_faltando: [],
+           sem_categoria: { quantidade: 0, total: 0, exemplos: [] },
+           sem_data: { quantidade: 0, total: 0, exemplos: [] },
+           meses_que_nao_fecham: [], total_meses_que_nao_fecham: 0,
+           pares_que_se_anulam: [], dupla_contagem: [] },
+  intervalo_disponivel: { inicio: '2012-01', fim: '2024-06' },
+  filtro: { inicio: null, fim: null },
+})
+
+describe('AnalyticsView', () => {
+  const RESPOSTA = {
+    arquivo: 'all.csv',
+    resumo: {
+      periodo_inicio: '2024-01', periodo_fim: '2024-06', meses_com_dado: 6,
+      total_gasto: 6000, media_mensal: 1000, total_receita: 12000,
+      total_investido: 0, gasto_no_cartao: 500, custo_fixo_mensal: 800,
+      gasto_nao_detalhado: 1200, meses_nao_detalhados: ['2024-05', '2024-06'],
+      excluido: { artefato: 0, carregamento: 3000 },
+    },
+    serie_mensal: Array.from({ length: 6 }, (_, i) => ({
+      periodo: `2024-0${i + 1}`, gasto: 1000, receita: 2000,
+      no_cartao: 0, nao_detalhado: 0, carregamento: 0, investimento: 0, lancamentos: 3,
+    })),
+    por_categoria: [{ categoria: 'Casa', total: 4000, lancamentos: 6, media: 666,
+                      share: 0.66, no_cartao: 0 }],
+    categoria_por_periodo: { categorias: ['Casa'], periodos: [] },
+    sazonalidade: { anos: [2024], celulas: [], media_por_mes: [] },
+    top_estabelecimentos: [{ descricao: 'Aluguel', total: 4000, lancamentos: 6,
+                             categoria: 'Casa' }],
+    recorrentes: [{ descricao: 'Aluguel', categoria: 'Casa', meses: 6,
+                    primeiro: '2024-01', ultimo: '2024-06', ativo: true,
+                    mediana: 800, total: 4800, variacao: 0.2 }],
+    anomalias: [],
+    anual: [{ ano: 2024, gasto: 6000, receita: 12000, meses_com_dado: 6,
+              media_mensal: 1000, variacao: null }],
+    variacao_recente: [],
+    concentracao: { lancamentos: 18, top_10: 0.4, top_50: 0.9, top_1_pct: 0.1,
+                    mediana: 300 },
+    saude: {
+      total_lancamentos: 18, avisos: [], meses_faltando: [],
+      sem_categoria: { quantidade: 0, total: 0, exemplos: [] },
+      sem_data: { quantidade: 0, total: 0, exemplos: [] },
+      meses_que_nao_fecham: [], total_meses_que_nao_fecham: 0,
+      pares_que_se_anulam: [], dupla_contagem: [],
+    },
+    // O intervalo do ARQUIVO, que o backend calcula antes de recortar — é o que
+    // limita o seletor de datas. `filtro` é o recorte em vigor.
+    intervalo_disponivel: { inicio: '2019-01', fim: '2024-06' },
+    filtro: { inicio: null, fim: null },
+  }
+
+  async function montarAnalise(resposta = RESPOSTA, onError = vi.fn()) {
+    vi.resetModules()
+    const analytics = vi.fn().mockResolvedValue(resposta)
+    vi.doMock('../api', () => ({ analytics }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={onError} />)
+    const input = document.querySelector('input[type=file]')
+    await userEvent.upload(input, new File(['a'], 'all.csv', { type: 'text/csv' }))
+    await screen.findByText('all.csv')
+    return { analytics }
+  }
+
+  it('começa pedindo o arquivo e avisa que nada é gravado', async () => {
+    vi.resetModules()
+    vi.doMock('../api', () => ({ analytics: vi.fn() }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={vi.fn()} />)
+    expect(screen.getByText(/Nada é gravado/)).toBeInTheDocument()
+  })
+
+  it('mostra o que ficou FORA da conta de gasto', async () => {
+    // O número de cima tem que ser auditável: sem isto, "gasto total" é mágico
+    // e ninguém sabe que R$ 3.000 de Poupança foram excluídos de propósito.
+    await montarAnalise()
+    expect(screen.getByText(/Fora da conta de gasto/)).toBeInTheDocument()
+    expect(screen.getByText(/R\$\s*3\.000,00/)).toBeInTheDocument()
+  })
+
+  it('denuncia o gasto que está num balde genérico', async () => {
+    await montarAnalise()
+    const aviso = screen.getByText(/está em "Cartão de crédito"/)
+    // Vírgula decimal: a interface é em português.
+    expect(aviso.textContent).toContain('20,0% do gasto')
+    expect(aviso.textContent).toContain('2 meses')
+  })
+
+  it('a saúde dos dados vem ANTES dos gráficos', async () => {
+    // Ler um painel sem saber o que está faltando é pior do que não ler.
+    await montarAnalise()
+    const titulos = [...document.querySelectorAll('h2')].map((h) => h.textContent)
+    expect(titulos[0]).toMatch(/Antes de acreditar/)
+  })
+
+  it('quando não há nada suspeito, diz isso', async () => {
+    await montarAnalise({
+      ...RESPOSTA,
+      resumo: { ...RESPOSTA.resumo, gasto_nao_detalhado: 0, meses_nao_detalhados: [] },
+    })
+    expect(screen.getByText(/Nada suspeito/)).toBeInTheDocument()
+  })
+
+  it('grita quando a mesma compra pode estar contada duas vezes', async () => {
+    await montarAnalise({
+      ...RESPOSTA,
+      saude: { ...RESPOSTA.saude,
+               dupla_contagem: [{ periodo: '2024-03', itens: 300, fatura: 3000 }] },
+    })
+    expect(screen.getByText(/contada duas\s+vezes/)).toBeInTheDocument()
+  })
+
+  it('oferece a tabela — os tons claros da paleta exigem essa alternativa', async () => {
+    await montarAnalise()
+    const alternar = screen.getByRole('checkbox', { name: /Ver como tabela/ })
+    await userEvent.click(alternar)
+    expect(screen.getAllByRole('columnheader').some((c) => c.textContent === 'Mês'))
+      .toBe(true)
+  })
+
+  it('mostra o custo já comprometido', async () => {
+    await montarAnalise()
+    expect(screen.getByText(/já está comprometido antes de qualquer decisão/))
+      .toBeInTheDocument()
+  })
+})
+
+describe('AnalyticsView — recorte de período fixo no topo', () => {
+  const RESPOSTA = {
+    arquivo: 'all.csv',
+    resumo: {
+      periodo_inicio: '2024-01', periodo_fim: '2024-06', meses_com_dado: 6,
+      total_gasto: 6000, media_mensal: 1000, total_receita: 12000,
+      total_investido: 0, gasto_no_cartao: 0, custo_fixo_mensal: 800,
+      gasto_nao_detalhado: 0, meses_nao_detalhados: [],
+      excluido: { artefato: 0, carregamento: 0 },
+    },
+    serie_mensal: [{ periodo: '2024-01', gasto: 1000, receita: 2000,
+                     no_cartao: 0, nao_detalhado: 0 }],
+    por_categoria: [{ categoria: 'Casa', total: 6000 }],
+    categoria_por_periodo: { categorias: ['Casa'], periodos: [] },
+    sazonalidade: { anos: [2024], celulas: [], media_por_mes: [] },
+    top_estabelecimentos: [], recorrentes: [], anomalias: [],
+    variacao_recente: [], concentracao: { top_10: 0.4, mediana: 300 },
+    saude: { total_lancamentos: 18, avisos: [], meses_faltando: [],
+             sem_categoria: { quantidade: 0, total: 0, exemplos: [] },
+             sem_data: { quantidade: 0, total: 0, exemplos: [] },
+             meses_que_nao_fecham: [], total_meses_que_nao_fecham: 0,
+             pares_que_se_anulam: [], dupla_contagem: [] },
+    intervalo_disponivel: { inicio: '2019-03', fim: '2024-06' },
+    filtro: { inicio: null, fim: null },
+  }
+
+  async function montar(resposta = RESPOSTA, onError = vi.fn()) {
+    vi.resetModules()
+    const analytics = vi.fn().mockResolvedValue(resposta)
+    vi.doMock('../api', () => ({ analytics }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={onError} />)
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['a'], 'all.csv', { type: 'text/csv' }))
+    await screen.findByText('all.csv')
+    return { analytics }
+  }
+
+  it('conta os presets a partir do último mês COM DADO, não de hoje', async () => {
+    // Um arquivo exportado em 2024 e aberto em 2026 devolveria "último ano"
+    // vazio se a âncora fosse o relógio — e o clique num botão perfeitamente
+    // razoável viraria um erro no lugar do gráfico.
+    const { analytics } = await montar()
+    await userEvent.click(screen.getByRole('button', { name: '1 ano' }))
+    expect(analytics).toHaveBeenLastCalledWith(expect.any(File),
+                                               { inicio: '2023-07', fim: '2024-06' })
+  })
+
+  it('pedir mais período do que o arquivo tem devolve o arquivo inteiro', async () => {
+    const { analytics } = await montar()
+    await userEvent.click(screen.getByRole('button', { name: '5 anos' }))
+    // 60 meses antes de jun/24 seria jul/19, mas o arquivo começa em mar/19:
+    // pedir 5 anos de um arquivo de 3 não é erro, é pedir tudo.
+    expect(analytics).toHaveBeenLastCalledWith(expect.any(File),
+                                               { inicio: '2019-07', fim: '2024-06' })
+    await userEvent.click(screen.getByRole('button', { name: '2 anos' }))
+    expect(analytics).toHaveBeenLastCalledWith(expect.any(File),
+                                               { inicio: '2022-07', fim: '2024-06' })
+  })
+
+  it('"1 mês" é um mês, não zero', async () => {
+    const { analytics } = await montar()
+    await userEvent.click(screen.getByRole('button', { name: '1 mês' }))
+    expect(analytics).toHaveBeenLastCalledWith(expect.any(File),
+                                               { inicio: '2024-06', fim: '2024-06' })
+  })
+
+  it('"Tudo" limpa o recorte em vez de mandar as pontas do arquivo', async () => {
+    // Mandar as datas exatas funcionaria, mas prende a análise ao que o arquivo
+    // tinha na primeira leitura. Vazio é "sem recorte", que é o que se quer.
+    const { analytics } = await montar()
+    await userEvent.click(screen.getByRole('button', { name: '1 ano' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Tudo' }))
+    expect(analytics).toHaveBeenLastCalledWith(expect.any(File),
+                                               { inicio: '', fim: '' })
+  })
+
+  it('o seletor de datas não deixa pedir mês que o arquivo não cobre', async () => {
+    await montar()
+    const de = screen.getByLabelText('Início do período')
+    const ate = screen.getByLabelText('Fim do período')
+    expect(de).toHaveAttribute('min', '2019-03')
+    expect(ate).toHaveAttribute('max', '2024-06')
+  })
+
+  it('o recorte vai para o SERVIDOR — é lá que tudo é recalculado', async () => {
+    // Se o filtro fosse aplicado no cliente depois de agregar, a média mensal e
+    // o custo fixo continuariam sendo os do arquivo inteiro ao lado de gráficos
+    // do período. Este teste prova que a resposta nova substitui os números.
+    vi.resetModules()
+    const analytics = vi.fn()
+      .mockResolvedValueOnce(RESPOSTA)
+      .mockResolvedValueOnce({
+        ...RESPOSTA,
+        resumo: { ...RESPOSTA.resumo, media_mensal: 4242, custo_fixo_mensal: 99 },
+        filtro: { inicio: '2023-07', fim: '2024-06' },
+      })
+    vi.doMock('../api', () => ({ analytics }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={vi.fn()} />)
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['a'], 'all.csv', { type: 'text/csv' }))
+    await screen.findByText('all.csv')
+    expect(screen.getByText('R$ 1.000,00')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '1 ano' }))
+    expect(await screen.findByText('R$ 4.242,00')).toBeInTheDocument()
+    expect(screen.getAllByText('R$ 99,00').length).toBeGreaterThan(0)
+  })
+
+  it('recorte vazio não joga o arquivo fora', async () => {
+    // O backend responde 400 dizendo o que o arquivo cobre. Voltar para a
+    // dropzone obrigaria a subir o CSV de novo por causa de um clique.
+    vi.resetModules()
+    const onError = vi.fn()
+    const analytics = vi.fn()
+      .mockResolvedValueOnce(RESPOSTA)
+      .mockRejectedValueOnce(new Error('nenhum lançamento entre 2024-06 e 2024-06'))
+    vi.doMock('../api', () => ({ analytics }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={onError} />)
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['a'], 'all.csv', { type: 'text/csv' }))
+    await screen.findByText('all.csv')
+
+    await userEvent.click(screen.getByRole('button', { name: '1 mês' }))
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('nenhum lançamento'))
+    expect(screen.getByText('all.csv')).toBeInTheDocument()
+    expect(document.querySelector('.periodo-barra')).toBeInTheDocument()
+  })
+
+  it('trocar de arquivo zera o recorte', async () => {
+    const { analytics } = await montar()
+    await userEvent.click(screen.getByRole('button', { name: '1 ano' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Outro arquivo' }))
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['b'], 'outro.csv', { type: 'text/csv' }))
+    expect(analytics).toHaveBeenLastCalledWith(expect.any(File), {})
+  })
+})
+
+describe('AnalyticsView — meses excepcionais medidos contra a vizinhança', () => {
+  // Uma série que cresce dez vezes em 14 anos, como a dele: R$ 1.000/mês no
+  // começo, R$ 40.000/mês no fim, e UM mês de R$ 658 mil no meio do período
+  // caro. Contra a mediana da série inteira, todo mês recente vira "pico" e o
+  // gráfico apaga justamente o período que interessa.
+  const serie = [
+    ...Array.from({ length: 60 }, (_, i) => ({
+      periodo: `20${12 + Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`,
+      gasto: 1000, receita: 1000, no_cartao: 0, nao_detalhado: 0,
+    })),
+    ...Array.from({ length: 24 }, (_, i) => ({
+      periodo: `20${22 + Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`,
+      gasto: i === 12 ? 658_000 : 40_000, receita: 40_000,
+      no_cartao: 0, nao_detalhado: 0,
+    })),
+  ]
+
+  async function montar() {
+    vi.resetModules()
+    vi.doMock('../api', () => ({ analytics: vi.fn().mockResolvedValue({
+      ...RESPOSTA_BASE(), serie_mensal: serie,
+    }) }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={vi.fn()} />)
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['a'], 'all.csv', { type: 'text/csv' }))
+    await screen.findByText('all.csv')
+  }
+
+  it('tira o mês de R$ 658 mil e SÓ ele', async () => {
+    await montar()
+    expect(screen.getByText(/1 mês\(es\) excepcionais/)).toBeInTheDocument()
+    expect(screen.getByText(/Fora do gráfico/).textContent)
+      .toMatch(/R\$\s*658\.000,00/)
+  })
+
+  it('mês caro de uma época cara não é pico', async () => {
+    // Os 23 meses de R$ 40 mil são 40x a mediana global (R$ 1.000) e rotina na
+    // própria vizinhança. Medir contra a série inteira marcaria os 24.
+    await montar()
+    expect(screen.queryByText(/24 mês\(es\) excepcionais/)).not.toBeInTheDocument()
+  })
+
+  it('o rodapé não vira lista de vinte meses', async () => {
+    vi.resetModules()
+    // Uma série plana com dez picos: o rodapé antigo listava todos e ocupava
+    // mais linhas do que o gráfico que ele explicava.
+    const plana = Array.from({ length: 60 }, (_, i) => ({
+      periodo: `20${12 + Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`,
+      gasto: i % 6 === 0 ? 500_000 : 1000, receita: 0,
+      no_cartao: 0, nao_detalhado: 0,
+    }))
+    vi.doMock('../api', () => ({ analytics: vi.fn().mockResolvedValue({
+      ...RESPOSTA_BASE(), serie_mensal: plana,
+    }) }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={vi.fn()} />)
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['a'], 'all.csv', { type: 'text/csv' }))
+    await screen.findByText('all.csv')
+    const rodape = screen.getByText(/Fora do gráfico/).textContent
+    expect(rodape).toMatch(/e mais \d+/)
+    expect(rodape.match(/R\$/g).length).toBeLessThanOrEqual(4)
+  })
+})
+
+describe('AnalyticsView — tirar outlier de "Para onde vai o dinheiro"', () => {
+  const COM_OUTLIER = {
+    ...RESPOSTA_BASE(),
+    por_categoria: [
+      { categoria: 'Casa', total: 1_292_685 },
+      { categoria: 'Construção', total: 359_093 },
+      { categoria: 'Transporte', total: 304_125 },
+      { categoria: 'Lazer', total: 137_946 },
+      { categoria: 'Alimentação', total: 85_830 },
+    ],
+  }
+
+  async function montar(resposta = COM_OUTLIER) {
+    vi.resetModules()
+    vi.doMock('../api', () => ({ analytics: vi.fn().mockResolvedValue(resposta) }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={vi.fn()} />)
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['a'], 'all.csv', { type: 'text/csv' }))
+    await screen.findByText('all.csv')
+  }
+
+  it('clicar numa barra tira a categoria do gráfico', async () => {
+    await montar()
+    await userEvent.click(screen.getByRole('button', { name: /^Casa —/ }))
+    expect(screen.queryByRole('button', { name: /^Casa —/ })).not.toBeInTheDocument()
+    // e a barra que sobrou volta a ocupar a régua inteira
+    expect(screen.getByRole('button', { name: /^Construção —/ })).toBeInTheDocument()
+  })
+
+  it('as porcentagens passam a ser sobre o que sobrou', async () => {
+    // Manter o denominador antigo faria as fatias visíveis somarem 22% e
+    // sugerir que 78% do dinheiro sumiu do gráfico sem explicação.
+    await montar()
+    await userEvent.click(screen.getByRole('button', { name: /^Casa —/ }))
+    expect(screen.getByText(/gasto que sobrou depois de tirar 1 categoria/))
+      .toBeInTheDocument()
+    // Construção agora é 359093 / 886994 = 40,5%
+    expect(screen.getByText('40,5%')).toBeInTheDocument()
+  })
+
+  it('oferece tirar o que está fora de escala, nomeando quem é', async () => {
+    // Casa vale 13x a mediana das mostradas; a segunda colocada vale 3,6x. O
+    // corte em 4x separa as duas — um corte pela MÉDIA não separaria, porque a
+    // média já vem contaminada pela própria Casa.
+    await montar()
+    const botao = screen.getByRole('button', { name: /fora de escala/ })
+    expect(botao.textContent).toContain('Casa')
+    expect(botao.textContent).not.toContain('Construção')
+    await userEvent.click(botao)
+    expect(screen.queryByRole('button', { name: /^Casa —/ })).not.toBeInTheDocument()
+  })
+
+  it('o que foi tirado fica visível e volta com um clique', async () => {
+    await montar()
+    await userEvent.click(screen.getByRole('button', { name: /^Casa —/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'Trazer Casa de volta' }))
+    expect(screen.getByRole('button', { name: /^Casa —/ })).toBeInTheDocument()
+  })
+
+  it('sem outlier nenhum, não fica oferecendo remoção', async () => {
+    await montar({
+      ...RESPOSTA_BASE(),
+      por_categoria: [{ categoria: 'Casa', total: 1000 },
+                      { categoria: 'Lazer', total: 900 },
+                      { categoria: 'Saúde', total: 800 }],
+    })
+    expect(screen.queryByText(/fora de escala/)).not.toBeInTheDocument()
+  })
+})
+
+describe('AnalyticsView — composição por ano ou por mês', () => {
+  const doze = Array.from({ length: 12 }, (_, i) => ({
+    periodo: `2024-${String(i + 1).padStart(2, '0')}`, valores: [100 + i],
+  }))
+
+  async function montar(inicio, fim, periodos = doze) {
+    vi.resetModules()
+    vi.doMock('../api', () => ({ analytics: vi.fn().mockResolvedValue({
+      ...RESPOSTA_BASE(),
+      resumo: { ...RESPOSTA_BASE().resumo, periodo_inicio: inicio, periodo_fim: fim },
+      categoria_por_periodo: { categorias: ['Casa'], periodos },
+    }) }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={vi.fn()} />)
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['a'], 'all.csv', { type: 'text/csv' }))
+    await screen.findByText('all.csv')
+  }
+
+  it('com dois anos ou menos na tela, o padrão é o mês', async () => {
+    // Uma barra por ano quando só há dois anos não é gráfico, é uma comparação.
+    await montar('2023-07', '2024-06')
+    expect(screen.getByRole('heading', { name: /Composição do gasto por mês/ }))
+      .toBeInTheDocument()
+  })
+
+  it('com muitos anos, o padrão é o ano', async () => {
+    await montar('2012-01', '2024-06')
+    expect(screen.getByRole('heading', { name: /Composição do gasto por ano/ }))
+      .toBeInTheDocument()
+  })
+
+  it('dá para discordar do padrão nos dois sentidos', async () => {
+    await montar('2012-01', '2024-06')
+    await userEvent.click(screen.getByRole('button', { name: 'Por mês' }))
+    expect(screen.getByRole('heading', { name: /por mês/ })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Por ano' }))
+    expect(screen.getByRole('heading', { name: /por ano/ })).toBeInTheDocument()
+  })
+
+  it('o mês excepcional sai da pilha por mês, mas não da pilha por ano', async () => {
+    // Por mês, um mês de R$ 658 mil faz os outros 23 virarem um risco no chão.
+    // Por ano ele se dilui no total — tirar seria mentir sobre quanto o ano
+    // custou, e o eixo aguenta.
+    vi.resetModules()
+    const serie = Array.from({ length: 24 }, (_, i) => ({
+      periodo: `20${24 + Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`,
+      gasto: i === 6 ? 658_000 : 10_000, receita: 0, no_cartao: 0, nao_detalhado: 0,
+    }))
+    vi.doMock('../api', () => ({ analytics: vi.fn().mockResolvedValue({
+      ...RESPOSTA_BASE(),
+      resumo: { ...RESPOSTA_BASE().resumo, periodo_inicio: '2024-01', periodo_fim: '2025-12' },
+      serie_mensal: serie,
+      categoria_por_periodo: {
+        categorias: ['Casa'],
+        periodos: serie.map((m) => ({ periodo: m.periodo, valores: [m.gasto] })),
+      },
+    }) }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={vi.fn()} />)
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['a'], 'all.csv', { type: 'text/csv' }))
+    await screen.findByText('all.csv')
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /Ver como tabela/ }))
+    // Só a tabela da COMPOSIÇÃO: a de "gasto e receita, mês a mês" continua
+    // listando o mês excepcional de propósito — ele sai do gráfico, não do dado.
+    const composicao = () => screen.getByRole('heading', { name: /Composição/ })
+      .closest('section')
+    const linhas = () => [...composicao().querySelectorAll('tbody tr')]
+      .map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent))
+
+    expect(linhas().map((l) => l[0])).not.toContain('jul/24')
+    expect(screen.getByText(/mês\(es\) excepcionais estão fora daqui/)).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Por ano' }))
+    const anos = linhas()
+    // 11 meses de R$ 10 mil + o de R$ 658 mil = R$ 768 mil em 2024.
+    expect(anos.some((l) => /768\.000,00/.test(l[1] || ''))).toBe(true)
+  })
+
+  it('a soma por ano é a soma dos meses daquele ano', async () => {
+    await montar('2012-01', '2024-06', [
+      { periodo: '2023-11', valores: [10] },
+      { periodo: '2023-12', valores: [20] },
+      { periodo: '2024-01', valores: [5] },
+    ])
+    await userEvent.click(screen.getByRole('checkbox', { name: /Ver como tabela/ }))
+    const linhas = [...document.querySelectorAll('table')]
+      .flatMap((t) => [...t.querySelectorAll('tbody tr')])
+      //  : o Intl em pt-BR separa "R$" do número com espaço INQUEBRÁVEL,
+      // então comparar com um espaço comum falha por um caractere invisível.
+      .map((tr) => [...tr.querySelectorAll('td')]
+        .map((td) => td.textContent.replace(/ /g, ' ')))
+    expect(linhas).toContainEqual(['2023', 'R$ 30,00'])
+    expect(linhas).toContainEqual(['2024', 'R$ 5,00'])
+  })
+})
+
+describe('Residuos — os meses que não fecham', () => {
+  // A forma real do arquivo dele: 69 meses não fecham, mas a mediana do resíduo
+  // é R$ 117 e SETE meses concentram tudo. Listar os 69 juntos é o que fazia o
+  // painel ser ignorado.
+  const MESES = [
+    { periodo: '2021-06', saldo: -72139.94, tipo: 'falta_resgate',
+      receita: 5000, gasto: 77139.94, poupanca: 0, resgate: 0 },
+    { periodo: '2026-08', saldo: 55328.10, tipo: 'sobra_sem_destino',
+      receita: 60000, gasto: 4671.90, poupanca: 0, resgate: 0 },
+    { periodo: '2019-12', saldo: -18000, tipo: 'falta_resgate',
+      receita: 4000, gasto: 22000, poupanca: 0, resgate: 0 },
+    { periodo: '2014-11', saldo: 117.42, tipo: 'sobra_sem_destino',
+      receita: 3000, gasto: 2882.58, poupanca: 0, resgate: 0 },
+    { periodo: '2015-03', saldo: -12.10, tipo: 'falta_resgate',
+      receita: 3000, gasto: 3012.10, poupanca: 0, resgate: 0 },
+  ]
+  const SAUDE = { meses_que_nao_fecham: MESES, total_meses_que_nao_fecham: 5,
+                  pares_que_se_anulam: [] }
+
+  it('separa o arredondamento do que é dinheiro de verdade', async () => {
+    render(<Residuos saude={SAUDE} />)
+    // Dois meses abaixo de R$ 500 saem do gráfico por padrão...
+    expect(screen.getByText('Arredondamento').nextSibling.textContent).toBe('2')
+    // ...e os grandes ficam, com o sinal separando os dois problemas.
+    expect(screen.getByText('Meses sem resgate').nextSibling.textContent).toBe('2')
+    expect(screen.getByText('Meses com sobra solta').nextSibling.textContent).toBe('1')
+  })
+
+  it('o corte é ajustável — quem quer ver centavo, vê', async () => {
+    render(<Residuos saude={SAUDE} />)
+    // A linha do acumulado cobre todos os meses (é o ponto dela), então a
+    // pergunta certa não é "nov/14 aparece?" e sim "nov/14 virou trabalho?".
+    const trabalho = /uma "Poupança" de R\$\s*117,42/
+    expect(screen.queryByText(trabalho)).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Tudo' }))
+    expect(screen.getByText(trabalho)).toBeInTheDocument()
+  })
+
+  it('o líquido soma TODOS os meses, inclusive os abaixo do corte', async () => {
+    // O corte é de leitura, não de contabilidade: esconder centavos do gráfico
+    // não pode mudar quanto dinheiro está sem explicação.
+    render(<Residuos saude={SAUDE} />)
+    // -72139,94 + 55328,10 - 18000 + 117,42 - 12,10 = -34706,52
+    expect(screen.getByText('-R$ 34.706,52')).toBeInTheDocument()
+  })
+
+  it('diz o que fazer com cada mês, em vez de só apontar', async () => {
+    render(<Residuos saude={SAUDE} />)
+    expect(screen.getByText(/um "Resgate da poupança" de R\$\s*72\.139,94/))
+      .toBeInTheDocument()
+    expect(screen.getByText(/uma "Poupança" de R\$\s*55\.328,10/)).toBeInTheDocument()
+  })
+
+  it('aponta os pares que se cancelam como UM erro, não dois', async () => {
+    render(<Residuos saude={{ ...SAUDE,
+      pares_que_se_anulam: [{ a: '2024-01', b: '2024-02', valor: 45 }] }} />)
+    expect(screen.getByText(/lançamento no mês\s+errado/)).toBeInTheDocument()
+    expect(screen.getByText(/jan\/24 ↔ fev\/24/)).toBeInTheDocument()
+  })
+
+  it('some quando não há nada para corrigir', () => {
+    const { container } = render(
+      <Residuos saude={{ meses_que_nao_fecham: [], pares_que_se_anulam: [] }} />)
+    expect(container).toBeEmptyDOMElement()
+  })
+})
+
+describe('charts — domínio que desce abaixo do zero', () => {
+  it('desenha a parte negativa em vez de achatá-la na linha do zero', () => {
+    // O resíduo acumulado dele chega a -R$ 103 mil. Com o piso preso no zero,
+    // `y` mapeava só [0, teto] e a curva inteira ficava colada no eixo.
+    render(<LineChart pontos={[{ periodo: '2024-01', v: 1000 },
+                               { periodo: '2024-02', v: -100000 }]}
+                      series={[{ chave: 'v', rotulo: 'Acumulado' }]} />)
+    const rotulos = [...document.querySelectorAll('text')].map((t) => t.textContent)
+    expect(rotulos.some((r) => r.startsWith('-R$'))).toBe(true)
+  })
+
+  it('série toda positiva continua ancorada no zero', () => {
+    render(<LineChart pontos={[{ periodo: '2024-01', v: 500 },
+                               { periodo: '2024-02', v: 1000 }]}
+                      series={[{ chave: 'v', rotulo: 'Gasto' }]} />)
+    const rotulos = [...document.querySelectorAll('text')].map((t) => t.textContent)
+    expect(rotulos).toContain('R$ 0')
+    expect(rotulos.some((r) => r.startsWith('-'))).toBe(false)
+  })
+})
+
+describe('charts — passo redondo do eixo', () => {
+  it('põe as marcas em múltiplos do passo, inclusive abaixo do zero', () => {
+    // Dividir [-103 mil, 10 mil] em quatro dava marcas em -148 mil e -95 mil:
+    // números que ninguém lê. O que precisa ser redondo é o PASSO.
+    const { marcas } = escala(-103736, 10000)
+    expect(marcas).toContain(0)
+    const passos = marcas.slice(1).map((v, i) => v - marcas[i])
+    expect(new Set(passos.map((p) => Math.round(p))).size).toBe(1)
+    expect(marcas.every((v) => Number.isInteger(v / passos[0]))).toBe(true)
+  })
+
+  it('não desperdiça metade do gráfico arredondando para a casa de cima', () => {
+    // R$ 103 mil virava um teto de R$ 200 mil e a curva ficava espremida
+    // na metade de baixo do quadro.
+    const { teto } = escala(0, 103736)
+    expect(teto).toBeLessThan(150000)
+    expect(teto).toBeGreaterThanOrEqual(103736)
+  })
+
+  it('série toda positiva não ganha piso negativo', () => {
+    expect(escala(500, 1000).piso).toBe(0)
+  })
+})
+
+describe('charts — barras divergentes', () => {
+  it('o sinal decide o lado e a cor, não o rótulo', () => {
+    const { container } = render(<BarrasDivergentes itens={[
+      { rotulo: 'jun/21', valor: -72139.94 },
+      { rotulo: 'ago/26', valor: 55328.10 },
+    ]} />)
+    const [neg, pos] = [...container.querySelectorAll('.viz-barra-preenche')]
+    // Negativo cresce para a esquerda a partir do meio; positivo, para a direita.
+    expect(neg.style.right).toBe('50%')
+    expect(pos.style.left).toBe('50%')
+    // Laranja/azul, NÃO vermelho/verde: rodado no validador, o par vermelho e
+    // verde dá ΔE 4,1 em deuteranopia — os dois lados viram o mesmo tom para
+    // 1 homem em 12, e num gráfico cujo sinal é a informação inteira isso
+    // apaga a informação.
+    expect(neg.style.background).toMatch(/235, 104, 52|#eb6834/)
+    expect(pos.style.background).toMatch(/42, 120, 214|#2a78d6/)
+  })
+})
+
+describe('charts — rótulos da barra empilhada', () => {
+  it('pula rótulos quando há meses demais para caber', () => {
+    const periodos = Array.from({ length: 60 }, (_, i) => ({
+      periodo: `20${20 + Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`,
+      valores: [100],
+    }))
+    const { container } = render(
+      <BarrasEmpilhadas periodos={periodos} categorias={['Casa']} />)
+    // 60 rótulos de 7 caracteres em 616px de plot viram borrão. No máximo 16.
+    const rotulos = [...container.querySelectorAll('svg text')]
+      .filter((t) => /^\d{4}-\d{2}$/.test(t.textContent))
+    expect(rotulos.length).toBeLessThanOrEqual(16)
+    expect(rotulos.length).toBeGreaterThan(0)
+  })
+
+  it('com poucos anos, mostra todos', () => {
+    const { container } = render(<BarrasEmpilhadas categorias={['Casa']} periodos={[
+      { periodo: '2023', valores: [100] }, { periodo: '2024', valores: [200] }]} />)
+    const rotulos = [...container.querySelectorAll('svg text')]
+      .filter((t) => /^\d{4}$/.test(t.textContent))
+    expect(rotulos.map((t) => t.textContent)).toEqual(['2023', '2024'])
   })
 })

@@ -51,6 +51,20 @@ export function recategorize(files) {
   return json('/recategorize', { method: 'POST', body: form })
 }
 
+// --- análise do histórico ---------------------------------------------------
+
+// Sem transaction_id: é leitura pura, nada fica guardado do outro lado.
+export function analytics(file, { inicio = '', fim = '' } = {}) {
+  const form = new FormData()
+  form.append('file', file)
+  // O recorte vai para o servidor porque TODA métrica é recalculada sobre ele.
+  // Filtrar no cliente, depois de agregar, daria média mensal e custo fixo do
+  // arquivo inteiro ao lado de gráficos do período — números que não batem.
+  form.append('inicio', inicio)
+  form.append('fim', fim)
+  return json('/analytics', { method: 'POST', body: form })
+}
+
 // --- configuração (bancos, formato de entrada e saída) ---------------------
 
 export const getConfig = () => json('/config')

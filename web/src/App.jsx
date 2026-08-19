@@ -12,6 +12,7 @@ import OutputFormatView from './components/OutputFormatView'
 import ConfigBundle from './components/ConfigBundle'
 import RecategorizeStep, { ChangesSummary } from './components/RecategorizeStep'
 import TravelStep from './components/TravelStep'
+import AnalyticsView from './components/AnalyticsView'
 import { applyTheme } from './theme'
 
 const STEPS = [
@@ -231,6 +232,7 @@ export default function App() {
   const TITULOS = {
     importar: 'Importar fatura',
     recategorizar: 'Recategorizar CSV',
+    analise: 'Análise do histórico',
     regras: 'Regras de categorização',
     entrada: 'Formato de entrada',
     saida: 'Formato de saída',
@@ -268,6 +270,13 @@ export default function App() {
           onClick={() => setSection('recategorizar')}
         >
           Recategorizar CSV
+        </button>
+
+        <button
+          className={`nav-item ${section === 'analise' ? 'active' : ''}`}
+          onClick={() => setSection('analise')}
+        >
+          Análise
         </button>
 
         <div className="nav-sep" />
@@ -332,6 +341,8 @@ export default function App() {
           )}
 
           {section === 'saida' && <OutputFormatView onError={setError} />}
+
+          {section === 'analise' && <AnalyticsView onError={setError} />}
 
           {section === 'config' && (
             <ConfigBundle onError={setError} onImported={loadBanks} />
@@ -416,6 +427,7 @@ export default function App() {
                   categories={categories}
                   getAssignment={getAssignment}
                   setAssignment={setAssignment}
+                  setManyAssignments={setManyAssignments}
                   assignmentList={assignmentList}
                   onCategoriesChanged={setCategories}
                   onNext={() => avancar('auto')}

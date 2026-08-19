@@ -16,12 +16,13 @@ const brl = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL
  * demais ela rouba lançamentos que já estavam certos em outra categoria.
  */
 export default function UnmappedStep({
-  session, categories, getAssignment, setAssignment,
+  session, categories, getAssignment, setAssignment, setManyAssignments,
   onCategoriesChanged, onNext, onError,
 }) {
   const [impacts, setImpacts] = useState({})
   const [saving, setSaving] = useState(false)
   const [esconderResolvidos, setEsconderResolvidos] = useState(false)
+  const [categoriaLote, setCategoriaLote] = useState('Outros')
   const items = session.unmapped_items
 
   // "Resolvido" inclui o "não sei": decidir que não se sabe também é decidir,
@@ -50,16 +51,39 @@ export default function UnmappedStep({
     }
   }
 
-  async function persistAll() {
-    const toPersist = items
+  // Mesma regra do Marketplace: esta tela não deixa passar estabelecimento sem
+  // categoria. O que sobrou recebe a categoria do seletor, e o botão diz qual.
+  // Sem isso, "continuar" mandava estabelecimentos vazios para o CSV em
+  // silêncio.
+  //
+  // A lista enviada é montada AQUI, não lida do estado depois de um
+  // `setManyAssignments`: o React só aplica o novo estado no próximo render, e
+  // ler no mesmo tick mandaria a lista velha para o backend.
+  async function continuar() {
+    const doLote = pendentes.map((item) => ({
+      scope: 'merchant', target: item.merchant,
+      categoria: categoriaLote, mark_unknown: false,
+    }))
+
+    if (doLote.length) {
+      setManyAssignments(doLote.map((a) => ({
+        scope: a.scope, target: a.target,
+        patch: { categoria: a.categoria, mark_unknown: false },
+      })))
+    }
+
+    // Só o que o usuário mandou lembrar (ou marcou como desconhecido) vai para
+    // o YAML. O preenchimento em lote vale para esta fatura e não vira regra:
+    // "Outros" não é conhecimento sobre o estabelecimento.
+    const aPersistir = items
       .map((item) => getAssignment('merchant', item.merchant))
       .filter((a) => a && (a.persist_keyword || a.mark_unknown || a.mark_marketplace))
 
-    if (!toPersist.length) return onNext()
+    if (!aPersistir.length) return onNext()
 
     setSaving(true)
     try {
-      await api.updateMapping(session.transaction_id, toPersist)
+      await api.updateMapping(session.transaction_id, aPersistir)
       const fresh = await api.getCategories()
       onCategoriesChanged(fresh.categories)
       onNext()
@@ -201,12 +225,41 @@ export default function UnmappedStep({
         <p className="muted">Tudo resolvido nesta etapa.</p>
       )}
 
-      <button className="primary" onClick={persistAll} disabled={saving}>
-        {saving ? 'Gravando mapeamento…' : 'Continuar'}
+      <div className="toolbar">
+        <div className="grow">
+          <strong className="small">
+            Preencher os {pendentes.length} sem categoria com{' '}
+            <span className="destaque">{categoriaLote || '— escolha ao lado —'}</span>
+          </strong>
+          <div className="muted small">
+            vale só para esta fatura · não vira regra no{' '}
+            <code>categories.yml</code>
+          </div>
+        </div>
+        <CategorySelect
+          value={categoriaLote}
+          categories={categories}
+          placeholder="— escolher —"
+          onChange={setCategoriaLote}
+        />
+      </div>
+
+      <button className="primary" onClick={continuar}
+              disabled={saving || (pendentes.length > 0 && !categoriaLote)}>
+        {saving
+          ? 'Gravando mapeamento…'
+          : pendentes.length > 0
+            ? `Continuar e aplicar ${categoriaLote || '…'} em ${pendentes.length}`
+            : 'Continuar'}
       </button>
       <p className="muted small">
-        O que você marcar como “lembrar” vai para o <code>categories.yml</code> e
-        é publicado num commit único no fim, junto com o export.
+        O que você marcar como “lembrar” vai para o <code>categories.yml</code>{' '}
+        assim que você continuar, e é publicado no GitHub junto com o export.
+        {pendentes.length > 0 && (
+          <> Os {pendentes.length} sem categoria recebem{' '}
+            {categoriaLote || 'a categoria escolhida acima'} — esta tela não
+            deixa passar estabelecimento em branco.</>
+        )}
       </p>
     </section>
   )

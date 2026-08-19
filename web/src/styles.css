@@ -169,7 +169,7 @@ button.link {
 }
 button.link.small { display: block; margin-top: 4px; font-size: 12px; }
 
-select, input[type="search"], input[type="text"] {
+select, input[type="search"], input[type="text"], input[type="month"] {
   font: inherit; color: var(--text); background: var(--surface);
   border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
 }
@@ -312,3 +312,107 @@ tr.changed td { background: var(--verde-suave); }
   cursor: pointer; font-weight: 600; color: var(--verde-escuro);
   display: flex; align-items: center; gap: 8px;
 }
+
+/* ------------------------------------------------------------------ gráficos */
+/* A superfície dos gráficos é o branco do card — foi contra ela que a paleta
+   das séries foi validada (banda de luminosidade, croma, separação para
+   daltonismo e contraste). Trocar o fundo invalida a validação. */
+.viz-wrap { position: relative; margin: 12px 0 4px; }
+.viz { width: 100%; height: auto; display: block; }
+
+.viz-tip {
+  position: absolute; pointer-events: none; z-index: 5;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 10px; font-size: 12px;
+  box-shadow: var(--shadow); white-space: nowrap;
+}
+.viz-tip strong { display: block; margin-bottom: 2px; }
+.viz-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+  margin-right: 6px; vertical-align: middle;
+}
+
+.viz-legenda {
+  display: flex; flex-wrap: wrap; gap: 6px 16px;
+  margin-top: 10px; font-size: 12px; color: var(--muted);
+}
+
+/* Barras horizontais: o valor fica SEMPRE escrito ao lado. Três tons da paleta
+   ficam abaixo de 3:1 contra o branco, e a regra para isso é rótulo visível ou
+   tabela — aqui é o rótulo. */
+.viz-barras { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
+.viz-barra { display: grid; grid-template-columns: 190px 1fr 150px; gap: 12px; align-items: center; }
+.viz-barra-rotulo {
+  font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.viz-barra-trilho { background: var(--surface-2); border-radius: 4px; height: 16px; }
+.viz-barra-preenche { display: block; height: 100%; border-radius: 4px; min-width: 2px; }
+.viz-barra-valor { font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+.viz-barra-valor em { display: block; font-style: normal; font-size: 11px; color: var(--muted); }
+
+/* Mapa de calor: uma cor só, do claro ao escuro. Magnitude tem ordem; matiz
+   não — arco-íris aqui obrigaria a consultar a legenda a cada célula. */
+.viz-heat { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; }
+.viz-heat-linha { display: grid; grid-template-columns: 48px repeat(12, 1fr); gap: 2px; }
+.viz-heat-cabecalho { font-size: 11px; color: var(--muted); }
+.viz-heat-mes { text-align: center; }
+.viz-heat-ano { font-size: 11px; color: var(--muted); align-self: center; }
+.viz-heat-cel { border-radius: 3px; background: var(--surface-2); cursor: default; }
+.viz-heat-cel.vazia {
+  background: repeating-linear-gradient(45deg, var(--surface-2), var(--surface-2) 3px,
+                                        transparent 3px, transparent 6px);
+}
+
+td.alta, .alta { color: #d03b3b; }
+.viz-janelas { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.viz-janelas .ghost.ativo {
+  border-color: var(--verde); color: var(--verde-escuro); background: var(--verde-suave);
+}
+
+/* ------------------------------------------------------ recorte de período
+
+   Fica GRUDADO no topo, logo abaixo da topbar, porque é o controle do qual
+   todos os painéis da aba derivam. Rolar até o gráfico do fim da página e não
+   saber mais qual período está na tela é como ler um extrato sem cabeçalho.
+   z-index 19 = um degrau abaixo da topbar (20), que passa por cima dele.        */
+.periodo-barra {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  position: sticky; top: 61px; z-index: 19; margin-bottom: 16px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 16px; box-shadow: var(--shadow);
+}
+.periodo-rotulo {
+  font-size: 11px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .05em; font-weight: 600;
+}
+.periodo-barra label { display: inline-flex; align-items: center; gap: 6px;
+                       font-size: 13px; color: var(--muted); }
+.periodo-barra input[type="month"] { font-size: 13px; padding: 6px 8px; }
+
+/* Barra clicável: é um <button>, então precisa perder a cara de botão e manter
+   o alinhamento em grade das outras. */
+.viz-barra.clicavel {
+  border: none; background: none; padding: 2px 4px; margin: -2px -4px;
+  border-radius: 6px; text-align: left; width: calc(100% + 8px);
+}
+.viz-barra.clicavel:hover { background: var(--surface-2); }
+.viz-barra.clicavel:hover .viz-barra-preenche { opacity: .55; }
+.viz-barra.clicavel:focus-visible { outline: 2px solid var(--verde); }
+
+/* Divergente: o zero no meio do trilho e o preenchimento saindo dele. */
+.viz-barra-trilho.divergente { position: relative; overflow: hidden; }
+.viz-barra-trilho.divergente .viz-barra-preenche { height: 100%; }
+.viz-barra-zero {
+  position: absolute; left: 50%; top: 0; bottom: 0; width: 1px;
+  background: var(--muted); opacity: .45; z-index: 1;
+}
+
+.chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.chip {
+  font-size: 12px; padding: 3px 10px; border-radius: 999px;
+  background: var(--verde-suave); border: 1px solid var(--neutro-claro);
+  color: var(--verde-escuro);
+}
+.chip:hover { border-color: var(--magenta); color: var(--magenta); }
+
+.card h3 { font-size: 14px; font-weight: 640; margin: 22px 0 4px; }

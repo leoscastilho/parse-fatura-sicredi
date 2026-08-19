@@ -448,3 +448,90 @@ def test_confirmar_entrada_inexistente_da_422(client):
     assert client.post("/rules/edit", json={"operations": [
         {"op": "confirm", "block": "palavras", "categoria": "Casa",
          "value": "NAO EXISTE"}]}).status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Persistência do "lembrar"
+# ---------------------------------------------------------------------------
+#
+# A gravação no disco morava DENTRO do commit no GitHub, depois do push. Sem
+# token — que é como o portal roda localmente — marcar "lembrar" devolvia
+# 200 OK e não gravava nada: a palavra-chave ficava só no `yaml_working` da
+# transação, que expira em 24h. No mês seguinte o estabelecimento voltava como
+# novo, sem nenhum sinal de que algo se perdeu.
+
+def _lembrar(client, sicredi_xlsx, categoria="Casa"):
+    data = _upload(client, sicredi_xlsx).json()
+    tx, novo = data["transaction_id"], data["unmapped_items"][0]["merchant"]
+    resposta = client.post("/update-mapping", json={
+        "transaction_id": tx, "assignments": [
+            {"scope": "merchant", "target": novo, "categoria": categoria,
+             "persist_keyword": novo}]})
+    assert resposta.status_code == 200, resposta.text
+    return tx, novo
+
+
+def test_lembrar_grava_no_arquivo_sem_github(client, sicredi_xlsx, config_dir,
+                                             monkeypatch):
+    """Sem token, "lembrar" tem que persistir do mesmo jeito."""
+    monkeypatch.setenv("FATURA_GITHUB_TOKEN", "")
+    _, novo = _lembrar(client, sicredi_xlsx)
+
+    gravado = (config_dir / "categories.yml").read_text(encoding="utf-8")
+    assert novo in gravado, "a palavra-chave não chegou ao categories.yml"
+
+
+def test_lembrar_persiste_mesmo_com_github_quebrado(client, sicredi_xlsx,
+                                                    config_dir, monkeypatch):
+    """Token revogado não pode custar a palavra-chave."""
+    from api import app as app_module
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("bad credentials")
+
+    monkeypatch.setattr(app_module.GitHubSync, "commit", explode)
+    monkeypatch.setattr(app_module.GitHubSync, "current_sha", lambda self: None)
+    monkeypatch.setenv("FATURA_GITHUB_TOKEN", "ghp_invalido")
+
+    _, novo = _lembrar(client, sicredi_xlsx)
+    assert novo in (config_dir / "categories.yml").read_text(encoding="utf-8")
+
+
+def test_lembrar_sobrevive_a_transacao_seguinte(client, sicredi_xlsx, config_dir):
+    """O ponto da feature: no próximo upload o estabelecimento já sai
+    classificado, em vez de voltar para o balde de novos."""
+    _, novo = _lembrar(client, sicredi_xlsx, categoria="Casa")
+
+    segunda = _upload(client, sicredi_xlsx).json()
+    ainda_novo = {g["merchant"] for g in segunda["unmapped_items"]}
+    assert novo not in ainda_novo, "voltou como novo — o mapeamento não pegou"
+
+    classificados = {g["merchant"]: g["categoria"]
+                     for g in segunda["auto_classified_items"]}
+    assert classificados.get(novo) == "Casa"
+
+
+def test_nao_lembrar_nao_grava_nada(client, sicredi_xlsx, config_dir):
+    """Sem marcar "lembrar", o arquivo fica exatamente como estava."""
+    antes = (config_dir / "categories.yml").read_text(encoding="utf-8")
+    data = _upload(client, sicredi_xlsx).json()
+    client.post("/update-mapping", json={
+        "transaction_id": data["transaction_id"], "assignments": [
+            {"scope": "merchant", "target": data["unmapped_items"][0]["merchant"],
+             "categoria": "Casa"}]})   # sem persist_keyword
+    assert (config_dir / "categories.yml").read_text(encoding="utf-8") == antes
+
+
+def test_marcar_desconhecido_tambem_persiste(client, sicredi_xlsx, config_dir):
+    """"Não sei" é uma decisão e também precisa sobreviver: senão o portal
+    volta a perguntar todo mês sobre o mesmo estabelecimento."""
+    data = _upload(client, sicredi_xlsx).json()
+    novo = data["unmapped_items"][0]["merchant"]
+    client.post("/update-mapping", json={
+        "transaction_id": data["transaction_id"], "assignments": [
+            {"scope": "merchant", "target": novo, "mark_unknown": True}]})
+
+    gravado = (config_dir / "categories.yml").read_text(encoding="utf-8")
+    assert novo in gravado
+    segunda = _upload(client, sicredi_xlsx).json()
+    assert novo not in {g["merchant"] for g in segunda["unmapped_items"]}

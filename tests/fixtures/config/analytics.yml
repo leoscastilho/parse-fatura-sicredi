@@ -1,0 +1,118 @@
+# =============================================================================
+#  Papéis das categorias — o que conta como GASTO na análise
+# =============================================================================
+#
+#  Somar todas as linhas da planilha dá um número errado, e errado por muito.
+#  Três coisas diferentes convivem na mesma coluna Categoria:
+#
+#    1. GASTO      dinheiro que saiu e não volta: mercado, luz, restaurante.
+#
+#    2. RECEITA    dinheiro que entrou: salário, aluguel recebido.
+#
+#    3. CARREGAMENTO  não é gasto NEM receita — é o mês sendo zerado.
+#       `Poupança` empurra o que sobrou para o mês seguinte e
+#       `Resgate Poupança` traz de volta o que sobrou do mês anterior.
+#       O mesmo dinheiro aparece duas vezes, com sinais opostos, e contá-lo
+#       inflaria tanto a receita quanto o gasto. É por isso que existe a
+#       identidade que a aba usa para conferir os dados:
+#
+#           receita − gasto − poupança + resgate ≈ 0
+#
+#       Mês que não fecha por essa conta tem lançamento faltando, e a aba avisa.
+#
+#    4. ARTEFATO   linhas que existem por causa de como a planilha é feita, não
+#       por causa de um gasto novo. `Cartão de crédito` é o pagamento da fatura
+#       — cujos itens JÁ estão detalhados linha a linha, com `[Cartão]` na
+#       descrição. Contar os dois é contar a mesma compra duas vezes (R$ 310 mil
+#       no seu histórico). `Restante` é saldo, não transação.
+#
+#  Categoria que não aparecer aqui é tratada como GASTO: é o caso comum, e o
+#  erro de classificar um gasto novo como gasto é zero.
+# =============================================================================
+
+papeis:
+  receita:
+    - Renda Fixa
+    - Renda Variável
+
+  carregamento:
+    - Poupança            # o que sobrou indo para o mês seguinte
+    - Resgate Poupança    # o que sobrou do mês anterior voltando
+
+  artefato:
+    - Restante            # saldo do mês, não é transação
+
+  # `Cartão de crédito` NÃO entra em `artefato`, e isso foi medido, não suposto.
+  #
+  # A suspeita era de dupla contagem: a linha "Fatural do mês atual" e os itens
+  # da fatura (com `[Cartão]` na descrição) somariam a mesma compra duas vezes.
+  # Conferindo mês a mês no histórico: em NENHUM mês os dois coexistem. A fatura
+  # entra como uma linha agregada (26 meses) ou itemizada (fev e mar/2025),
+  # nunca as duas. Excluí-la tiraria R$ 310 mil de gasto real da conta — e a
+  # identidade do mês zerado deixaria de fechar justamente por esse valor.
+  #
+  # O risco continua existindo para o futuro: se um mês trouxer os itens E a
+  # linha agregada, aí sim há dupla contagem. Isso é DETECTADO na aba (painel de
+  # saúde), em vez de presumido aqui.
+
+  # Investimento é dinheiro que sai do orçamento mas não é consumo. Fica à parte
+  # para o gasto do mês não subir quando você aporta — mude para `gasto` se
+  # preferir vê-lo somado.
+  investimento:
+    - Investimento
+
+# -----------------------------------------------------------------------------
+#  Gasto real, mas AINDA NÃO DETALHADO.
+#
+#  `Cartão de crédito` é a fatura inteira lançada numa linha só, porque aquele
+#  mês ainda não foi aberto em categorias. O dinheiro saiu de verdade — conta
+#  como gasto —, mas ninguém sabe quanto dele foi mercado, transporte ou lazer.
+#
+#  Isso não é detalhe contábil: são R$ 310 mil que a tela de categorias não
+#  consegue explicar. Marcar aqui faz a aba medir e mostrar quanto do gasto está
+#  neste limbo, mês a mês — que é a mesma coisa que uma lista do que vale a pena
+#  passar pelo "Recategorizar CSV".
+# -----------------------------------------------------------------------------
+nao_detalhado:
+  - Cartão de crédito
+
+# -----------------------------------------------------------------------------
+#  Categorias equivalentes escritas de formas diferentes ao longo dos anos.
+#  A esquerda vira a direita antes de qualquer soma; sem isto, `hobby` e `Hobby`
+#  viram duas fatias no gráfico.
+# -----------------------------------------------------------------------------
+sinonimos:
+  hobby: Hobby
+  Outro: Outros
+  Obra: Construção
+
+# -----------------------------------------------------------------------------
+#  Como reconhecer uma compra feita no cartão. O parser escreve este prefixo em
+#  toda linha que veio de uma fatura, então ele separa com precisão o que passou
+#  no cartão do que foi pago por pix, boleto ou débito.
+# -----------------------------------------------------------------------------
+cartao:
+  marcador: "[Cartão]"
+
+# -----------------------------------------------------------------------------
+#  Recorrentes: uma descrição que reaparece mês após mês (internet, aluguel,
+#  academia). `minimo_ocorrencias` evita chamar de recorrente algo que aconteceu
+#  duas vezes por acaso; `meses_recentes` é a janela usada para dizer se ainda
+#  está ativo.
+# -----------------------------------------------------------------------------
+recorrentes:
+  minimo_ocorrencias: 6
+  meses_recentes: 4
+
+# -----------------------------------------------------------------------------
+#  Anomalia = mês em que a categoria fugiu da PRÓPRIA mediana. A comparação é
+#  contra a história daquela categoria, não contra as outras: R$ 800 é normal em
+#  Casa e absurdo em Cachorro.
+#
+#  O desvio é medido em MADs (desvio absoluto mediano), que não se deixa
+#  contaminar pelo próprio outlier como o desvio padrão faria.
+# -----------------------------------------------------------------------------
+anomalias:
+  desvios: 3.5
+  minimo_meses: 6
+  minimo_valor: 200.0
