@@ -6,7 +6,7 @@ posterior carregando o `transaction_id`.
 
     /categories      o que existe hoje no YAML
     /upload          .xls  -> transaction_id + 4 baldes de itens
-    /recategorize    CSV de saída -> mesma revisão, só a coluna Categoria muda
+    /recategorize    CSV de saída -> mesma revisão; muda a Categoria e as marcas de viagem
     /travel          períodos de viagem -> as compras que caem dentro deles
     /validate        "se eu fizer isso, o que acontece?" (dry-run, não grava)
     /update-mapping  grava a decisão no YAML de trabalho da transação
@@ -230,9 +230,29 @@ def _apply_assignments(
     return resolved
 
 
+def _conhecidas_para_marca(record: dict) -> list[str]:
+    """Os nomes de categoria que `annotate` pode reconhecer como marca antiga.
+
+    Só na RECATEGORIZAÇÃO. Ali a descrição chega de um arquivo que já passou
+    por aqui e pode trazer `(Lazer)` de um processamento anterior; para
+    substituir a marca em vez de empilhá-la, `desanotar` precisa saber quais
+    parênteses são marca e quais são nome de estabelecimento.
+
+    Na importação de fatura a lista vai VAZIA de propósito, e isso não é
+    esquecimento: ali a descrição é construída do zero a cada /preview, nunca
+    tem marca anterior, e passar a lista só criaria o risco de comer o
+    parêntese de uma "Padaria (Matriz)" que por acaso se chamasse como uma
+    categoria.
+    """
+    if record["modo"] != "recategorizacao":
+        return []
+    return Ruleset.from_text(record["yaml_working"]).all_categories()
+
+
 def _apply_travel(
     lines: list[ClassifiedLine], rejected: list[str] | set[str],
     ranges: list[TravelRange] | None = None,
+    conhecidas: list[str] | None = None,
 ) -> list[ClassifiedLine]:
     """Converte em `Viagem` as linhas confirmadas, guardando a categoria real.
 
@@ -255,7 +275,8 @@ def _apply_travel(
             continue
         periodo = range_of(line, periodos)
         categoria, descricao = apply_travel(
-            line, line.categoria, periodo.rotulo if periodo else "")
+            line, line.categoria, periodo.rotulo if periodo else "",
+            conhecidas or [])
         saida.append(replace(line, categoria=categoria, descricao=descricao))
     return saida
 
@@ -663,8 +684,16 @@ async def recategorize_csv(
         marketplace_items=[LineItem.from_core(l) for l in balde(LineState.MARKETPLACE)],
         ignored_items=_group_by_merchant(balde(LineState.IGNORED)),
         warnings=avisos,
+        purchase_range=_purchase_range(linhas),
         source_files=fontes,
-        changes=[CategoryChangeItem(**m.__dict__) for m in mudancas],
+        changes=[CategoryChangeItem(**m.__dict__) for m in mudancas
+                 if m.kind == "categoria"],
+        # Separadas das mudanças de coluna porque a tela faz coisas diferentes
+        # com elas: a de coluna é recusável (vira uma atribuição de linha
+        # fixando a categoria antiga), a marca não é — recusá-la gravaria a
+        # categoria real na coluna de uma linha que precisa continuar `Viagem`.
+        travel_marks=[CategoryChangeItem(**m.__dict__) for m in mudancas
+                      if m.kind == "marca"],
         unchanged=len(linhas) - len(mudancas),
     )
 
@@ -680,6 +709,7 @@ async def analytics(
     fim: str = Form("", description="AAAA-MM, inclusivo"),
     sem_categorias: str = Form("", description="categorias a excluir, uma por linha"),
     sem_linhas: str = Form("", description="ids de lançamento a excluir, um por linha"),
+    sem_titulares: str = Form("", description="titulares a excluir; `<sem marca>` = os sem marca"),
     settings: Settings = Depends(get_settings),
 ) -> dict:
     """Analisa um histórico inteiro e devolve tudo já agregado.
@@ -723,7 +753,8 @@ async def analytics(
         resultado = analisar(conteudos, cfg,
                              inicio=inicio.strip() or None, fim=fim.strip() or None,
                              sem_categorias=_linhas_do_form(sem_categorias),
-                             sem_linhas=_linhas_do_form(sem_linhas))
+                             sem_linhas=_linhas_do_form(sem_linhas),
+                             sem_titulares=_linhas_do_form(sem_titulares))
     except AnalyticsError as exc:
         raise HTTPException(422, detail=str(exc))
 
@@ -746,14 +777,13 @@ def travel(payload: TravelRequest, store: Store = Depends(get_store)) -> TravelR
     """
     record = _load_transaction(store, payload.transaction_id)
 
-    # Na recategorização o contrato é que a descrição não seja tocada, e a
-    # viagem escreve a categoria real dentro dela. Os dois não cabem juntos.
-    if record["modo"] == "recategorizacao":
-        raise HTTPException(
-            409,
-            detail="períodos de viagem só valem na importação de fatura — a "
-                   "recategorização não altera a descrição do arquivo")
-
+    # Vale nos DOIS modos. Isto já foi um 409 na recategorização, quando o
+    # contrato dela era "a descrição não é tocada" — e a viagem escreve a
+    # categoria real dentro da descrição. O contrato foi reescrito para "só a
+    # coluna Categoria e as marcas de viagem mudam", porque uma viagem que só
+    # pode ser marcada no mês em que a fatura chega é uma viagem que só dá para
+    # marcar uma vez: reprocessar o histórico é exatamente quando dá para
+    # lembrar de todas.
     try:
         ranges = [TravelRange.from_dict(r.model_dump()) for r in payload.ranges]
     except TravelError as exc:
@@ -992,9 +1022,10 @@ def preview(payload: PreviewRequest, store: Store = Depends(get_store)) -> Previ
     resolvidas = _apply_assignments(_lines_of(record), payload.assignments)
     # A viagem entra por ÚLTIMO: a categoria que vai para o parêntese é a
     # final, já com marketplace e correções manuais resolvidos.
-    resolvidas = _apply_travel(resolvidas, payload.travel_rejected, _ranges_of(record))
+    resolvidas = _apply_travel(resolvidas, payload.travel_rejected, _ranges_of(record),
+                               _conhecidas_para_marca(record))
     # Recategorização não reordena: o compromisso é que só a coluna Categoria
-    # mude em relação ao arquivo de entrada.
+    # e as marcas de viagem mudem em relação ao arquivo de entrada.
     resolved = (resolvidas if record["modo"] == "recategorizacao"
                 else sort_lines(resolvidas))
 
@@ -1036,7 +1067,7 @@ def export(
     )
     resolved = _apply_travel(
         _apply_assignments(_lines_of(record), assignments), rejected,
-        _ranges_of(record))
+        _ranges_of(record), _conhecidas_para_marca(record))
     cfg = load_config(settings)
     blob = (lines_to_csv_preserving_order(resolved, schema=cfg.output,
                                           encoding=payload.encoding)

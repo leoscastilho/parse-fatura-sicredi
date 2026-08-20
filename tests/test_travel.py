@@ -26,7 +26,7 @@ import pytest
 from core import ClassifiedLine, LineState, Ruleset, classify_sources
 from core.travel import (
     TRAVEL_CATEGORY, TravelError, TravelRange, annotate, apply_travel,
-    mark_travel, purchase_dates, purchase_range, validate_ranges,
+    desanotar, mark_travel, purchase_dates, purchase_range, validate_ranges,
 )
 
 from .conftest import _sicredi_workbook, csv_de_saida_texto
@@ -345,13 +345,86 @@ def test_categoria_vazia_nao_inventa_rotulo():
     assert annotate(original, "   ") == original
 
 
-def test_linha_que_ja_era_viagem_ganha_o_parentese():
-    """Combina com o resto: a coluna diz Viagem, a descrição diz do que foi."""
+def test_linha_que_ja_era_viagem_nao_ganha_parentese_de_viagem():
+    """`(Viagem)` seria a marca comendo a si mesma e não diria nada.
+
+    A categoria real responde "o que essa compra seria se não fosse viagem".
+    Numa linha que JÁ está em Viagem a coluna não tem essa resposta, e copiá-la
+    para o parêntese produz uma marca que repete a coluna — e ocupa o lugar da
+    marca de verdade, que é o que este caso protege.
+    """
     linha = _linha("2026-07-15", categoria="Viagem",
                    descricao="[Cartão] Hotel Serra {Em 15/Jul}")
     categoria, descricao = apply_travel(linha, linha.categoria)
     assert categoria == TRAVEL_CATEGORY
-    assert descricao == "[Cartão] Hotel Serra (Viagem) {Em 15/Jul}"
+    assert descricao == "[Cartão] Hotel Serra {Em 15/Jul}"
+
+
+def test_marca_existente_sobrevive_a_um_periodo_novo():
+    """Marcar de novo uma linha já anotada preserva a categoria real dela."""
+    linha = _linha("2026-07-15", categoria="Viagem",
+                   descricao="[Cartão] Hotel Serra (Hospedagem) {Em 15/Jul}")
+    _, descricao = apply_travel(linha, linha.categoria, "Gramado",
+                                ["Hospedagem", "Lazer"])
+    assert descricao == "[Cartão] Hotel Serra (Hospedagem) {Gramado} {Em 15/Jul}"
+
+
+def test_marca_e_substituida_e_nao_empilhada():
+    """Reprocessar com regra nova troca o parêntese; não escreve os dois."""
+    uma = annotate("[Cartão] Hotel Serra {Em 15/Jul}", "Lazer", "Gramado")
+    duas = annotate(uma, "Hospedagem", "", ["Lazer", "Hospedagem"])
+    assert duas == "[Cartão] Hotel Serra (Hospedagem) {Gramado} {Em 15/Jul}"
+    # O rótulo não veio na segunda chamada e sobreviveu: quem reprocessa um
+    # arquivo antigo não sabe o nome da viagem, e apagá-lo seria perder a única
+    # coisa que dizia QUAL viagem foi.
+    assert "{Gramado}" in duas
+
+
+def test_parcela_nunca_e_confundida_com_a_marca():
+    """`(Parcela 03/05)` tem a forma da marca e não é marca.
+
+    A diferença é o conteúdo ser nome de categoria conhecido. Sem essa régua,
+    reprocessar comeria a parcela — e é a parcela que distingue uma compra de
+    400 reais de uma de 2.000 em cinco vezes.
+    """
+    original = "[Cartão] Renner (Parcela 03/05) (Lazer) {Em 10/May}"
+    assert annotate(original, "Vestuário", "", ["Lazer", "Vestuário"]) == (
+        "[Cartão] Renner (Parcela 03/05) (Vestuário) {Em 10/May}")
+
+
+def test_nome_de_estabelecimento_com_parenteses_fica_inteiro():
+    """`Padaria (Matriz)` não é marca de nada — não está na lista."""
+    original = "[Cartão] Padaria (Matriz) {Em 10/May}"
+    assert annotate(original, "Alimentação", "", ["Lazer", "Alimentação"]) == (
+        "[Cartão] Padaria (Matriz) (Alimentação) {Em 10/May}")
+
+
+def test_viagem_chamada_em_alguma_coisa_nao_vira_data():
+    """`{Em Paris}` só PARECE `{Em 15/Jul}`; a data tem forma exigida.
+
+    Com um padrão frouxo (`{Em qualquer coisa}`) o nome da viagem passaria por
+    marca de data, `desanotar` não o encontraria como rótulo, e renomear a
+    viagem escreveria a chave nova ao lado da velha em vez de no lugar dela.
+    """
+    marcada = annotate("[Cartão] Bistrô", "Alimentação", "Em Paris")
+    assert marcada == "[Cartão] Bistrô (Alimentação) {Em Paris}"
+    assert annotate(marcada, "Alimentação", "Em Roma", ["Alimentação"]) == (
+        "[Cartão] Bistrô (Alimentação) {Em Roma}")
+
+
+def test_desanotar_devolve_as_marcas_separadas():
+    base, categoria, rotulo = desanotar(
+        "[Cartão] Campo Belo C (Lazer) {Campo Belo} {Em 23/Mar}", ["Lazer"])
+    assert base == "[Cartão] Campo Belo C {Em 23/Mar}"
+    assert (categoria, rotulo) == ("Lazer", "Campo Belo")
+
+
+def test_desanotar_sem_lista_nao_toca_parenteses():
+    """Sem saber quais são categorias, o seguro é não mexer em parêntese."""
+    original = "[Cartão] Campo Belo C (Lazer) {Campo Belo} {Em 23/Mar}"
+    base, categoria, rotulo = desanotar(original)
+    assert base == "[Cartão] Campo Belo C (Lazer) {Em 23/Mar}"
+    assert (categoria, rotulo) == ("", "Campo Belo")
 
 
 # ---------------------------------------------------------------------------
@@ -423,20 +496,216 @@ def test_travel_404_em_transacao_desconhecida(client):
     assert resposta.status_code == 404
 
 
-def test_travel_recusado_na_recategorizacao(client, tmp_path, output_schema):
-    """A recategorização promete não tocar a descrição; a viagem escreve nela."""
-    csv_bytes = csv_de_saida_texto(output_schema, [
+def _recategorizar(client, output_schema, linhas, nome="saida.csv"):
+    blob = csv_de_saida_texto(output_schema, linhas).encode("utf-8")
+    return client.post("/recategorize",
+                       files={"files": (nome, blob, "text/csv")}).json()
+
+
+def test_travel_vale_na_recategorizacao(client, output_schema):
+    """Viagem também no reprocessamento — era um 409 e virou um caso de uso.
+
+    A viagem de 2019 só é lembrada quando o histórico inteiro está na tela; se
+    a única chance de marcá-la fosse o mês em que a fatura chegou, ela nunca
+    seria marcada.
+    """
+    dados = _recategorizar(client, output_schema, [
         {"data": "07/10/2026", "categoria": "Alimentação",
          "descricao": "[Cartão] Supermercados Alvora {Em 2/Jul}", "valor": "270.51"},
-    ]).encode("utf-8")
-    dados = client.post("/recategorize",
-                        files={"files": ("saida.csv", csv_bytes, "text/csv")}).json()
+    ])
     resposta = client.post("/travel", json={
         "transaction_id": dados["transaction_id"],
         "ranges": [{"inicio": "2026-07-01", "fim": "2026-07-31"}],
     })
-    assert resposta.status_code == 409
-    assert "descrição" in resposta.json()["detail"]
+    assert resposta.status_code == 200
+    assert resposta.json()["count"] == 1
+
+
+def test_recategorizacao_marca_e_exporta_a_viagem(client, output_schema):
+    """A ida: a linha vira Viagem e a categoria real entra na descrição."""
+    dados = _recategorizar(client, output_schema, [
+        {"data": "07/10/2026", "categoria": "Alimentação",
+         "descricao": "[Cartão] Supermercados Alvora {Em 2/Jul}", "valor": "270.51"},
+    ])
+    tid = dados["transaction_id"]
+    client.post("/travel", json={"transaction_id": tid, "ranges": [
+        {"inicio": "2026-07-01", "fim": "2026-07-31", "rotulo": "Gramado"}]})
+
+    linha = client.post("/preview", json={"transaction_id": tid,
+                                          "assignments": []}).json()["rows"][0]
+    assert linha["categoria"] == "Viagem"
+    assert linha["descricao"] == (
+        "[Cartão] Supermercados Alvora (Alimentação) {Gramado} {Em 2/Jul}")
+
+
+def test_reprocessar_arquivo_de_viagem_nao_empilha(client, output_schema):
+    """A volta, que é o pedido: rodar o arquivo de novo não duplica nada.
+
+    Um arquivo que já saiu daqui com viagem marcada volta pela recategorização
+    quando as regras melhoram. A coluna continua `Viagem`, o `{Gramado}`
+    continua lá, e o parêntese é REESCRITO — nunca escrito duas vezes.
+    """
+    ja_marcada = "[Cartão] Supermercados Alvora (Alimentação) {Gramado} {Em 2/Jul}"
+    dados = _recategorizar(client, output_schema, [
+        {"data": "07/10/2026", "categoria": "Viagem",
+         "descricao": ja_marcada, "valor": "270.51"},
+    ])
+    linha = client.post("/preview", json={
+        "transaction_id": dados["transaction_id"], "assignments": [],
+    }).json()["rows"][0]
+
+    assert linha["categoria"] == "Viagem"
+    assert linha["descricao"].count("(") == 1
+    assert linha["descricao"].count("{") == 2
+    # As regras da fixture continuam dizendo Alimentação para o Alvorada, então
+    # a marca é reescrita idêntica — e o arquivo volta byte a byte igual.
+    assert linha["descricao"] == ja_marcada
+
+
+def test_marca_de_viagem_acompanha_a_regra_nova(client, output_schema, config_dir):
+    """`(Alimentação)` vira `(Casa)` quando a regra passa a dizer Casa.
+
+    É o motivo de reprocessar: a marca guarda a resposta das regras para "o que
+    isso seria se não fosse viagem", e essa resposta envelhece igual às outras.
+    A COLUNA não se mexe — a linha continua em Viagem.
+    """
+    caminho = config_dir / "categories.yml"
+    caminho.write_text(
+        caminho.read_text(encoding="utf-8").replace(
+            "  Casa:\n", "  Casa:\n    - SUPERMERCADOS ALVORA\n", 1),
+        encoding="utf-8")
+
+    dados = _recategorizar(client, output_schema, [
+        {"data": "07/10/2026", "categoria": "Viagem",
+         "descricao": "[Cartão] Supermercados Alvora (Alimentação) {Gramado} {Em 2/Jul}",
+         "valor": "270.51"},
+    ])
+
+    # A troca é anunciada, e FORA de `changes`: recusar uma mudança de coluna
+    # fixa a categoria antiga na coluna, e fazer isso aqui gravaria
+    # "Alimentação" numa linha que precisa continuar "Viagem".
+    assert dados["changes"] == []
+    assert [(m["de"], m["para"]) for m in dados["travel_marks"]] == [
+        ("Alimentação", "Casa")]
+
+    tid = dados["transaction_id"]
+    linha = client.post("/preview", json={"transaction_id": tid,
+                                          "assignments": []}).json()["rows"][0]
+    assert linha["categoria"] == "Viagem"
+    assert linha["descricao"] == (
+        "[Cartão] Supermercados Alvora (Casa) {Gramado} {Em 2/Jul}")
+
+    # E chega no ARQUIVO. A recategorização reescreve a linha original célula a
+    # célula; enquanto a descrição não estivesse nessa lista, a marca nova
+    # apareceria na tela e sumiria no download.
+    baixado = client.post("/export", json={"transaction_id": tid,
+                                           "commit_mapping": False}).content
+    assert b"(Casa) {Gramado}" in baixado
+    assert b"(Alimenta" not in baixado
+
+
+def test_periodo_novo_sobre_linha_ja_marcada_nao_empilha(client, output_schema):
+    """Marcar de novo o que já era viagem reescreve a marca, não soma outra.
+
+    Acontece de verdade: o histórico volta pela recategorização e o usuário
+    remarca a viagem de julho porque não lembra se já tinha marcado. As linhas
+    daquela viagem já têm `(Alimentação) {Gramado}`.
+    """
+    dados = _recategorizar(client, output_schema, [
+        {"data": "07/10/2026", "categoria": "Viagem",
+         "descricao": "[Cartão] Supermercados Alvora (Alimentação) {Gramado} {Em 2/Jul}",
+         "valor": "270.51"},
+    ])
+    tid = dados["transaction_id"]
+    client.post("/travel", json={"transaction_id": tid, "ranges": [
+        {"inicio": "2026-07-01", "fim": "2026-07-31", "rotulo": "Gramado de novo"}]})
+
+    linha = client.post("/preview", json={"transaction_id": tid,
+                                          "assignments": []}).json()["rows"][0]
+    assert linha["descricao"] == (
+        "[Cartão] Supermercados Alvora (Alimentação) {Gramado de novo} {Em 2/Jul}")
+    assert linha["descricao"].count("(") == 1
+
+
+def test_na_fatura_o_parentese_do_estabelecimento_e_intocavel(client, tmp_path):
+    """Na IMPORTAÇÃO nenhuma marca antiga é procurada, e é de propósito.
+
+    Ali a descrição é construída do zero a cada /preview e nunca tem marca de
+    processamento anterior — não há o que substituir. O que existe é um
+    parêntese que veio no nome do estabelecimento, e procurar marca ali só
+    poderia comer o nome dele.
+    """
+    dados = _fatura(client, tmp_path, rows=[
+        ("02/07/2026", "PADARIA (LAZER) LTDA", None, "270,51"),
+    ])
+    tid = dados["transaction_id"]
+    client.post("/travel", json={"transaction_id": tid, "ranges": [
+        {"inicio": "2026-07-01", "fim": "2026-07-31"}]})
+
+    linha = client.post("/preview", json={"transaction_id": tid,
+                                          "assignments": [
+                                              {"scope": "merchant",
+                                               "target": "PADARIA LAZER LTDA",
+                                               "categoria": "Alimentação"}],
+                                          }).json()["rows"][0]
+    assert "(Lazer)" in linha["descricao"] or "(LAZER)" in linha["descricao"]
+    assert "(Alimentação)" in linha["descricao"]
+
+
+def test_marca_orfa_e_trocada_e_nao_empilhada(client, output_schema):
+    """Categoria normal + marca velha na descrição: o parêntese é REESCRITO.
+
+    Acontece com quem desfaz a viagem na planilha mexendo só na coluna: a linha
+    volta para `Alimentação` e o `(Lazer)` fica órfão dentro da descrição.
+    Marcá-la de novo tem de trocar o parêntese — escrever o segundo é
+    exatamente o empilhamento que este trabalho existe para não deixar
+    acontecer.
+    """
+    dados = _recategorizar(client, output_schema, [
+        {"data": "07/10/2026", "categoria": "Alimentação",
+         "descricao": "[Cartão] Supermercados Alvora (Lazer) {Gramado} {Em 2/Jul}",
+         "valor": "270.51"},
+    ])
+    tid = dados["transaction_id"]
+    client.post("/travel", json={"transaction_id": tid, "ranges": [
+        {"inicio": "2026-07-01", "fim": "2026-07-31"}]})
+
+    linha = client.post("/preview", json={"transaction_id": tid,
+                                          "assignments": []}).json()["rows"][0]
+    assert linha["categoria"] == "Viagem"
+    assert linha["descricao"].count("(") == 1
+    assert linha["descricao"] == (
+        "[Cartão] Supermercados Alvora (Alimentação) {Gramado} {Em 2/Jul}")
+
+
+def test_recategorizacao_devolve_o_intervalo_de_compras(client, output_schema):
+    """Sem ele os seletores da etapa Viagem ficam soltos na recategorização."""
+    dados = _recategorizar(client, output_schema, [
+        {"data": "07/10/2026", "categoria": "Alimentação",
+         "descricao": "[Cartão] Supermercados Alvora {Em 2/Jul}", "valor": "270.51"},
+        {"data": "07/10/2026", "categoria": "Casa",
+         "descricao": "[Cartão] Braseiro {Em 28/Jun}", "valor": "31.00"},
+    ])
+    assert dados["purchase_range"] == {"inicio": "2026-06-28", "fim": "2026-07-02"}
+
+
+def test_viagem_sem_marca_nao_ganha_uma(client, output_schema):
+    """Linha marcada à mão na planilha não é anotada pelas costas.
+
+    Sem parêntese, este portal não escreveu nada ali — e um arquivo cujo
+    contrato é mudar o mínimo possível não é lugar para acrescentar informação
+    que ninguém pediu.
+    """
+    original = "[Cartão] Supermercados Alvora {Em 2/Jul}"
+    dados = _recategorizar(client, output_schema, [
+        {"data": "07/10/2026", "categoria": "Viagem",
+         "descricao": original, "valor": "270.51"},
+    ])
+    assert dados["travel_marks"] == []
+    linha = client.post("/preview", json={
+        "transaction_id": dados["transaction_id"], "assignments": [],
+    }).json()["rows"][0]
+    assert linha["descricao"] == original
 
 
 # ---------------------------------------------------------------------------

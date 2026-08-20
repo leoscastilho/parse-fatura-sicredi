@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import TravelRanges from './TravelRanges'
 
 const brl = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 
@@ -12,9 +13,11 @@ const brl = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL
  * A entrada é o próprio formato de saída, então o portal já sabe ler tudo: o
  * estabelecimento está dentro da descrição e a data da compra está no
  * `{Em 15/Jul}`. Sai o mesmo arquivo, mesmas linhas, mesma ordem — só a coluna
- * Categoria muda.
+ * Categoria e as marcas de viagem mudam.
  */
-export default function RecategorizeStep({ onUpload, busy }) {
+export default function RecategorizeStep({
+  onUpload, busy, travelRanges = [], onTravelRangesChange,
+}) {
   const [files, setFiles] = useState([])
   const [dragging, setDragging] = useState(false)
   const inputRef = useRef(null)
@@ -29,8 +32,8 @@ export default function RecategorizeStep({ onUpload, busy }) {
       <p className="muted">
         Suba um CSV no formato de saída. Ele passa pelas regras{' '}
         <strong>atuais</strong> e volta igual — mesmas linhas, mesma ordem,{' '}
-        <strong>só a coluna Categoria muda</strong>. Pode mandar vários,
-        inclusive um arquivo com o histórico todo junto.
+        <strong>só a coluna Categoria e as marcas de viagem mudam</strong>. Pode
+        mandar vários, inclusive um arquivo com o histórico todo junto.
       </p>
       <p className="muted small">
         Não precisa ser um arquivo gerado por aqui. Exportações antigas em que a
@@ -69,6 +72,30 @@ export default function RecategorizeStep({ onUpload, busy }) {
         </ul>
       )}
 
+      {/* A viagem também entra aqui, e aqui é onde ela FAZ MAIS SENTIDO: com o
+          histórico inteiro na tela dá para lembrar das vinte viagens dos
+          últimos cinco anos de uma vez — e é para isso que serve o CSV de
+          períodos, porque digitar vinte no editor manual ninguém digita. */}
+      {onTravelRangesChange && files.length > 0 && (
+        <details className="viagem-upload" open={travelRanges.length > 0}>
+          <summary>
+            Viajou em algum período deste histórico?
+            {travelRanges.length > 0 && (
+              <span className="badge">{travelRanges.length}</span>
+            )}
+          </summary>
+          <TravelRanges
+            ranges={travelRanges}
+            onChange={onTravelRangesChange}
+            busy={busy}
+            // Aqui não há pré-voo: o arquivo pode cobrir anos e só é lido no
+            // "Recategorizar". Sem isto a tela diria "não consegui ler as
+            // datas" — acusando uma falha numa leitura que nem foi tentada.
+            preVoo={false}
+          />
+        </details>
+      )}
+
       <button className="primary" disabled={!files.length || busy}
               onClick={() => onUpload(files)}>
         {busy ? 'Reprocessando…' : 'Recategorizar'}
@@ -76,8 +103,11 @@ export default function RecategorizeStep({ onUpload, busy }) {
 
       <p className="muted small">
         Onde a regra não tem opinião — marketplace, desconhecido, sem regra — a
-        categoria que já estava no arquivo é mantida. Nada é zerado, e a
-        descrição não é tocada.
+        categoria que já estava no arquivo é mantida. Nada é zerado. Da
+        descrição, só as marcas de viagem — a categoria real entre parênteses e
+        o nome da viagem entre chaves — são reescritas; o estabelecimento, o{' '}
+        <code>(Parcela 04/05)</code> e o <code>{'{Em 28/Sep}'}</code> voltam
+        exatamente como entraram.
       </p>
     </section>
   )
@@ -96,6 +126,7 @@ export function ChangesSummary({ session, getAssignment, setAssignment,
                                  setManyAssignments, onNext }) {
   const [aberto, setAberto] = useState(true)
   const mudancas = session.changes || []
+  const marcas = session.travel_marks || []
 
   // Agrupadas pela categoria de DESTINO, que é como a decisão acontece: "tudo
   // que virou Casa está certo, tudo que virou Lazer eu quero conferir". Na
@@ -137,7 +168,10 @@ export function ChangesSummary({ session, getAssignment, setAssignment,
 
       {mudancas.length === 0 ? (
         <div className="alert ok">
-          Nenhuma categoria muda com as regras atuais. O arquivo já estava em dia.
+          Nenhuma categoria muda com as regras atuais.{' '}
+          {marcas.length
+            ? 'As únicas diferenças estão nas marcas de viagem, abaixo.'
+            : 'O arquivo já estava em dia.'}
         </div>
       ) : (
         <>
@@ -216,6 +250,48 @@ export function ChangesSummary({ session, getAssignment, setAssignment,
             </div>
           )}
         </>
+      )}
+
+      {/* Fora da tabela acima, e sem caixa de marcar, porque é outra coisa: a
+          coluna Categoria destas linhas NÃO muda — continua Viagem. O que
+          envelheceu foi a categoria real guardada dentro da descrição, e
+          recusar aqui gravaria "Lazer" na coluna de uma linha de viagem. */}
+      {marcas.length > 0 && (
+        <details className="marcas-viagem">
+          <summary>
+            {marcas.length} linha(s) de <strong>Viagem</strong> com a categoria
+            real atualizada dentro da descrição
+          </summary>
+          <p className="muted small">
+            A coluna continua <strong>Viagem</strong>. O que mudou é o parêntese
+            que responde "o que isso seria se não fosse viagem" — a resposta das
+            regras de hoje no lugar da de quando o arquivo foi gerado.
+          </p>
+          <div className="scroll">
+            <table className="grid compact sticky">
+              <thead>
+                <tr>
+                  <th>Lançamento</th>
+                  <th className="right">Valor</th>
+                  <th>De</th>
+                  <th>Para</th>
+                  <th>Regra</th>
+                </tr>
+              </thead>
+              <tbody>
+                {marcas.map((m) => (
+                  <tr key={m.line_id}>
+                    <td>{m.descricao}</td>
+                    <td className="right money">{brl(m.valor)}</td>
+                    <td>({m.de})</td>
+                    <td><strong>({m.para})</strong></td>
+                    <td className="rule">{m.matched}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
       )}
 
       <button className="primary" onClick={onNext}>Continuar a revisão</button>

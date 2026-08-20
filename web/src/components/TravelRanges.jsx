@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { juntarPeriodos, lerPeriodosCsv, textoDoArquivo } from '../travelCsv'
 
 const diaMes = (iso) => {
   const [, m, d] = (iso || '').split('-')
@@ -22,11 +23,14 @@ const porExtenso = (iso) => {
  */
 export default function TravelRanges({
   ranges, onChange, limites = null, warnings = [], busy = false, compacto = false,
+  preVoo = true,
 }) {
   const [inicio, setInicio] = useState('')
   const [fim, setFim] = useState('')
   const [rotulo, setRotulo] = useState('')
   const [erro, setErro] = useState(null)
+  const [importado, setImportado] = useState(null)
+  const arquivoRef = useRef(null)
 
   function adicionar() {
     if (!inicio || !fim) return setErro('Escolha as duas datas.')
@@ -36,6 +40,37 @@ export default function TravelRanges({
     setInicio('')
     setFim('')
     setRotulo('')
+  }
+
+  /**
+   * Importa um CSV `start_date,end_date,trip_name`.
+   *
+   * Lido aqui, no navegador — na tela de upload ainda não existe transação
+   * para o backend guardar nada. O que sai é a mesma lista do editor manual,
+   * então o resto do fluxo não sabe que este caminho existe.
+   */
+  async function importar(arquivo) {
+    if (!arquivo) return
+    setErro(null)
+    let texto = ''
+    try {
+      texto = await textoDoArquivo(arquivo)
+    } catch (e) {
+      return setErro(`Não consegui ler ${arquivo.name}: ${e.message}`)
+    }
+    const { ranges: lidos, erros } = lerPeriodosCsv(texto)
+    // O input guarda o último arquivo escolhido: sem limpar, escolher o MESMO
+    // arquivo de novo (depois de corrigi-lo) não dispara `change` nenhum e a
+    // tela fica parada, parecendo que a correção não adiantou.
+    if (arquivoRef.current) arquivoRef.current.value = ''
+
+    if (!lidos.length) {
+      setImportado({ adicionados: 0, repetidos: 0, erros, nome: arquivo.name })
+      return
+    }
+    const { lista, adicionados, repetidos } = juntarPeriodos(ranges, lidos)
+    setImportado({ adicionados, repetidos, erros, nome: arquivo.name })
+    if (adicionados) onChange(lista)
   }
 
   const remover = (i) => onChange(ranges.filter((_, idx) => idx !== i))
@@ -51,15 +86,23 @@ export default function TravelRanges({
         </p>
       )}
 
+      {/* Três estados, e a diferença entre os dois últimos importa: "não
+          consegui ler" é uma falha e "não tentei" não é. Na recategorização o
+          arquivo pode cobrir cinco anos e nem é lido antes de processar —
+          dizer que a leitura falhou seria acusar um erro que não houve. */}
       <p className="muted small">
         {limites
           ? <>As compras deste lote vão de <strong>{porExtenso(limites.inicio)}</strong>{' '}
              a <strong>{porExtenso(limites.fim)}</strong> — os seletores só
              oferecem datas dentro disso, porque viagem fora do intervalo não
              pegaria compra nenhuma.</>
-          : <>Não consegui ler as datas das compras deste lote, então os
-             seletores ficam soltos. Dá para ajustar depois, na etapa
-             <strong> Viagem</strong>.</>}
+          : preVoo
+            ? <>Não consegui ler as datas das compras deste lote, então os
+               seletores ficam soltos. Dá para ajustar depois, na etapa
+               <strong> Viagem</strong>.</>
+            : <>Os seletores ficam soltos: o arquivo ainda não foi lido e pode
+               cobrir anos. Depois de processar, a etapa <strong>Viagem</strong>{' '}
+               mostra o intervalo real e o que cada período pegou.</>}
       </p>
 
       <div className="toolbar">
@@ -84,6 +127,43 @@ export default function TravelRanges({
           Adicionar período
         </button>
       </div>
+
+      <div className="toolbar">
+        <span className="small grow">
+          Ou traga a lista pronta: um CSV de{' '}
+          <code>start_date,end_date,trip_name</code>, uma viagem por linha. As
+          datas podem vir como <code>2026-07-15</code> ou{' '}
+          <code>15/07/2026</code>, com ou sem cabeçalho.
+        </span>
+        {/* O `<input type=file>` cru desenha um botão do sistema operacional
+            no meio de uma linha de botões do portal. Escondê-lo atrás de um
+            label é o jeito de a aparência ser a mesma sem perder o controle
+            nativo — o input continua no DOM, focável e rotulado. */}
+        <label className={`ghost como-botao ${busy ? 'desabilitado' : ''}`}>
+          Importar CSV
+          <input ref={arquivoRef} type="file" accept=".csv,text/csv"
+                 aria-label="Importar períodos de um CSV"
+                 disabled={busy}
+                 onChange={(e) => importar(e.target.files?.[0])} />
+        </label>
+      </div>
+
+      {importado && (
+        <div className={`alert ${importado.erros.length ? 'warn' : 'ok'}`}>
+          <strong>{importado.nome}</strong>:{' '}
+          {importado.adicionados
+            ? `${importado.adicionados} período(s) adicionado(s)`
+            : 'nenhum período novo'}
+          {importado.repetidos > 0 && `, ${importado.repetidos} já estava(m) na lista`}
+          {importado.erros.length > 0 && (
+            // As linhas recusadas vêm uma a uma, com o número: um "3 linhas
+            // ignoradas" mandaria procurar quais no arquivo inteiro.
+            <ul className="small">
+              {importado.erros.map((e) => <li key={e}>{e}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
 
       {erro && <div className="alert error">{erro}</div>}
 

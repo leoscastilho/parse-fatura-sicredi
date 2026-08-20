@@ -12,12 +12,18 @@ sem adaptação.
 
 DUAS GARANTIAS que os testes fixam:
 
-  1. **Só a coluna Categoria muda.** Todas as outras células voltam EXATAMENTE
-     como entraram, na mesma ordem de linhas e de colunas. A linha original é
-     guardada inteira e reescrita célula por célula, trocando só a categoria —
-     é o que preserva `270.50` (em vez de virar `270.5`), espaços na descrição
-     e colunas que este portal nem conhece, como `Mês` e `Ano` de uma
+  1. **Só a coluna Categoria e as marcas de viagem mudam.** Todas as outras
+     células voltam EXATAMENTE como entraram, na mesma ordem de linhas e de
+     colunas. A linha original é guardada inteira e reescrita célula por
+     célula — é o que preserva `270.50` (em vez de virar `270.5`), espaços na
+     descrição e colunas que este portal nem conhece, como `Mês` e `Ano` de uma
      exportação antiga da planilha.
+
+     A descrição entra nessa lista porque a viagem mora dentro dela: a
+     categoria real vai entre parênteses e o nome da viagem entre chaves. Fora
+     dessas duas marcas a descrição é intocada, byte a byte — o
+     estabelecimento, o `(Parcela 04/05)` e o `{Em 28/Sep}` voltam como
+     entraram.
   2. **Nada é perdido em silêncio.** Onde a regra não tem opinião (marketplace,
      desconhecido, sem regra), a categoria que já estava no arquivo é mantida.
      Zerar essas linhas descartaria anos de decisão manual.
@@ -37,7 +43,7 @@ from .planilha import ANCORAS, ler_tabela, parse_valor, tabela_da_primeira_linha
 from .profiles import OutputSchema
 from .rules import LineState, Ruleset
 from .text import merchant_key, merchant_of, normalize, purchase_date_of
-from .travel import TRAVEL_CATEGORY
+from .travel import TRAVEL_CATEGORY, annotate, desanotar
 
 
 class RecategorizeError(ValueError):
@@ -52,6 +58,15 @@ class CategoryChange:
     de: str
     para: str
     matched: str | None
+    # `categoria`: a coluna Categoria muda de `de` para `para`.
+    # `marca`: a coluna NÃO muda — continua `Viagem` — e o que foi atualizado é
+    # a categoria real guardada dentro da descrição, entre parênteses.
+    #
+    # A distinção não é cosmética. Recusar uma mudança de coluna, na tela de
+    # Mudanças, é fixar a categoria antiga naquela linha; fazer isso com uma
+    # marca gravaria "Lazer" na coluna de uma linha que precisa continuar
+    # "Viagem". Misturar as duas listas seria oferecer um botão que estraga.
+    kind: str = "categoria"
 
 
 def _decode(source: Path | BinaryIO) -> str:
@@ -190,6 +205,10 @@ def protegida(anterior: str, rules: Ruleset) -> str:
        Belo}`. A regra reescreveria a coluna e deixaria o parêntese órfão: a
        linha voltaria a ser Lazer com um `(Lazer)` colado no nome, e a viagem
        sumiria da planilha sem deixar rastro.
+
+       Aqui a proteção é só da COLUNA. A marca de dentro da descrição continua
+       sendo reprocessada, porque ela é exatamente a resposta que as regras dão
+       — ver `_atualizar_marca`.
     """
     if rules.is_fixed(anterior):
         return "categoria fixa"
@@ -200,6 +219,49 @@ def protegida(anterior: str, rules: Ruleset) -> str:
     if normalize(anterior) == normalize(TRAVEL_CATEGORY):
         return "viagem"
     return ""
+
+
+def _atualizar_marca(
+    linha: ClassifiedLine, rules: Ruleset, mudancas: list[CategoryChange]
+) -> ClassifiedLine:
+    """Refaz a categoria real de uma linha que já está em `Viagem`.
+
+    A coluna fica onde está — a linha foi para Viagem numa decisão manual e
+    continua lá. O que envelhece é a marca DENTRO da descrição: `(Lazer)` foi a
+    resposta das regras do ano passado para "o que essa compra seria se não
+    fosse viagem", e reprocessar o arquivo é justamente pedir a resposta de
+    hoje. Sem isto, reprocessar não faria nada nessas linhas e a marca ficaria
+    congelada para sempre.
+
+    Só ATUALIZA; nunca inventa. Linha de viagem sem parêntese nenhum é linha
+    que este portal não anotou — veio marcada à mão da planilha — e escrever
+    uma marca ali seria acrescentar informação que ninguém pediu, num arquivo
+    cujo contrato é mudar o mínimo possível.
+
+    O estabelecimento é relido da descrição LIMPA, e não reaproveitado de
+    `linha.merchant_raw`: com as marcas dentro, a classificação veria
+    "Campo Belo Country C (Lazer) {Campo Belo}" e uma palavra-chave que casasse
+    com o nome da viagem ou com o nome da categoria decidiria a categoria — a
+    marca escolhendo a si mesma.
+    """
+    conhecidas = rules.all_categories()
+    base, categoria_antiga, rotulo = desanotar(linha.descricao, conhecidas)
+
+    descricao = linha.descricao
+    if categoria_antiga:
+        match = rules.classify(merchant_of(base))
+        if match.categoria and match.categoria != categoria_antiga:
+            descricao = annotate(base, match.categoria, rotulo, conhecidas)
+            mudancas.append(CategoryChange(
+                line_id=linha.line_id, descricao=descricao, valor=linha.valor,
+                de=categoria_antiga, para=match.categoria, matched=match.matched,
+                kind="marca",
+            ))
+
+    return ClassifiedLine(**{
+        **linha.to_dict(), "categoria": linha.categoria_anterior or "",
+        "descricao": descricao, "state": LineState.AUTO, "matched": "viagem",
+    })
 
 
 def recategorize(
@@ -223,6 +285,11 @@ def recategorize(
         anterior = linha.categoria_anterior or ""
 
         motivo = protegida(anterior, rules)
+        if motivo == "viagem":
+            # Viagem é protegida na COLUNA, não na descrição: ver
+            # `_atualizar_marca`.
+            resultado.append(_atualizar_marca(linha, rules, mudancas))
+            continue
         if motivo:
             # `AUTO`, não o estado da regra: a linha está resolvida e não pode
             # cair em "Novos" pedindo categoria — ela já tem a certa. São 826
@@ -278,10 +345,17 @@ def lines_to_csv_preserving_order(
                                 extrasaction="ignore")
         writer.writeheader()
         col_cat = schema.coluna("categoria")
+        col_desc = schema.coluna("descricao")
         for linha in linhas:
             row = (dict(linha.origem_row) if linha.origem_row
                    else linha.as_csv_row(schema))
             row[col_cat] = linha.categoria
+            # A descrição volta da LINHA, não da célula original, porque a
+            # viagem escreve dentro dela. Quando nada de viagem aconteceu as
+            # duas são o mesmo texto — `read_output_csv` guarda a descrição sem
+            # aparar nem normalizar exatamente para que esta atribuição seja um
+            # no-op no caso comum.
+            row[col_desc] = linha.descricao
             writer.writerow(row)
         return buffer.getvalue().encode(encoding or schema.encoding)
 

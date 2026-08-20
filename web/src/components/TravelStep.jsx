@@ -10,6 +10,20 @@ const diaMes = (iso) => {
 }
 
 /**
+ * Qual período pegou esta linha — o PRIMEIRO que contém a data da compra.
+ *
+ * O empate é resolvido igual ao backend (`travel.range_of`): períodos que se
+ * sobrepõem, vence o primeiro da lista. Resolver diferente aqui mostraria na
+ * tela um nome de viagem que o arquivo não vai levar.
+ *
+ * As datas são ISO (`AAAA-MM-DD`), então comparar as strings é comparar as
+ * datas — sem `new Date`, que interpretaria a string como UTC e deslocaria o
+ * dia para quem está em fuso negativo.
+ */
+const periodoDe = (iso, ranges) =>
+  ranges.find((r) => r.inicio <= iso && iso <= r.fim) || null
+
+/**
  * Viagem — a única classificação que é uma JANELA DE TEMPO, não um
  * estabelecimento.
  *
@@ -80,6 +94,7 @@ export default function TravelStep({
                 <thead>
                   <tr>
                     <th>Viagem?</th>
+                    <th>Qual viagem</th>
                     <th>Compra</th>
                     <th>Lançamento</th>
                     <th className="right">Valor</th>
@@ -108,6 +123,7 @@ export default function TravelStep({
                       || getAssignment('merchant', item.merchant)
                     const manual = decisao?.categoria
                     const real = manual || item.categoria
+                    const periodo = periodoDe(item.purchase_date, ranges)
                     return (
                       <tr key={item.line_id} className={marcada ? '' : 'blank'}>
                         <td>
@@ -117,6 +133,20 @@ export default function TravelStep({
                             aria-label={`Viagem: ${item.descricao}`}
                             onChange={() => onToggle(item.line_id)}
                           />
+                        </td>
+                        <td>
+                          {/* Sem nome, mostra a janela em vez de célula vazia:
+                              com dois períodos abertos ao mesmo tempo, o que
+                              esta coluna responde é "qual dos dois pegou esta
+                              linha" — e a data responde isso tão bem quanto o
+                              nome que ninguém digitou. */}
+                          {periodo?.rotulo
+                            ? periodo.rotulo
+                            : periodo
+                              ? <span className="muted mono">
+                                  {diaMes(periodo.inicio)}–{diaMes(periodo.fim)}
+                                </span>
+                              : <span className="muted">—</span>}
                         </td>
                         <td className="mono">{diaMes(item.purchase_date)}</td>
                         <td>{item.descricao}</td>

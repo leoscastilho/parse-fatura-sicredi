@@ -56,6 +56,9 @@ export const contarMeses = (a, b) =>
 const comDia = (valor, padrao, dia) =>
   ((valor || '').length > 7 ? valor : dia(valor || padrao))
 
+/** O balde de quem não tem `<nome>` na descrição. Ver `SEM_TITULAR` no back. */
+export const SEM_TITULAR = '<sem marca>'
+
 /**
  * Barra de filtros — a leitura ao contrário.
  *
@@ -74,13 +77,16 @@ const comDia = (valor, padrao, dia) =>
  */
 export default function FiltrosLaterais({
   disponiveis, intervalo, filtro, preset, semCategorias, semLinhas,
-  rotulos = {}, busy, aoAplicar,
+  semTitulares = [], rotulos = {}, busy, aoAplicar,
 }) {
   const [aberta, setAberta] = useState(false)
   const [quantasLinhas, setQuantasLinhas] = useState(10)
 
   const categorias = disponiveis?.categorias || []
   const lancamentos = disponiveis?.lancamentos || []
+  // Vem vazio quando há um balde só — numa fatura de uma pessoa, ou num
+  // histórico anterior à marcação existir, isolar titular não isola nada.
+  const titulares = disponiveis?.titulares || []
 
   // --- período ---------------------------------------------------------------
   //
@@ -96,10 +102,11 @@ export default function FiltrosLaterais({
   // depender de comparar datas com as bordas do arquivo.
   const recortado = Boolean(filtro?.inicio || filtro?.fim)
 
-  const ativos = semCategorias.length + semLinhas.length + (recortado ? 1 : 0)
+  const ativos = semCategorias.length + semLinhas.length + semTitulares.length
+    + (recortado ? 1 : 0)
 
   const escolherPeriodo = (inicio, fim, id) =>
-    aoAplicar({ semCategorias, semLinhas, inicio, fim, preset: id })
+    aoAplicar({ semCategorias, semLinhas, semTitulares, inicio, fim, preset: id })
 
   /**
    * As janelas contam a partir do último mês COM LANÇAMENTO, não de hoje.
@@ -123,11 +130,22 @@ export default function FiltrosLaterais({
         ? semCategorias.filter((c) => c !== categoria)
         : [...semCategorias, categoria],
       semLinhas,
+      semTitulares,
+    })
+
+  const alternarTitular = (id) =>
+    aoAplicar({
+      semCategorias,
+      semLinhas,
+      semTitulares: semTitulares.includes(id)
+        ? semTitulares.filter((t) => t !== id)
+        : [...semTitulares, id],
     })
 
   const alternarLinha = (id, descricao) =>
     aoAplicar({
       semCategorias,
+      semTitulares,
       semLinhas: semLinhas.includes(id)
         ? semLinhas.filter((x) => x !== id)
         : [...semLinhas, id],
@@ -180,6 +198,7 @@ export default function FiltrosLaterais({
               desta aba já saem com eles aplicados.{' '}
               <button className="link" disabled={busy}
                       onClick={() => aoAplicar({ semCategorias: [], semLinhas: [],
+                                                 semTitulares: [],
                                                  inicio: '', fim: '', preset: 'tudo' })}>
                 trazer tudo de volta
               </button>
@@ -236,6 +255,40 @@ export default function FiltrosLaterais({
                 {' O arquivo cobre '}
                 {rotuloPeriodo(primeiro)} a {rotuloPeriodo(ultimo)}.
               </p>
+            </>
+          )}
+
+          {/* TITULARES vem antes das categorias porque separa PESSOAS, não
+              assuntos: numa conta conjunta, "para onde vai o dinheiro" tem duas
+              respostas diferentes, e somá-las esconde as duas. É o filtro de
+              maior efeito, então é o primeiro. */}
+          {titulares.length > 1 && (
+            <>
+              <h3>De quem é a compra</h3>
+              <p className="muted small">
+                O nome sai do <code>&lt;…&gt;</code> no fim da descrição, posto
+                na importação. Desmarque para tirar essa pessoa de todos os
+                painéis — ou desmarque todas as outras para ver só ela.
+              </p>
+              <div className="filtros-lista">
+                {titulares.map((t) => {
+                  const id = t.titular || SEM_TITULAR
+                  return (
+                    <label className="checkbox filtros-item" key={id}>
+                      <input type="checkbox" disabled={busy}
+                             checked={!semTitulares.includes(id)}
+                             onChange={() => alternarTitular(id)} />
+                      <span className="grow">
+                        {t.titular || '(sem marca)'}
+                        {/* Abreviado para a linha caber: com "lançamento(s)"
+                            por extenso, o nome e o valor quebravam em duas. */}
+                        <span className="muted small">{' '}· {t.lancamentos} lanç.</span>
+                      </span>
+                      <span className="money small">{brlExato(t.total)}</span>
+                    </label>
+                  )
+                })}
+              </div>
             </>
           )}
 

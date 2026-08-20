@@ -1,8 +1,9 @@
 """Recategorizar um CSV que já saiu daqui.
 
-O compromisso desta função cabe numa frase: **só a coluna Categoria muda**.
-Todo teste aqui existe para impedir que ela deixe de ser verdade — mesma
-quantidade de linhas, mesma ordem, mesmos valores, mesmas descrições.
+O compromisso desta função cabe numa frase: **só a coluna Categoria e as marcas
+de viagem mudam**. Todo teste aqui existe para impedir que ela deixe de ser
+verdade — mesma quantidade de linhas, mesma ordem, mesmos valores, e da
+descrição só o que está entre parênteses/chaves e é marca de viagem.
 """
 
 from __future__ import annotations
@@ -260,6 +261,10 @@ def test_viagem_protege_em_qualquer_caixa(tmp_path, config_dir):
     novas, mudancas = recategorize(linhas, Ruleset.from_text(cfg.categories_text))
     assert novas[0].categoria == "viagem"
     assert not mudancas
+    # O motivo fica gravado na linha, como nas fixas: é ele que a coluna
+    # "Regra" da revisão mostra para explicar por que a linha não foi mexida.
+    assert novas[0].state is LineState.AUTO
+    assert novas[0].matched == "viagem"
 
 
 def test_entrada_vazia_em_categorias_fixas_nao_protege_o_mundo(tmp_path, config_dir):

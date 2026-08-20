@@ -23,9 +23,10 @@ const STEPS = [
   { id: 'auto', label: 'Revisão' },
   { id: 'marketplace', label: 'Marketplace' },
   // Depois do marketplace de propósito: a categoria que vai para o parêntese é
-  // a final, já com as decisões daquela etapa. Fora da recategorização, que
-  // promete não tocar a descrição.
-  { id: 'viagem', label: 'Viagem', apenas: 'fatura' },
+  // a final, já com as decisões daquela etapa. Vale nos DOIS modos — a viagem
+  // de 2019 só é lembrada quando o histórico inteiro está na tela, e prender a
+  // marcação ao mês em que a fatura chegou era dar uma única chance a ela.
+  { id: 'viagem', label: 'Viagem' },
   { id: 'final', label: 'Conferir e exportar' },
 ]
 
@@ -159,7 +160,7 @@ export default function App() {
       aoTopo()
       // Os períodos digitados na tela de upload só podem ser enviados agora,
       // que existe transação. Falhar aqui não invalida o upload.
-      if (travelRanges.length && sessao.modo !== 'recategorizacao') {
+      if (travelRanges.length) {
         await enviarPeriodos(sessao.transaction_id, travelRanges)
       }
     } catch (e) {
@@ -420,7 +421,12 @@ export default function App() {
               )}
 
               {step === 'upload' && section === 'recategorizar' && (
-                <RecategorizeStep onUpload={handleRecategorize} busy={busy} />
+                <RecategorizeStep
+                  onUpload={handleRecategorize}
+                  busy={busy}
+                  travelRanges={travelRanges}
+                  onTravelRangesChange={handleTravelRanges}
+                />
               )}
 
               {step === 'changes' && session && (
@@ -464,11 +470,11 @@ export default function App() {
                   getAssignment={getAssignment}
                   setAssignment={setAssignment}
                   setManyAssignments={setManyAssignments}
-                  onNext={() => avancar(modo === 'fatura' ? 'viagem' : 'final')}
+                  onNext={() => avancar('viagem')}
                 />
               )}
 
-              {step === 'viagem' && session && modo === 'fatura' && (
+              {step === 'viagem' && session && (
                 <TravelStep
                   session={session}
                   categories={categories}

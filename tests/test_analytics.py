@@ -23,6 +23,7 @@ from core.analytics import (
     analisar, anomalias, categoria_por_periodo, corrente_do_carry, custo_fixo_mensal,
     meses_faltando, meses_que_nao_fecham, pares_que_se_anulam, parse_periodo,
     parse_valor, por_categoria, possivel_dupla_contagem, read_ledger,
+    SEM_TITULAR, TITULAR_RE,
     identidade, recorrentes, recortar, reservas, sankey, saude, serie_mensal,
 )
 
@@ -629,7 +630,8 @@ def test_intervalo_disponivel_ignora_o_recorte(cfg):
     recortado = analisar(texto, cfg, inicio="2026-01", fim="2026-12")
     assert recortado["intervalo_disponivel"] == {"inicio": "2024-01", "fim": "2026-06"}
     assert recortado["filtro"] == {"inicio": "2026-01", "fim": "2026-12",
-                                   "sem_categorias": [], "sem_linhas": []}
+                                   "sem_categorias": [], "sem_linhas": [],
+                                   "sem_titulares": []}
 
 
 def test_recorte_vazio_explica_o_que_existe(cfg):
@@ -904,6 +906,85 @@ def test_excluir_um_lancamento_avulso_tira_so_ele(cfg):
     assert sem_pix["resumo"]["total_gasto"] == 600.0
     casa = next(c for c in sem_pix["por_categoria"] if c["categoria"] == "Casa")
     assert casa["total"] == 200.0, "a luz continua em Casa"
+
+
+# ---------------------------------------------------------------------------
+# Titular: quem passou o cartão, lido do `<nome>` no fim da descrição
+# ---------------------------------------------------------------------------
+
+def _conta_conjunta(cfg):
+    return ledger([
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 5000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "[Cartão] Luz {Em 3/Jan}", "R$ 300.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Lazer", "[Cartão] Cinema {Em 4/Jan} <Rhyesla>",
+         "R$ 200.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Filha", "[Cartão] Livraria {Em 5/Jan} <Alice>",
+         "R$ 100.00", "x", "1", "2024", "F"),
+    ])
+
+
+def test_o_titular_sai_do_fim_da_descricao(cfg):
+    lancamentos, _ = read_ledger(_conta_conjunta(cfg), cfg)
+    por_desc = {l.descricao: l.titular for l in lancamentos}
+    assert por_desc["[Cartão] Cinema {Em 4/Jan} <Rhyesla>"] == "Rhyesla"
+    assert por_desc["[Cartão] Luz {Em 3/Jan}"] == "", "sem marca é um balde, não erro"
+    assert por_desc["Salário"] == ""
+
+
+def test_marca_no_MEIO_da_descricao_nao_e_titular(cfg):
+    """A âncora no fim não é capricho: `Loja <3` viraria um titular chamado 3."""
+    texto = ledger([
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 100.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Lazer", "[Cartão] Loja <3 Doces {Em 4/Jan}",
+         "R$ 50.00", "x", "1", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    assert all(l.titular == "" for l in lancamentos)
+
+
+def test_tirar_um_titular_tira_ele_de_TODAS_as_contas(cfg):
+    texto = _conta_conjunta(cfg)
+    completo = analisar(texto, cfg)
+    assert completo["resumo"]["total_gasto"] == 600.0
+
+    sem_ela = analisar(texto, cfg, sem_titulares=["Rhyesla"])
+    assert sem_ela["resumo"]["total_gasto"] == 400.0
+    assert "Lazer" not in [c["categoria"] for c in sem_ela["por_categoria"]]
+
+
+def test_isolar_uma_pessoa_e_tirar_todas_as_outras(cfg):
+    """O caso de uso: ver SÓ as compras dela. Tira "(sem marca)" e a filha."""
+    sozinha = analisar(_conta_conjunta(cfg), cfg,
+                       sem_titulares=[SEM_TITULAR, "Alice"])
+    assert sozinha["resumo"]["total_gasto"] == 200.0
+    # A receita é do titular sem marca, então some junto — e é o certo: a
+    # pergunta virou "o que ELA movimentou", não "o que sobrou do casal".
+    assert sozinha["resumo"]["total_receita"] == 0.0
+
+
+def test_o_balde_sem_marca_viaja_por_um_apelido(cfg):
+    """String vazia não sobrevive a um campo de formulário separado por quebra
+    de linha — e é justamente esse balde que precisa sair para isolar alguém."""
+    assert SEM_TITULAR == "<sem marca>"
+    # Impossível colidir: `TITULAR_RE` recusa `<` e `>` dentro do nome.
+    assert TITULAR_RE.search(f"x <{SEM_TITULAR}>") is None
+
+
+def test_a_lista_oferecida_traz_o_gasto_de_cada_um(cfg):
+    oferecidos = analisar(_conta_conjunta(cfg), cfg)["disponiveis"]["titulares"]
+    assert [t["titular"] for t in oferecidos] == ["", "Rhyesla", "Alice"]
+    # Ordenada pelo GASTO, não pelo nome: "Rhyesla, R$ 200" responde a pergunta
+    # que faz alguém querer isolar um titular; a ordem alfabética não responde.
+    assert [t["total"] for t in oferecidos] == [300.0, 200.0, 100.0]
+
+
+def test_um_titular_so_nao_vira_secao_de_filtro(cfg):
+    """Histórico anterior à marcação existir: um balde só, nada a isolar."""
+    texto = ledger([
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 100.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Luz", "R$ 50.00", "x", "1", "2024", "F"),
+    ])
+    assert analisar(texto, cfg)["disponiveis"]["titulares"] == []
 
 
 def test_o_painel_de_saude_ignora_as_exclusoes(cfg):

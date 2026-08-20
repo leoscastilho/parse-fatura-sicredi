@@ -26,11 +26,28 @@ from dataclasses import dataclass, replace
 from datetime import date
 
 from .pipeline import ClassifiedLine
+from .text import normalize
 
 TRAVEL_CATEGORY = "Viagem"
 
 # " {Em 15/Jul}" no fim da descrição — é antes disto que a categoria real entra.
-DATE_SUFFIX_RE = re.compile(r"\s*\{Em\s[^}]*\}\s*$")
+#
+# O formato é EXIGIDO (dia/mês abreviado), e não um `{Em qualquer coisa}` frouxo:
+# uma viagem batizada de "Em Paris" vira `{Em Paris}` e passaria por marca de
+# data, fazendo `desanotar` devolver o rótulo como se fosse o sufixo. É a mesma
+# forma que `text.DESC_RE` exige para ler a data de volta.
+DATE_SUFFIX_RE = re.compile(r"\s*\{Em\s+\d{1,2}/[A-Za-z]{3}\}\s*$")
+
+# "{Campo Belo}" — o nome da viagem. Reconhecido por EXCLUSÃO do `{Em 15/Jul}`,
+# e isso é seguro porque a chave é marca exclusiva deste portal: extrato nenhum
+# escreve `{}` no nome do estabelecimento.
+ROTULO_RE = re.compile(r"\s*\{([^{}]*)\}")
+
+# "(Lazer)" — a categoria real. Aqui a exclusão NÃO serve: `(Parcela 03/05)`
+# tem exatamente a mesma forma, e um nome de estabelecimento com parênteses
+# ("Padaria (Matriz)") também. Por isso só sai da descrição o parêntese cujo
+# conteúdo é um nome de categoria CONHECIDO — ver `desanotar`.
+PARENTESES_RE = re.compile(r"\s*\(([^()]*)\)")
 
 
 class TravelError(ValueError):
@@ -189,8 +206,66 @@ def range_of(linha: ClassifiedLine, ranges: list[TravelRange]) -> TravelRange | 
     return next((p for p in ranges if p.contains(dia)), None)
 
 
-def annotate(descricao: str, categoria_real: str, rotulo: str = "") -> str:
-    """Insere `(Categoria)` e `{Nome da viagem}` logo antes do `{Em 15/Jul}`.
+def desanotar(
+    descricao: str, conhecidas: list[str] | tuple[str, ...] = ()
+) -> tuple[str, str, str]:
+    """O inverso de `annotate`: (descrição limpa, categoria real, rótulo).
+
+        [Cartão] Campo Belo C (Lazer) {Campo Belo} {Em 23/Mar}
+        -> ("[Cartão] Campo Belo C {Em 23/Mar}", "Lazer", "Campo Belo")
+
+    Existe para que REPROCESSAR não empilhe. Um arquivo de saída pode voltar
+    pela recategorização quantas vezes ele quiser, e a segunda passada tem de
+    reescrever `(Lazer)` — não escrever `(Lazer) (Vestuário)`.
+
+    O PERIGO AQUI É COMER O QUE NÃO É MARCA, e as duas marcas correm riscos
+    diferentes:
+
+    * `{...}` é seguro por exclusão. Só este portal escreve chaves; a única
+      outra é o `{Em 15/Jul}`, que sai da frente antes da busca.
+    * `(...)` NÃO é. `(Parcela 03/05)` é escrito pelo próprio portal e
+      `Padaria (Matriz)` é nome de estabelecimento. Por isso o parêntese só é
+      removido quando o conteúdo é um nome de categoria que existe —
+      `conhecidas` é a lista de `Ruleset.all_categories()`. Sem ela, nada de
+      parêntese sai, e o pior caso é a marca antiga sobreviver, não o nome do
+      estabelecimento ser mutilado.
+    """
+    achado = DATE_SUFFIX_RE.search(descricao)
+    corpo = descricao[:achado.start()] if achado else descricao
+    sufixo = achado.group(0).strip() if achado else ""
+
+    rotulo = ""
+
+    def _tira_rotulo(match: re.Match) -> str:
+        nonlocal rotulo
+        # O ÚLTIMO vence. Com uma marca só — o caso real — dá no mesmo; com
+        # duas, a mais à direita é a que `annotate` escreveu por último.
+        rotulo = match.group(1).strip()
+        return ""
+
+    corpo = ROTULO_RE.sub(_tira_rotulo, corpo)
+
+    indice = {normalize(c): c for c in conhecidas if c and c.strip()}
+    categoria = ""
+
+    def _tira_categoria(match: re.Match) -> str:
+        nonlocal categoria
+        alvo = normalize(match.group(1))
+        if alvo in indice:
+            categoria = indice[alvo]
+            return ""
+        return match.group(0)
+
+    if indice:
+        corpo = PARENTESES_RE.sub(_tira_categoria, corpo)
+
+    corpo = corpo.rstrip()
+    return (f"{corpo} {sufixo}".strip() if sufixo else corpo), categoria, rotulo
+
+
+def annotate(descricao: str, categoria_real: str, rotulo: str = "",
+             conhecidas: list[str] | tuple[str, ...] = ()) -> str:
+    """Escreve `(Categoria)` e `{Nome da viagem}` logo antes do `{Em 15/Jul}`.
 
         [Cartão] Campo Belo Country C {Em 23/Mar}
         [Cartão] Campo Belo Country C (Lazer) {Campo Belo} {Em 23/Mar}
@@ -199,29 +274,49 @@ def annotate(descricao: str, categoria_real: str, rotulo: str = "") -> str:
     viagem não ganha chave nenhuma, e sem categoria real não há parêntese — em
     vez de um rótulo inventado. Uma viagem nomeada cuja linha ficou sem
     categoria ainda recebe `{Campo Belo}`.
+
+    SUBSTITUI, não acrescenta. A marca antiga é retirada primeiro (`desanotar`)
+    e a nova entra no lugar, o que torna a função idempotente de verdade e não
+    só para valores idênticos — reprocessar um arquivo com regras novas troca
+    `(Lazer)` por `(Vestuário)` em vez de escrever os dois.
+
+    O que não vier na chamada é HERDADO da descrição: reprocessar sem saber o
+    nome da viagem mantém o `{Campo Belo}` que já estava lá, em vez de apagá-lo.
     """
     categoria_real = (categoria_real or "").strip()
-    rotulo = (rotulo or "").strip()
+    # `Viagem` nunca é a categoria REAL: numa linha que já está em Viagem, a
+    # categoria da coluna é a marca, e escrevê-la de volta daria `(Viagem)` —
+    # a marca comendo a si mesma e perdendo o `(Lazer)` que ela guardava.
+    if normalize(categoria_real) == normalize(TRAVEL_CATEGORY):
+        categoria_real = ""
 
-    # Idempotente nas duas marcas: refazer o /preview não empilha parênteses
-    # nem chaves.
+    # A categoria que está sendo escrita entra na lista de reconhecidas mesmo
+    # quem chamou sem `conhecidas`. É o que garante a idempotência barata do
+    # caminho da fatura, onde não há Ruleset à mão: reescrever a mesma marca
+    # remove a anterior em vez de duplicá-la.
+    base, categoria_antiga, rotulo_antigo = desanotar(
+        descricao, [*conhecidas, categoria_real])
+
+    categoria_real = categoria_real or categoria_antiga
+    rotulo = (rotulo or "").strip() or rotulo_antigo
+
     partes = []
-    if categoria_real and f"({categoria_real})" not in descricao:
+    if categoria_real:
         partes.append(f"({categoria_real})")
-    if rotulo and f"{{{rotulo}}}" not in descricao:
+    if rotulo:
         partes.append(f"{{{rotulo}}}")
     if not partes:
-        return descricao
+        return base
 
     extra = " ".join(partes)
-    sufixo = DATE_SUFFIX_RE.search(descricao)
+    sufixo = DATE_SUFFIX_RE.search(base)
     if sufixo:
-        base = descricao[:sufixo.start()].rstrip()
-        return f"{base} {extra}{sufixo.group(0).rstrip()}"
-    return f"{descricao.rstrip()} {extra}"
+        return f"{base[:sufixo.start()].rstrip()} {extra} {sufixo.group(0).strip()}"
+    return f"{base.rstrip()} {extra}"
 
 
-def apply_travel(linha: ClassifiedLine, categoria_real: str,
-                 rotulo: str = "") -> tuple[str, str]:
+def apply_travel(linha: ClassifiedLine, categoria_real: str, rotulo: str = "",
+                 conhecidas: list[str] | tuple[str, ...] = ()) -> tuple[str, str]:
     """(categoria, descrição) de uma linha confirmada como viagem."""
-    return TRAVEL_CATEGORY, annotate(linha.descricao, categoria_real, rotulo)
+    return TRAVEL_CATEGORY, annotate(linha.descricao, categoria_real, rotulo,
+                                     conhecidas)

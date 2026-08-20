@@ -59,6 +59,9 @@ export default function AnalyticsView({ onError }) {
   const salvos = useRef(lerFiltros())
   const [semCategorias, setSemCategorias] = useState(salvos.current.semCategorias)
   const [semLinhas, setSemLinhas] = useState(salvos.current.semLinhas)
+  // Terceira dimensão da barra: quem passou o cartão, lido do `<nome>` no fim
+  // da descrição. Separa PESSOAS, e não assuntos como as outras duas.
+  const [semTitulares, setSemTitulares] = useState(salvos.current.semTitulares)
   const [rotulos, setRotulos] = useState(salvos.current.rotulos)
   const [excluidas, setExcluidas] = useState([])
   const [composicao, setComposicao] = useState(null)   // null = decide sozinho
@@ -78,22 +81,30 @@ export default function AnalyticsView({ onError }) {
       setArquivo(novoArquivo)
       setSemCategorias(filtro.semCategorias || [])
       setSemLinhas(filtro.semLinhas || [])
+      setSemTitulares(filtro.semTitulares || [])
       // Os rótulos vêm por PARÂMETRO, não do estado: `setRotulos` só vale no
       // próximo render, e ler o estado aqui gravaria o mapa de antes do clique
       // — o cache ficava sempre um passo atrás e, na prática, vazio.
       gravarFiltros({ semCategorias: filtro.semCategorias || [],
-                      semLinhas: filtro.semLinhas || [], rotulos: agora || rotulos })
+                      semLinhas: filtro.semLinhas || [],
+                      semTitulares: filtro.semTitulares || [],
+                      rotulos: agora || rotulos })
       if (novoPreset) setPreset(novoPreset)
     } catch (e) {
       // Filtro salvo de OUTRA planilha pode não casar com esta e derrubar o
       // primeiro carregamento — e aí a aba parece quebrada, quando o problema é
       // uma preferência velha. Tenta de novo limpo e diz o que aconteceu, em
       // vez de deixar a dropzone recusando o arquivo para sempre.
-      if (podeDesistirDosFiltros
-          && ((filtro.semCategorias || []).length || (filtro.semLinhas || []).length)) {
+      const salvosEmVigor = (filtro.semCategorias || []).length
+        + (filtro.semLinhas || []).length + (filtro.semTitulares || []).length
+      if (podeDesistirDosFiltros && salvosEmVigor) {
         onError(`${e.message} — os filtros salvos não valem para este arquivo,`
                 + ' então abri sem eles.')
-        return enviar(novoArquivo, { ...filtro, semCategorias: [], semLinhas: [] },
+        // Os TRÊS são limpos: um filtro de titular salvo de outra planilha
+        // derruba o carregamento igualzinho ("os filtros tiraram tudo"), e
+        // limpar só dois deixaria a aba tentando de novo o mesmo erro.
+        return enviar(novoArquivo,
+                      { ...filtro, semCategorias: [], semLinhas: [], semTitulares: [] },
                       novoPreset)
       }
       // Recorte vazio devolve 400 com o texto do que o arquivo cobre. Manter os
@@ -110,13 +121,14 @@ export default function AnalyticsView({ onError }) {
   // tem — e os dois se desencontrariam no primeiro erro.
   const filtroAtual = () => ({
     inicio: dados?.filtro?.inicio || '', fim: dados?.filtro?.fim || '',
-    semCategorias, semLinhas,
+    semCategorias, semLinhas, semTitulares,
   })
 
   // Recorte e exclusões entram pela MESMA porta. Quando eram duas, "trazer tudo
   // de volta" tinha que limpar as duas coisas em duas chamadas, e a segunda
   // partia do estado que a primeira ainda não tinha devolvido.
-  function aplicarFiltros({ semCategorias: cats, semLinhas: linhas, rotulos: novos,
+  function aplicarFiltros({ semCategorias: cats, semLinhas: linhas,
+                            semTitulares: quem, rotulos: novos,
                             inicio, fim, preset: novoPreset }) {
     // O rótulo é cache de exibição: sem ele, um lançamento excluído que caiu
     // fora do período em vigor não teria como aparecer na barra — e filtro que
@@ -127,7 +139,8 @@ export default function AnalyticsView({ onError }) {
     enviar(arquivo,
            { ...base,
              inicio: inicio ?? base.inicio, fim: fim ?? base.fim,
-             semCategorias: cats, semLinhas: linhas },
+             semCategorias: cats, semLinhas: linhas,
+             semTitulares: quem ?? base.semTitulares },
            novoPreset, { rotulos: mesclados })
   }
 
@@ -138,7 +151,7 @@ export default function AnalyticsView({ onError }) {
     setComposicao(null)
     // Os filtros salvos valem para o arquivo novo: as identidades são de
     // conteúdo, então reexportar a mesma planilha mantém todas elas.
-    enviar(f, { semCategorias, semLinhas }, undefined,
+    enviar(f, { semCategorias, semLinhas, semTitulares }, undefined,
            { podeDesistirDosFiltros: true })
   }
 
@@ -283,6 +296,7 @@ export default function AnalyticsView({ onError }) {
                        intervalo={intervalo_disponivel} filtro={dados.filtro}
                        preset={preset}
                        semCategorias={semCategorias} semLinhas={semLinhas}
+                       semTitulares={semTitulares}
                        rotulos={rotulos} aoAplicar={aplicarFiltros} />
 
       {/* 1. Dá para confiar nestes números? Vem antes de qualquer gráfico —
@@ -291,7 +305,8 @@ export default function AnalyticsView({ onError }) {
           o aviso descreve os números que vieram nesta resposta. */}
       <SaudeDosDados saude={saude} resumo={resumo} naoDetalhadoPct={naoDetalhadoPct}
                      comFiltros={(dados.filtro?.sem_categorias?.length || 0)
-                                 + (dados.filtro?.sem_linhas?.length || 0) > 0} />
+                                 + (dados.filtro?.sem_linhas?.length || 0)
+                                 + (dados.filtro?.sem_titulares?.length || 0) > 0} />
 
       <section className="card">
         <div className="toolbar">

@@ -105,9 +105,23 @@ A anotação é idempotente (refazer o `/preview` não empilha parênteses) e, s
 categoria real, a linha vira `Viagem` **sem** parêntese em vez de ganhar um
 rótulo inventado.
 
-**Não vale na recategorização** (`409`): aquele fluxo promete devolver o arquivo
-com só a coluna Categoria alterada, e a viagem escreve dentro da descrição. Os
-dois contratos não cabem juntos.
+**Vale nos dois fluxos.** Já foi um `409` na recategorização, quando o contrato
+dela era "a descrição não é tocada" — e a viagem escreve dentro da descrição. O
+contrato foi reescrito para **só a coluna Categoria e as marcas de viagem
+mudam**, porque uma viagem que só pode ser marcada no mês em que a fatura chega
+é uma viagem que só dá para marcar uma vez: reprocessar o histórico inteiro é
+justamente quando dá para lembrar de todas.
+
+Reprocessar **substitui** a marca em vez de acrescentá-la. `desanotar` tira
+`(Lazer)` e `{Campo Belo}` antes de escrever os novos, e o parêntese só sai se
+o conteúdo for um nome de categoria conhecido — é o que distingue a marca de um
+`(Parcela 03/05)` ou de uma "Padaria (Matriz)". Uma linha que já está em
+`Viagem` tem a marca reavaliada pelas regras de hoje (a coluna não se mexe), e
+uma sem marca nenhuma não ganha uma: sem parêntese, este portal não escreveu
+ali.
+
+Os períodos também entram por **CSV** (`start_date,end_date,trip_name`), lido no
+navegador. Vinte viagens de cinco anos não se digitam uma a uma.
 
 ## Autenticação no GitHub
 

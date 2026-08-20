@@ -162,6 +162,23 @@ button.primary {
 }
 button.primary:hover:not(:disabled) { background: var(--verde-escuro); border-color: var(--verde-escuro); color: #fff; }
 button.ghost { background: var(--surface-2); font-size: 13px; padding: 7px 13px; }
+
+/* Um `<input type=file>` cru desenha um botão do SISTEMA OPERACIONAL, que
+   destoa de tudo à volta e não obedece a variável de tema nenhuma. O input
+   continua no DOM — focável, rotulado, acionável por teclado — e o label é
+   quem tem a aparência de botão. */
+label.como-botao {
+  display: inline-block; font: inherit; cursor: pointer; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+  padding: 7px 13px; font-size: 13px;
+}
+label.como-botao:hover { border-color: var(--verde); color: var(--verde-escuro); }
+label.como-botao.desabilitado { opacity: .5; cursor: not-allowed; }
+label.como-botao input[type="file"] {
+  /* `display:none` também tiraria do fluxo de foco; isto esconde sem sumir. */
+  position: absolute; width: 1px; height: 1px; opacity: 0;
+}
+
 button.danger:hover:not(:disabled) { border-color: var(--magenta); color: var(--magenta); }
 button.link {
   background: none; border: none; color: var(--verde-escuro);

@@ -29,7 +29,7 @@
 
 const CHAVE = 'fatura:analise:filtros:v1'
 
-const VAZIO = { semCategorias: [], semLinhas: [], rotulos: {} }
+const VAZIO = { semCategorias: [], semLinhas: [], semTitulares: [], rotulos: {} }
 
 /**
  * `localStorage` pode simplesmente não existir: navegação privada em alguns
@@ -55,6 +55,7 @@ export function lerFiltros() {
     return {
       semCategorias: Array.isArray(cru.semCategorias) ? cru.semCategorias : [],
       semLinhas: Array.isArray(cru.semLinhas) ? cru.semLinhas : [],
+      semTitulares: Array.isArray(cru.semTitulares) ? cru.semTitulares : [],
       rotulos: cru.rotulos && typeof cru.rotulos === 'object' ? cru.rotulos : {},
     }
   } catch {
@@ -64,7 +65,8 @@ export function lerFiltros() {
   }
 }
 
-export function gravarFiltros({ semCategorias = [], semLinhas = [], rotulos = {} }) {
+export function gravarFiltros({ semCategorias = [], semLinhas = [],
+                                semTitulares = [], rotulos = {} }) {
   const loja = armazem()
   if (!loja) return
   try {
@@ -72,7 +74,8 @@ export function gravarFiltros({ semCategorias = [], semLinhas = [], rotulos = {}
     // cresceria para sempre com o nome de tudo que já passou pela barra.
     const vivos = Object.fromEntries(
       semLinhas.map((id) => [id, rotulos[id]]).filter(([, r]) => r))
-    loja.setItem(CHAVE, JSON.stringify({ semCategorias, semLinhas, rotulos: vivos }))
+    loja.setItem(CHAVE, JSON.stringify({ semCategorias, semLinhas,
+                                         semTitulares, rotulos: vivos }))
   } catch {
     /* cota cheia: o filtro vale para esta sessão e pronto */
   }

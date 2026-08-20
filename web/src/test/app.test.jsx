@@ -25,6 +25,7 @@ import {
 } from '../components/charts'
 import FiltrosLaterais from '../components/FiltrosLaterais'
 import { gravarFiltros, lerFiltros } from '../filtrosSalvos'
+import { juntarPeriodos, lerPeriodosCsv } from '../travelCsv'
 import Reservas from '../components/Reservas'
 import Sankey from '../components/Sankey'
 import Residuos from '../components/Residuos'
@@ -434,21 +435,35 @@ describe('RecategorizeStep', () => {
     expect(screen.queryByText('extrato.xls')).not.toBeInTheDocument()
   })
 
-  it('diz que só a coluna Categoria muda', () => {
+  it('diz o que muda: a coluna Categoria e as marcas de viagem', () => {
     render(<RecategorizeStep onUpload={vi.fn()} busy={false} />)
-    expect(screen.getByText(/só a coluna Categoria muda/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/só a coluna Categoria e as marcas de viagem mudam/i),
+    ).toBeInTheDocument()
+  })
+
+  it('oferece os períodos de viagem depois de escolher os arquivos', async () => {
+    const { container } = render(
+      <RecategorizeStep onUpload={vi.fn()} busy={false}
+                        travelRanges={[]} onTravelRangesChange={vi.fn()} />)
+    // Antes de escolher arquivo não há o que marcar viagem em cima.
+    expect(screen.queryByText(/Viajou em algum período/i)).not.toBeInTheDocument()
+    await userEvent.upload(container.querySelector('input[type="file"]'),
+                           [new File(['x'], 'historico.csv', { type: 'text/csv' })])
+    expect(screen.getByText(/Viajou em algum período/i)).toBeInTheDocument()
   })
 })
 
 describe('ChangesSummary', () => {
-  const sessao = (changes) => ({
+  const sessao = (changes, travel_marks = []) => ({
     changes,
+    travel_marks,
     unchanged: 397,
     source_files: [{ name: 'historico.csv', rows: 399, total: 44618.19 }],
   })
 
-  const montar = (changes) => render(
-    <ChangesSummary session={sessao(changes)} getAssignment={() => null}
+  const montar = (changes, marcas) => render(
+    <ChangesSummary session={sessao(changes, marcas)} getAssignment={() => null}
                     setAssignment={vi.fn()} setManyAssignments={vi.fn()}
                     onNext={vi.fn()} />)
 
@@ -467,6 +482,33 @@ describe('ChangesSummary', () => {
     montar([])
     expect(screen.getByText(/já estava em dia/i)).toBeInTheDocument()
     expect(screen.queryByRole('checkbox')).toBeNull()
+  })
+
+  const MARCA = [{ line_id: '0:7', descricao: '[Cartão] Hotel Serra (Lazer) {Em 1/Feb}',
+                   valor: 480, de: 'Lazer', para: 'Hospedagem', matched: 'HOTEL' }]
+
+  it('as marcas de viagem aparecem fora da tabela e SEM caixa de marcar', () => {
+    // A coluna Categoria destas linhas não muda — continua Viagem. Recusar
+    // aqui gravaria "Lazer" na coluna de uma linha de viagem, que é o erro que
+    // a separação existe para impedir.
+    montar([], MARCA)
+    expect(screen.getByText(/categoria real atualizada dentro da descrição/i))
+      .toBeInTheDocument()
+    expect(screen.getByText('(Hospedagem)')).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).toBeNull()
+  })
+
+  it('sem nenhuma mudança de coluna, não diz que o arquivo estava em dia', () => {
+    // Estava em dia é falso quando alguma coisa mudou; a frase mandaria o
+    // usuário ignorar uma tela que tem conteúdo.
+    montar([], MARCA)
+    expect(screen.queryByText(/já estava em dia/i)).toBeNull()
+    expect(screen.getByText(/só as diferenças|únicas diferenças/i)).toBeInTheDocument()
+  })
+
+  it('sem marcas, a seção nem aparece', () => {
+    montar([], [])
+    expect(screen.queryByText(/categoria real atualizada/i)).toBeNull()
   })
 })
 
@@ -696,12 +738,69 @@ describe('App', () => {
     expect(await screen.findByRole('button', { name: /Viagem/ })).toBeInTheDocument()
   })
 
-  it('esconde a etapa de Viagem na recategorização', async () => {
-    // A recategorização promete não tocar a descrição, e a viagem escreve nela.
+  it('mostra a etapa de Viagem também na recategorização', async () => {
+    // Já foi escondida aqui, quando o contrato do reprocessamento era "a
+    // descrição não é tocada". Hoje o contrato inclui as marcas de viagem, e
+    // esta é a tela onde o histórico inteiro está junto — a única em que dá
+    // para lembrar da viagem de 2019.
+    //
+    // O `name` do botão de etapa inclui o número ("6Viagem"), então um
+    // matcher ancorado em `^Viagem` passa dizendo qualquer coisa. Este busca
+    // pelo texto justamente para não virar um teste que não testa.
     await montarApp()
     await userEvent.click(screen.getByRole('button', { name: 'Recategorizar CSV' }))
-    expect(screen.queryByRole('button', { name: /^Viagem/ })).toBeNull()
     expect(await screen.findByRole('button', { name: /Mudanças/ })).toBeInTheDocument()
+    const etapas = screen.getByRole('navigation', { name: 'Etapas' })
+    expect(within(etapas).getByText('Viagem')).toBeInTheDocument()
+  })
+
+  const SESSAO_RECAT = {
+    modo: 'recategorizacao',
+    transaction_id: 'tx-1',
+    expires_at: '2026-09-01T00:00:00Z',
+    statements: [], dropped: [], warnings: [],
+    unmapped_items: [], auto_classified_items: [],
+    marketplace_items: [], ignored_items: [],
+    purchase_range: { inicio: '2019-01-01', fim: '2026-07-31' },
+    source_files: [{ name: 'historico.csv', rows: 2, total: 10 }],
+    changes: [], travel_marks: [], unchanged: 2,
+  }
+
+  it('a viagem atravessa a recategorização inteira', async () => {
+    // Três coisas que só quebram juntas, e por isso são um teste só: o editor
+    // de períodos na tela de recategorizar, o envio deles quando a transação
+    // finalmente existe, e a etapa Viagem no fim do fluxo. Cada uma sozinha
+    // passa despercebida — a viagem simplesmente não acontece.
+    const api = await import('../api')
+    api.recategorize.mockResolvedValue(SESSAO_RECAT)
+    api.travel.mockResolvedValue({
+      ranges: [{ inicio: '2019-07-01', fim: '2019-07-10', rotulo: 'Bariloche' }],
+      items: [], warnings: [],
+    })
+    await montarApp()
+    await userEvent.click(screen.getByRole('button', { name: 'Recategorizar CSV' }))
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['x'], 'historico.csv', { type: 'text/csv' }))
+
+    await userEvent.click(screen.getByText(/Viajou em algum período/))
+    const [ida, volta] = document.querySelectorAll('input[type="date"]')
+    await userEvent.type(ida, '2019-07-01')
+    await userEvent.type(volta, '2019-07-10')
+    await userEvent.type(screen.getByPlaceholderText(/Gramado/), 'Bariloche')
+    await userEvent.click(screen.getByRole('button', { name: /Adicionar período/ }))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Recategorizar' }))
+
+    // Digitados antes de existir transação, enviados assim que ela existe.
+    await waitFor(() => expect(api.travel).toHaveBeenCalledWith('tx-1', [
+      { inicio: '2019-07-01', fim: '2019-07-10', rotulo: 'Bariloche' }]))
+
+    await userEvent.click(await screen.findByRole('button', { name: /Continuar a revisão/ }))
+    for (const _ of [1, 2, 3]) {
+      await userEvent.click(screen.getByRole('button', { name: 'Continuar' }))
+    }
+    expect(screen.getByRole('heading', { name: /Períodos de viagem/ }))
+      .toBeInTheDocument()
   })
 })
 
@@ -2341,9 +2440,10 @@ describe('FiltrosLaterais', () => {
     })),
   }
 
-  async function abrir({ semCategorias = [], semLinhas = [] } = {}) {
+  async function abrir({ semCategorias = [], semLinhas = [], titulares } = {}) {
     const aoAplicar = vi.fn()
-    render(<FiltrosLaterais disponiveis={DISPONIVEIS} busy={false}
+    render(<FiltrosLaterais busy={false}
+                            disponiveis={{ ...DISPONIVEIS, titulares }}
                             semCategorias={semCategorias} semLinhas={semLinhas}
                             aoAplicar={aoAplicar} />)
     await userEvent.click(screen.getByRole('button', { name: /Filtros/ }))
@@ -2375,7 +2475,7 @@ describe('FiltrosLaterais', () => {
     const { aoAplicar } = await abrir()
     await userEvent.click(screen.getByRole('checkbox', { name: 'Casa' }))
     expect(aoAplicar).toHaveBeenCalledWith({
-      semCategorias: ['Casa'], semLinhas: [] })
+      semCategorias: ['Casa'], semLinhas: [], semTitulares: [] })
   })
 
   it('mostra 10 lançamentos e revela mais 10 sob demanda', async () => {
@@ -2402,7 +2502,56 @@ describe('FiltrosLaterais', () => {
     const excluido = DISPONIVEIS.lancamentos[0].id
     const { aoAplicar } = await abrir({ semLinhas: [excluido] })
     await userEvent.click(screen.getByRole('button', { name: /Trazer de volta Gasto 0/ }))
-    expect(aoAplicar).toHaveBeenCalledWith({ semCategorias: [], semLinhas: [] })
+    expect(aoAplicar).toHaveBeenCalledWith({
+      semCategorias: [], semLinhas: [], semTitulares: [], rotulos: undefined })
+  })
+
+  it('sem titulares na resposta, a seção não existe', async () => {
+    // Histórico anterior à marcação existir: um balde só, nada a isolar. Uma
+    // seção de filtro que não consegue mudar a tela é ruído com cara de controle.
+    await abrir()
+    expect(screen.queryByText('De quem é a compra')).toBeNull()
+  })
+
+  it('lista os titulares com o gasto de cada um, todos marcados', async () => {
+    await abrir({ titulares: [
+      { titular: '', total: 300, lancamentos: 2 },
+      { titular: 'Rhyesla', total: 200, lancamentos: 1 },
+    ] })
+    expect(screen.getByText('De quem é a compra')).toBeInTheDocument()
+    // Sem marca ganha um nome legível — é o balde de quem não foi marcado.
+    const sem = screen.getByRole('checkbox', { name: /\(sem marca\)/ })
+    const dela = screen.getByRole('checkbox', { name: /Rhyesla/ })
+    expect(sem.checked && dela.checked).toBe(true)
+  })
+
+  it('desmarcar um titular manda a lista nova para cima', async () => {
+    const { aoAplicar } = await abrir({ titulares: [
+      { titular: '', total: 300, lancamentos: 2 },
+      { titular: 'Rhyesla', total: 200, lancamentos: 1 },
+    ] })
+    await userEvent.click(screen.getByRole('checkbox', { name: /Rhyesla/ }))
+    expect(aoAplicar).toHaveBeenCalledWith({
+      semCategorias: [], semLinhas: [], semTitulares: ['Rhyesla'] })
+  })
+
+  it('o balde sem marca viaja por um apelido, não por string vazia', async () => {
+    // Linha vazia some num campo separado por quebra de linha, e é justamente
+    // esse balde que precisa sair para isolar uma pessoa.
+    const { aoAplicar } = await abrir({ titulares: [
+      { titular: '', total: 300, lancamentos: 2 },
+      { titular: 'Rhyesla', total: 200, lancamentos: 1 },
+    ] })
+    await userEvent.click(screen.getByRole('checkbox', { name: /\(sem marca\)/ }))
+    expect(aoAplicar).toHaveBeenCalledWith({
+      semCategorias: [], semLinhas: [], semTitulares: ['<sem marca>'] })
+  })
+
+  it('o titular excluído conta na bolha', async () => {
+    render(<FiltrosLaterais disponiveis={DISPONIVEIS} busy={false}
+                            semCategorias={[]} semLinhas={[]}
+                            semTitulares={['Rhyesla']} aoAplicar={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /Filtros/ }).textContent).toContain('1')
   })
 
   it('dá para trazer tudo de volta de uma vez — recorte junto', async () => {
@@ -2412,7 +2561,8 @@ describe('FiltrosLaterais', () => {
     const { aoAplicar } = await abrir({ semCategorias: ['Casa'], semLinhas: ['z'] })
     await userEvent.click(screen.getByRole('button', { name: /trazer tudo de volta/ }))
     expect(aoAplicar).toHaveBeenCalledWith({
-      semCategorias: [], semLinhas: [], inicio: '', fim: '', preset: 'tudo' })
+      semCategorias: [], semLinhas: [], semTitulares: [],
+      inicio: '', fim: '', preset: 'tudo' })
   })
 })
 
@@ -2430,7 +2580,7 @@ describe('filtrosSalvos', () => {
     gravarFiltros({ semCategorias: ['Casa'], semLinhas: [id],
                     rotulos: { [id]: 'Pix da Casa 123' } })
     expect(lerFiltros()).toEqual({
-      semCategorias: ['Casa'], semLinhas: [id],
+      semCategorias: ['Casa'], semLinhas: [id], semTitulares: [],
       rotulos: { [id]: 'Pix da Casa 123' } })
   })
 
@@ -2442,13 +2592,15 @@ describe('filtrosSalvos', () => {
 
   it('conteúdo corrompido recomeça em branco em vez de derrubar a aba', () => {
     window.localStorage.setItem('fatura:analise:filtros:v1', '{isso não é json')
-    expect(lerFiltros()).toEqual({ semCategorias: [], semLinhas: [], rotulos: {} })
+    expect(lerFiltros()).toEqual({ semCategorias: [], semLinhas: [],
+                                   semTitulares: [], rotulos: {} })
   })
 
   it('formato inesperado não vira filtro inválido', () => {
     window.localStorage.setItem('fatura:analise:filtros:v1',
                                 '{"semCategorias":"Casa","semLinhas":null}')
-    expect(lerFiltros()).toEqual({ semCategorias: [], semLinhas: [], rotulos: {} })
+    expect(lerFiltros()).toEqual({ semCategorias: [], semLinhas: [],
+                                   semTitulares: [], rotulos: {} })
   })
 
   it('sem localStorage, a aba abre sem filtro em vez de quebrar', () => {
@@ -2457,7 +2609,8 @@ describe('filtrosSalvos', () => {
       configurable: true,
       get() { throw new Error('navegação privada') },
     })
-    expect(lerFiltros()).toEqual({ semCategorias: [], semLinhas: [], rotulos: {} })
+    expect(lerFiltros()).toEqual({ semCategorias: [], semLinhas: [],
+                                   semTitulares: [], rotulos: {} })
     expect(() => gravarFiltros({ semLinhas: ['x'] })).not.toThrow()
     Object.defineProperty(window, 'localStorage', real)
   })
@@ -2764,7 +2917,8 @@ describe('AnalyticsView — o rótulo do excluído chega ao armazenamento', () =
     await screen.findByRole('button', { name: /Trazer de volta Pix grande/ })
 
     expect(lerFiltros()).toEqual({
-      semCategorias: [], semLinhas: ['i1'], rotulos: { i1: 'Pix grande' } })
+      semCategorias: [], semLinhas: ['i1'], semTitulares: [],
+      rotulos: { i1: 'Pix grande' } })
   })
 })
 
@@ -2896,5 +3050,194 @@ describe('Sankey — o rótulo cabe na calha', () => {
     const gaps = ys.slice(1).map((y, i) => y - ys[i])
     expect(Math.min(...gaps)).toBeGreaterThanOrEqual(26)
     expect(container.querySelectorAll('line').length).toBeGreaterThan(0)
+  })
+})
+
+// ------------------------------------------- períodos de viagem por CSV
+
+describe('lerPeriodosCsv', () => {
+  const so = ({ ranges }) => ranges.map((r) => [r.inicio, r.fim, r.rotulo])
+
+  it('lê o formato pedido, com cabeçalho', () => {
+    const lido = lerPeriodosCsv(
+      'start_date,end_date,trip_name\n2026-07-01,2026-07-10,Gramado\n')
+    expect(so(lido)).toEqual([['2026-07-01', '2026-07-10', 'Gramado']])
+    expect(lido.erros).toEqual([])
+  })
+
+  it('lê sem cabeçalho — a primeira linha já é período se as datas casam', () => {
+    // O cabeçalho é detectado pelo CONTEÚDO. Uma lista de nomes aceitos
+    // ("start_date", "Ida", "Início"…) sempre esquece um.
+    expect(so(lerPeriodosCsv('2026-07-01,2026-07-10,Gramado')))
+      .toEqual([['2026-07-01', '2026-07-10', 'Gramado']])
+  })
+
+  it('aceita ponto e vírgula — é o que o Excel em português exporta', () => {
+    expect(so(lerPeriodosCsv('Ida;Volta;Viagem\n01/07/2026;10/07/2026;Gramado')))
+      .toEqual([['2026-07-01', '2026-07-10', 'Gramado']])
+  })
+
+  it('aceita dd/mm/aaaa, e a barra é sempre brasileira', () => {
+    // `03/05/2026` é 3 de MAIO. Adivinhar mm/dd marcaria uma viagem a dois
+    // meses de distância sem avisar ninguém.
+    expect(so(lerPeriodosCsv('03/05/2026,05/05/2026,Feriado')))
+      .toEqual([['2026-05-03', '2026-05-05', 'Feriado']])
+  })
+
+  it('nome entre aspas com vírgula continua um nome só', () => {
+    expect(so(lerPeriodosCsv('2026-07-01,2026-07-10,"Gramado, RS"')))
+      .toEqual([['2026-07-01', '2026-07-10', 'Gramado, RS']])
+  })
+
+  it('nome com vírgula e sem aspas também sobrevive inteiro', () => {
+    expect(so(lerPeriodosCsv('2026-07-01,2026-07-10,Gramado, RS')))
+      .toEqual([['2026-07-01', '2026-07-10', 'Gramado, RS']])
+  })
+
+  it('o nome é opcional', () => {
+    expect(so(lerPeriodosCsv('2026-07-01,2026-07-10')))
+      .toEqual([['2026-07-01', '2026-07-10', '']])
+  })
+
+  it('recusa data que não existe no calendário', () => {
+    // `31/02` casa com o padrão e não é dia nenhum. Deixar passar criaria um
+    // período que o backend recusa depois, falando de outra coisa.
+    const { ranges, erros } = lerPeriodosCsv('ida,volta\n31/02/2026,05/03/2026,X')
+    expect(ranges).toEqual([])
+    expect(erros[0]).toMatch(/linha 2.*31\/02\/2026/)
+  })
+
+  it('arquivo sem período nenhum acusa a linha engolida como cabeçalho', () => {
+    // A heurística de cabeçalho ("as duas primeiras células não são datas")
+    // engoliria um arquivo de uma linha só com a data errada, e ele sumiria
+    // sem explicação nenhuma.
+    const { ranges, erros } = lerPeriodosCsv('31/02/2026,05/03/2026,X')
+    expect(ranges).toEqual([])
+    expect(erros[0]).toMatch(/linha 1.*cabeçalho/)
+  })
+
+  it('recusa a volta antes da ida, dizendo em qual linha', () => {
+    const { ranges, erros } = lerPeriodosCsv(
+      'ida,volta\n2026-07-10,2026-07-01,X\n2026-08-01,2026-08-05,Y')
+    expect(so({ ranges })).toEqual([['2026-08-01', '2026-08-05', 'Y']])
+    expect(erros).toEqual(['linha 2: a volta (2026-07-01) é antes da ida (2026-07-10)'])
+  })
+
+  it('uma linha ruim não derruba as boas', () => {
+    // Recusar o arquivo inteiro por causa de uma linha faria o usuário perder
+    // as dezenove que estavam certas.
+    const { ranges, erros } = lerPeriodosCsv(
+      '2026-07-01,2026-07-10,A\nlixo,2026-08-05,B\n2026-09-01,2026-09-03,C')
+    expect(ranges).toHaveLength(2)
+    expect(erros).toHaveLength(1)
+  })
+
+  it('ignora linhas em branco e o BOM do Excel', () => {
+    expect(so(lerPeriodosCsv('﻿2026-07-01,2026-07-10,A\n\n\n')))
+      .toEqual([['2026-07-01', '2026-07-10', 'A']])
+  })
+})
+
+describe('juntarPeriodos', () => {
+  it('não duplica a mesma janela — importar duas vezes é o acidente óbvio', () => {
+    const atuais = [{ inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'Gramado' }]
+    const r = juntarPeriodos(atuais, [
+      { inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'Gramado (RS)' },
+      { inicio: '2026-08-01', fim: '2026-08-03', rotulo: 'Praia' },
+    ])
+    expect(r.lista).toHaveLength(2)
+    expect(r).toMatchObject({ adicionados: 1, repetidos: 1 })
+    // A identidade é a JANELA, não o nome: o mesmo período escrito com outro
+    // nome continua sendo a mesma viagem, e marcaria as compras duas vezes.
+    expect(r.lista[0].rotulo).toBe('Gramado')
+  })
+})
+
+describe('importar períodos de um CSV na tela', () => {
+  const arquivo = (texto, nome = 'viagens.csv') =>
+    new File([texto], nome, { type: 'text/csv' })
+
+  const importar = async (texto, nome) => {
+    await userEvent.upload(
+      screen.getByLabelText('Importar períodos de um CSV'), arquivo(texto, nome))
+  }
+
+  it('cria os períodos a partir do arquivo', async () => {
+    const { onRangesChange } = montarViagem()
+    await importar('start_date,end_date,trip_name\n'
+                 + '2026-07-01,2026-07-10,Gramado\n'
+                 + '2026-08-01,2026-08-03,Praia\n')
+    await waitFor(() => expect(onRangesChange).toHaveBeenCalledWith([
+      { inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'Gramado' },
+      { inicio: '2026-08-01', fim: '2026-08-03', rotulo: 'Praia' },
+    ]))
+    expect(await screen.findByText(/2 período\(s\) adicionado\(s\)/)).toBeInTheDocument()
+  })
+
+  it('soma aos períodos que já estavam na tela, sem repetir', async () => {
+    const { onRangesChange } = montarViagem({
+      ranges: [{ inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'Gramado' }],
+    })
+    await importar('2026-07-01,2026-07-10,Gramado\n2026-08-01,2026-08-03,Praia')
+    await waitFor(() => expect(onRangesChange).toHaveBeenCalledWith([
+      { inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'Gramado' },
+      { inicio: '2026-08-01', fim: '2026-08-03', rotulo: 'Praia' },
+    ]))
+    expect(await screen.findByText(/1 já estava/)).toBeInTheDocument()
+  })
+
+  it('mostra as linhas recusadas com o número da linha', async () => {
+    // "3 linhas ignoradas" manda procurar quais no arquivo inteiro.
+    const { onRangesChange } = montarViagem()
+    await importar('2026-07-01,2026-07-10,A\nlixo,2026-08-05,B')
+    expect(await screen.findByText(/linha 2/)).toBeInTheDocument()
+    await waitFor(() => expect(onRangesChange).toHaveBeenCalledTimes(1))
+  })
+
+  it('arquivo sem nenhum período não mexe na lista', async () => {
+    const { onRangesChange } = montarViagem()
+    await importar('start_date,end_date,trip_name\n')
+    expect(await screen.findByText(/nenhum período novo/)).toBeInTheDocument()
+    expect(onRangesChange).not.toHaveBeenCalled()
+  })
+})
+
+describe('o aviso sobre os limites das datas', () => {
+  it('na fatura, sem limites, diz que a LEITURA falhou', async () => {
+    const { default: TravelRanges } = await import('../components/TravelRanges')
+    render(<TravelRanges ranges={[]} onChange={vi.fn()} limites={null} />)
+    expect(screen.getByText(/Não consegui ler as datas/)).toBeInTheDocument()
+  })
+
+  it('na recategorização, sem limites, NÃO acusa falha de leitura', async () => {
+    // O arquivo nem foi lido ainda. Dizer "não consegui" seria relatar um erro
+    // numa leitura que não aconteceu — e mandar procurar um problema que não
+    // existe é pior do que não dizer nada.
+    const { default: TravelRanges } = await import('../components/TravelRanges')
+    render(<TravelRanges ranges={[]} onChange={vi.fn()} limites={null} preVoo={false} />)
+    expect(screen.queryByText(/Não consegui ler as datas/)).toBeNull()
+    expect(screen.getByText(/ainda não foi lido e pode cobrir anos/)).toBeInTheDocument()
+  })
+})
+
+describe('a coluna "Qual viagem"', () => {
+  const RANGES = [
+    { inicio: '2026-07-01', fim: '2026-07-02', rotulo: 'Gramado' },
+    { inicio: '2026-07-03', fim: '2026-07-05', rotulo: '' },
+  ]
+
+  it('diz de qual período cada linha veio', async () => {
+    // Com dois períodos abertos, "4 compras viraram Viagem" não diz de qual —
+    // e é justamente aí que se descobre que a janela pegou o mês errado.
+    montarViagem({ ranges: RANGES })
+    const linha = screen.getByText('[Cartão] Supermercados Alvora {Em 2/Jul}')
+      .closest('tr')
+    expect(within(linha).getByText('Gramado')).toBeInTheDocument()
+  })
+
+  it('período sem nome mostra a janela, não uma célula vazia', async () => {
+    montarViagem({ ranges: RANGES })
+    const linha = screen.getByText('[Cartão] Amazon Br {Em 3/Jul}').closest('tr')
+    expect(within(linha).getByText('03/07–05/07')).toBeInTheDocument()
   })
 })

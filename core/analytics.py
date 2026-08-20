@@ -195,10 +195,36 @@ class Lancamento:
     fonte: str = ""
 
     @property
+    def titular(self) -> str:
+        """Quem passou o cartão, lido do `<Nome>` no fim da descrição.
+
+        A marca é posta na IMPORTAÇÃO (ver `pipeline.build_description`), então
+        aqui ela chega como texto e sai como texto — não há coluna a criar na
+        planilha nem formato novo a manter. Vazio quer dizer "sem marca": as
+        compras de quem se identificou como "eu" no upload, e todo o histórico
+        anterior a este recurso existir.
+        """
+        achado = TITULAR_RE.search(self.descricao)
+        return achado.group(1).strip() if achado else ""
+
+    @property
     def periodo(self) -> str | None:
         if self.ano is None or self.mes is None:
             return None
         return f"{self.ano:04d}-{self.mes:02d}"
+
+
+# " <Rhyesla>" no FIM da descrição. Ancorado no fim de propósito: um `<` no meio
+# do nome de um estabelecimento não é marca de titular, e sem a âncora
+# "[Cartão] Loja <3 {Em 3/Jan}" viraria um titular chamado "3".
+TITULAR_RE = re.compile(r"<([^<>]+)>\s*$")
+
+# O balde de quem NÃO tem marca precisa de um nome para viajar pela rede: o
+# campo de formulário é uma lista separada por quebra de linha, e linha vazia é
+# descartada junto com o resto do espaço em branco. Os sinais de maior e menor
+# tornam a colisão impossível, e não improvável: `TITULAR_RE` recusa `<` e `>`
+# dentro do nome, então nenhum titular de verdade pode se chamar assim.
+SEM_TITULAR = "<sem marca>"
 
 
 def parse_periodo(data: str, mes: str = "", ano: str = "") -> tuple[int | None, int | None]:
@@ -983,21 +1009,55 @@ def identidade(l: Lancamento) -> str:
 
 
 def excluir(lancamentos: list[Lancamento], categorias: Iterable[str] = (),
-            linhas: Iterable[str] = ()) -> list[Lancamento]:
-    """Tira de cena categorias inteiras e lançamentos avulsos.
+            linhas: Iterable[str] = (),
+            titulares: Iterable[str] = ()) -> list[Lancamento]:
+    """Tira de cena categorias inteiras, lançamentos avulsos e pessoas.
 
     É a leitura ao contrário: em vez de perguntar "quanto gastei em Casa?", tira
     Casa e pergunta como fica o resto. Num histórico com uma compra de imóvel de
     R$ 635 mil, é a única forma de enxergar a rotina — e o número que sobra é
     honesto desde que a tela diga o que saiu, que é o que a barra de filtros faz.
+
+    O TITULAR é a terceira dimensão, e a única que separa PESSOAS em vez de
+    assuntos: numa conta conjunta, "para onde vai o dinheiro" tem duas respostas
+    diferentes e somá-las esconde as duas. Vazio (`""`) é um titular como
+    qualquer outro aqui — é o balde de quem não tem marca, que a tela mostra
+    como "(sem marca)" e que precisa poder sair igual aos outros.
     """
     fora_cat = {_chave(c) for c in categorias}
     fora_linha = set(linhas)
-    if not fora_cat and not fora_linha:
+    fora_titular = {_chave(t) for t in titulares}
+    if not fora_cat and not fora_linha and not fora_titular:
         return lancamentos
     return [l for l in lancamentos
             if _chave(l.categoria) not in fora_cat
-            and identidade(l) not in fora_linha]
+            and identidade(l) not in fora_linha
+            and _chave(l.titular) not in fora_titular]
+
+
+def titulares_do_periodo(lancamentos: list[Lancamento]) -> list[dict]:
+    """Quem aparece nas descrições, com quanto cada um gastou.
+
+    Devolve VAZIO quando há um balde só. Numa fatura de uma pessoa — ou num
+    histórico anterior à marcação existir — todas as linhas caem no mesmo grupo,
+    e uma seção de filtro que não consegue mudar a tela é ruído com aparência de
+    controle.
+
+    O valor ao lado do nome é o gasto, não a contagem: "Rhyesla, R$ 12 mil"
+    responde a pergunta que faz alguém querer isolar um titular; "Rhyesla, 29
+    linhas" não responde nenhuma.
+    """
+    total: dict[str, float] = defaultdict(float)
+    quantos: dict[str, int] = defaultdict(int)
+    for l in lancamentos:
+        total[l.titular] += l.valor if l.papel == GASTO else 0.0
+        quantos[l.titular] += 1
+    if len(quantos) < 2:
+        return []
+    return sorted(
+        ({"titular": nome, "total": round(total[nome], 2),
+          "lancamentos": quantos[nome]} for nome in quantos),
+        key=lambda t: (-t["total"], t["titular"]))
 
 
 def maiores_lancamentos(lancamentos: list[Lancamento], limite: int = 60) -> list[dict]:
@@ -1097,7 +1157,8 @@ def sankey(lancamentos: list[Lancamento], cfg: AnalyticsConfig,
 def analisar(texto: str | list[tuple[str, str]], cfg: AnalyticsConfig,
              inicio: str | None = None, fim: str | None = None,
              sem_categorias: Iterable[str] = (),
-             sem_linhas: Iterable[str] = ()) -> dict:
+             sem_linhas: Iterable[str] = (),
+             sem_titulares: Iterable[str] = ()) -> dict:
     """Analisa um ou mais CSVs juntos.
 
     Vários arquivos NÃO são deduplicados, e isso é decisão de produto: eles são
@@ -1141,9 +1202,13 @@ def analisar(texto: str | list[tuple[str, str]], cfg: AnalyticsConfig,
     oferecidos = {
         "categorias": [c["categoria"] for c in por_categoria(no_periodo)],
         "lancamentos": maiores_lancamentos(no_periodo),
+        # Só vale oferecer com mais de um: com um balde só, "isolar o titular"
+        # não isola nada, e a barra ganharia uma seção que nunca muda a tela.
+        "titulares": titulares_do_periodo(no_periodo),
     }
 
-    lancamentos = excluir(no_periodo, sem_categorias, sem_linhas)
+    lancamentos = excluir(no_periodo, sem_categorias, sem_linhas,
+                          ["" if t == SEM_TITULAR else t for t in sem_titulares])
     if not lancamentos:
         raise AnalyticsError(
             "os filtros tiraram tudo — sobrou nenhum lançamento no período")
@@ -1165,7 +1230,8 @@ def analisar(texto: str | list[tuple[str, str]], cfg: AnalyticsConfig,
         },
         "filtro": {"inicio": inicio, "fim": fim,
                    "sem_categorias": list(sem_categorias),
-                   "sem_linhas": list(sem_linhas)},
+                   "sem_linhas": list(sem_linhas),
+                   "sem_titulares": list(sem_titulares)},
         # O que a barra de filtros oferece para tirar de cena.
         "disponiveis": oferecidos,
         "resumo": {

@@ -69,7 +69,7 @@ export function recategorize(files) {
 
 // Sem transaction_id: é leitura pura, nada fica guardado do outro lado.
 export function analytics(files, {
-  inicio = '', fim = '', semCategorias = [], semLinhas = [],
+  inicio = '', fim = '', semCategorias = [], semLinhas = [], semTitulares = [],
 } = {}) {
   const form = new FormData()
   // Vários arquivos são de PESSOAS diferentes (a análise do casal): nada é
@@ -85,6 +85,10 @@ export function analytics(files, {
   // lançamento têm vírgula com frequência, e o separador não pode estar no dado.
   form.append('sem_categorias', semCategorias.join('\n'))
   form.append('sem_linhas', semLinhas.join('\n'))
+  // O balde "sem marca" viaja como `<sem marca>`: linha vazia seria descartada
+  // junto com o espaço em branco, e é justamente esse balde que precisa sair
+  // para isolar uma pessoa.
+  form.append('sem_titulares', semTitulares.join('\n'))
   return json('/analytics', { method: 'POST', body: form })
 }
 

@@ -173,6 +173,9 @@ class CategoryChangeItem(BaseModel):
     de: str
     para: str
     matched: str | None = None
+    # "categoria" (a coluna muda) ou "marca" (a coluna continua `Viagem` e o
+    # que mudou foi a categoria real, entre parênteses dentro da descrição).
+    kind: str = "categoria"
 
 
 class PurchaseRange(BaseModel):
@@ -245,6 +248,10 @@ class UploadResponse(BaseModel):
     # Só na recategorização:
     source_files: list[SourceFile] = Field(default_factory=list)
     changes: list[CategoryChangeItem] = Field(default_factory=list)
+    # Linhas que já estavam em `Viagem` e cuja categoria real (a de dentro dos
+    # parênteses) as regras de hoje respondem diferente. Fora de `changes` de
+    # propósito: a coluna Categoria dessas linhas não muda.
+    travel_marks: list[CategoryChangeItem] = Field(default_factory=list)
     unchanged: int = 0
 
 
