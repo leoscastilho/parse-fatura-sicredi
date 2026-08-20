@@ -26,6 +26,7 @@ import {
 import FiltrosLaterais from '../components/FiltrosLaterais'
 import { gravarFiltros, lerFiltros } from '../filtrosSalvos'
 import { juntarPeriodos, lerPeriodosCsv } from '../travelCsv'
+import { periodoDe, viagensPorLinha } from '../viagens'
 import Reservas from '../components/Reservas'
 import Sankey from '../components/Sankey'
 import Residuos from '../components/Residuos'
@@ -759,7 +760,11 @@ describe('App', () => {
     transaction_id: 'tx-1',
     expires_at: '2026-09-01T00:00:00Z',
     statements: [], dropped: [], warnings: [],
-    unmapped_items: [], auto_classified_items: [],
+    unmapped_items: [{ merchant: 'SCO MIRAFLORES', categoria: '', count: 1,
+                       total: 66.07, line_ids: ['0:9'], state: 'unmapped',
+                       samples: ['[Cartão] Sco Miraflores {Em 24/Oct}'],
+                       statements: ['historico.csv'], matched: null }],
+    auto_classified_items: [],
     marketplace_items: [], ignored_items: [],
     purchase_range: { inicio: '2019-01-01', fim: '2026-07-31' },
     source_files: [{ name: 'historico.csv', rows: 2, total: 10 }],
@@ -775,7 +780,10 @@ describe('App', () => {
     api.recategorize.mockResolvedValue(SESSAO_RECAT)
     api.travel.mockResolvedValue({
       ranges: [{ inicio: '2019-07-01', fim: '2019-07-10', rotulo: 'Bariloche' }],
-      items: [], warnings: [],
+      items: [{ line_id: '0:9', purchase_date: '2019-07-04', valor: 66.07,
+                categoria: '', merchant: 'SCO MIRAFLORES', viagem: true,
+                descricao: '[Cartão] Sco Miraflores {Em 24/Oct}' }],
+      warnings: [],
     })
     await montarApp()
     await userEvent.click(screen.getByRole('button', { name: 'Recategorizar CSV' }))
@@ -796,7 +804,15 @@ describe('App', () => {
       { inicio: '2019-07-01', fim: '2019-07-10', rotulo: 'Bariloche' }]))
 
     await userEvent.click(await screen.findByRole('button', { name: /Continuar a revisão/ }))
-    for (const _ of [1, 2, 3]) {
+
+    // A aba Novos mostra de qual viagem é a compra. A marca só entra na
+    // descrição na etapa Viagem, lá na frente — sem esta dica, quem categoriza
+    // "Sco Miraflores" só tem o `{Em 24/Oct}` para adivinhar.
+    expect(screen.getByText(/Viagem: Bariloche/)).toBeInTheDocument()
+
+    // Novos exige decidir o estabelecimento antes de liberar o "Continuar".
+    await userEvent.click(screen.getByRole('button', { name: /Continuar e aplicar/ }))
+    for (const _ of [1, 2]) {
       await userEvent.click(screen.getByRole('button', { name: 'Continuar' }))
     }
     expect(screen.getByRole('heading', { name: /Períodos de viagem/ }))
@@ -3238,6 +3254,81 @@ describe('a coluna "Qual viagem"', () => {
   it('período sem nome mostra a janela, não uma célula vazia', async () => {
     montarViagem({ ranges: RANGES })
     const linha = screen.getByText('[Cartão] Amazon Br {Em 3/Jul}').closest('tr')
-    expect(within(linha).getByText('03/07–05/07')).toBeInTheDocument()
+    expect(within(linha).getByText('03/07 → 05/07')).toBeInTheDocument()
+  })
+})
+
+describe('dica de viagem na aba Novos', () => {
+  const grupo = (extra = {}) => ({
+    merchant: 'SCO MIRAFLORES', categoria: '', count: 1, total: 66.07,
+    line_ids: ['0:9'], samples: ['[Cartão] Sco Miraflores {Em 24/Oct}'],
+    statements: ['set.csv'], matched: null, state: 'unmapped', ...extra,
+  })
+
+  const montar = (items, viagens) => render(
+    <CategoriasFixas.Provider value={[]}>
+      <UnmappedStep session={{ unmapped_items: items }} categories={['Alimentação']}
+                    getAssignment={() => null} setAssignment={vi.fn()}
+                    setManyAssignments={vi.fn()} assignmentList={[]}
+                    onCategoriesChanged={vi.fn()} onNext={vi.fn()} onError={vi.fn()}
+                    viagens={viagens} />
+    </CategoriasFixas.Provider>)
+
+  it('mostra o nome da viagem embaixo da descrição', () => {
+    // `{Em 24/Oct}` sozinho exige lembrar de cabeça o que aconteceu no dia.
+    montar([grupo()], new Map([['0:9', 'Peru']]))
+    expect(screen.getByText('[Cartão] Sco Miraflores {Em 24/Oct}')).toBeInTheDocument()
+    expect(screen.getByText(/Viagem: Peru/)).toBeInTheDocument()
+  })
+
+  it('sem períodos marcados, não aparece nada', () => {
+    montar([grupo()], new Map())
+    expect(screen.queryByText(/Viagem:/)).toBeNull()
+  })
+
+  it('conta quando só PARTE do estabelecimento caiu na viagem', () => {
+    // Dizer "Viagem: Peru" seco num grupo de 4 em que só 1 é da viagem seria
+    // mentira — e é a categoria do grupo inteiro que está sendo decidida.
+    montar([grupo({ count: 4, line_ids: ['0:9', '0:10', '0:11', '0:12'] })],
+           new Map([['0:9', 'Peru']]))
+    expect(screen.getByText(/1 de 4 lançamentos/)).toBeInTheDocument()
+  })
+
+  it('duas viagens no mesmo estabelecimento aparecem as duas', () => {
+    montar([grupo({ count: 2, line_ids: ['0:9', '0:10'] })],
+           new Map([['0:9', 'Peru'], ['0:10', 'Chile']]))
+    expect(screen.getByText(/Viagem: Peru, Chile/)).toBeInTheDocument()
+    expect(screen.queryByText(/de 2 lançamentos/)).toBeNull()
+  })
+})
+
+describe('periodoDe — o desempate é o mesmo do backend', () => {
+  it('períodos sobrepostos: vence o PRIMEIRO da lista', () => {
+    // `core/travel.py::range_of` faz exatamente isto. Desempatar diferente
+    // aqui mostraria na tela um nome de viagem que o arquivo não vai levar —
+    // e ninguém saberia qual das duas telas está certa.
+    const ranges = [
+      { inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'Gramado' },
+      { inicio: '2026-07-05', fim: '2026-07-20', rotulo: 'Serra' },
+    ]
+    expect(periodoDe('2026-07-07', ranges).rotulo).toBe('Gramado')
+    expect(periodoDe('2026-07-15', ranges).rotulo).toBe('Serra')
+    expect(periodoDe('2026-08-01', ranges)).toBeNull()
+    expect(periodoDe('', ranges)).toBeNull()
+  })
+
+  it('viagensPorLinha indexa por line_id com o mesmo desempate', () => {
+    const ranges = [
+      { inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'Gramado' },
+      { inicio: '2026-07-05', fim: '2026-07-20', rotulo: '' },
+    ]
+    const mapa = viagensPorLinha([
+      { line_id: '0:1', purchase_date: '2026-07-07' },
+      { line_id: '0:2', purchase_date: '2026-07-15' },
+      { line_id: '0:3', purchase_date: '2026-09-01' },
+    ], ranges)
+    expect(mapa.get('0:1')).toBe('Gramado')
+    expect(mapa.get('0:2')).toBe('05/07 → 20/07')
+    expect(mapa.has('0:3')).toBe(false)
   })
 })

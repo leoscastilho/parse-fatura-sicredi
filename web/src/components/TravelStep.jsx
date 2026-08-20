@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import CategorySelect from './CategorySelect'
 import TravelRanges from './TravelRanges'
+import { periodoDe, rotuloDoPeriodo } from '../viagens'
 
 const brl = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 
@@ -8,20 +9,6 @@ const diaMes = (iso) => {
   const [, m, d] = (iso || '').split('-')
   return d ? `${d}/${m}` : iso
 }
-
-/**
- * Qual período pegou esta linha — o PRIMEIRO que contém a data da compra.
- *
- * O empate é resolvido igual ao backend (`travel.range_of`): períodos que se
- * sobrepõem, vence o primeiro da lista. Resolver diferente aqui mostraria na
- * tela um nome de viagem que o arquivo não vai levar.
- *
- * As datas são ISO (`AAAA-MM-DD`), então comparar as strings é comparar as
- * datas — sem `new Date`, que interpretaria a string como UTC e deslocaria o
- * dia para quem está em fuso negativo.
- */
-const periodoDe = (iso, ranges) =>
-  ranges.find((r) => r.inicio <= iso && iso <= r.fim) || null
 
 /**
  * Viagem — a única classificação que é uma JANELA DE TEMPO, não um
@@ -135,18 +122,16 @@ export default function TravelStep({
                           />
                         </td>
                         <td>
-                          {/* Sem nome, mostra a janela em vez de célula vazia:
-                              com dois períodos abertos ao mesmo tempo, o que
+                          {/* Sem nome, `rotuloDoPeriodo` devolve a janela em
+                              vez de vazio: com dois períodos abertos, o que
                               esta coluna responde é "qual dos dois pegou esta
                               linha" — e a data responde isso tão bem quanto o
                               nome que ninguém digitou. */}
-                          {periodo?.rotulo
-                            ? periodo.rotulo
-                            : periodo
-                              ? <span className="muted mono">
-                                  {diaMes(periodo.inicio)}–{diaMes(periodo.fim)}
-                                </span>
-                              : <span className="muted">—</span>}
+                          {periodo
+                            ? <span className={periodo.rotulo ? '' : 'muted mono'}>
+                                {rotuloDoPeriodo(periodo)}
+                              </span>
+                            : <span className="muted">—</span>}
                         </td>
                         <td className="mono">{diaMes(item.purchase_date)}</td>
                         <td>{item.descricao}</td>

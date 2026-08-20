@@ -17,7 +17,7 @@ const brl = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL
  */
 export default function UnmappedStep({
   session, categories, getAssignment, setAssignment, setManyAssignments,
-  onCategoriesChanged, onNext, onError,
+  onCategoriesChanged, onNext, onError, viagens = new Map(),
 }) {
   const [impacts, setImpacts] = useState({})
   const [saving, setSaving] = useState(false)
@@ -35,6 +35,27 @@ export default function UnmappedStep({
   // "Continuar e aplicar Outros" apagava anos de decisão de uma vez.
   const categoriaDe = (item) =>
     getAssignment('merchant', item.merchant)?.categoria || item.categoria || ''
+
+  /**
+   * As viagens que pegam este estabelecimento — e quantos lançamentos dele.
+   *
+   * Olha `line_ids` INTEIRO, não só a amostra que está na tela: o mesmo
+   * estabelecimento pode ter uma compra dentro da viagem e três fora, e dizer
+   * "Viagem: Peru" seco nesse caso seria mentira. Por isso a contagem aparece
+   * quando não é o grupo todo.
+   */
+  const viagemDe = (item) => {
+    if (!viagens.size) return null
+    const nomes = []
+    let quantas = 0
+    for (const id of item.line_ids || []) {
+      const rotulo = viagens.get(id)
+      if (!rotulo) continue
+      quantas += 1
+      if (!nomes.includes(rotulo)) nomes.push(rotulo)
+    }
+    return quantas ? { nomes, quantas } : null
+  }
 
   // "Resolvido" inclui o "não sei": decidir que não se sabe também é decidir,
   // e a linha não deve continuar pedindo atenção.
@@ -157,12 +178,26 @@ export default function UnmappedStep({
             const assignment = getAssignment('merchant', item.merchant)
             const feedback = impacts[item.merchant]
             const unknown = assignment?.mark_unknown
+            const viagem = viagemDe(item)
 
             return (
               <tr key={item.merchant} className={unknown ? 'muted-row' : ''}>
                 <td>
                   <strong>{item.merchant}</strong>
                   <div className="samples">{item.samples[0]}</div>
+                  {/* A marca de viagem só entra na descrição na etapa Viagem,
+                      lá na frente. Aqui ela ainda não existe, e sem esta linha
+                      a única pista é o `{Em 24/Oct}` — que exige lembrar de
+                      cabeça o que aconteceu naquele dia. É informativo: nada
+                      aqui confirma viagem nenhuma. */}
+                  {viagem && (
+                    <div className="samples viagem-dica">
+                      Viagem: {viagem.nomes.join(', ')}
+                      {viagem.quantas < item.count && (
+                        <span> · {viagem.quantas} de {item.count} lançamentos</span>
+                      )}
+                    </div>
+                  )}
                 </td>
                 <td className="right">{item.count}</td>
                 <td className="right money">{brl(item.total)}</td>

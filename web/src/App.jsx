@@ -14,6 +14,7 @@ import RecategorizeStep, { ChangesSummary } from './components/RecategorizeStep'
 import TravelStep from './components/TravelStep'
 import AnalyticsView from './components/AnalyticsView'
 import { applyTheme } from './theme'
+import { viagensPorLinha } from './viagens'
 
 const STEPS = [
   { id: 'upload', label: 'Upload' },
@@ -224,6 +225,16 @@ export default function App() {
   }, [])
 
   const travelRejectedList = useMemo(() => [...travelRejected], [travelRejected])
+
+  // Qual viagem pegou cada linha. Serve às etapas que acontecem ANTES da etapa
+  // Viagem: ali a marca ainda não está na descrição, e sem esta dica quem
+  // categoriza "Sco Miraflores" não tem como saber que aquilo foi no Peru — a
+  // única pista, `{Em 24/Oct}`, exige lembrar de cabeça o que aconteceu no dia.
+  // É informativo: quem confirma continua sendo a etapa Viagem.
+  const viagemPorLinha = useMemo(
+    () => viagensPorLinha(travelItems, travelRanges),
+    [travelItems, travelRanges],
+  )
 
   function restart() {
     setSession(null)
@@ -448,6 +459,7 @@ export default function App() {
                   setManyAssignments={setManyAssignments}
                   assignmentList={assignmentList}
                   onCategoriesChanged={setCategories}
+                  viagens={viagemPorLinha}
                   onNext={() => avancar('auto')}
                   onError={setError}
                 />

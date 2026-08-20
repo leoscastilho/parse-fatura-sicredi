@@ -233,6 +233,10 @@ input.keyword { width: 100%; max-width: 220px; margin-top: 5px; font-size: 13px;
 .grid tr.blank td { background: #FFF8DC; }
 .grid tr.muted-row td { opacity: .55; }
 .samples { color: var(--muted); font-size: 12px; margin-top: 2px; }
+/* A dica de viagem não é a descrição: é contexto que a descrição ainda não
+   tem. Cor da marca para separar as duas sem virar alerta — não há nada de
+   errado com a linha, e a etapa Viagem é quem confirma. */
+.samples.viagem-dica { color: var(--verde-escuro); }
 .rule { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
 
 .scroll { max-height: 58vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; margin-top: 14px; }
