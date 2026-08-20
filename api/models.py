@@ -194,6 +194,12 @@ class PurchaseRangeResponse(BaseModel):
     """
 
     purchase_range: PurchaseRange | None = None
+    # Os nomes distintos na coluna de titular, quando o banco a tem. Um só (ou
+    # nenhum) é cartão de uma pessoa: a tela não pergunta nada.
+    titulares: list[str] = Field(default_factory=list)
+    # Quem o extrato diz ser o dono da conta — a sugestão de "esse sou eu",
+    # para o usuário confirmar em vez de procurar o próprio nome numa lista.
+    eu_sugerido: str | None = None
 
 
 class TravelRangeItem(BaseModel):

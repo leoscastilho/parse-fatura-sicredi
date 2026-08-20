@@ -7,7 +7,7 @@
  * extensão que evita mandar um .csv para o perfil do Sicredi.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { applyTheme } from '../theme'
@@ -219,7 +219,104 @@ describe('UploadStep', () => {
     expect(processar).toBeEnabled()
 
     await userEvent.click(processar)
-    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '2026-08-10')
+    // O terceiro argumento é o mapa de titulares, vazio num banco sem a coluna.
+    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '2026-08-10', '')
+  })
+})
+
+
+// ------------------------------------------------- conta conjunta no upload
+
+describe('UploadStep — quem é você nesta fatura', () => {
+  const sicredi = { id: 'sicredi', nome: 'Sicredi', extensoes: ['.xls', '.csv'],
+                    validado: true, pede_vencimento: false }
+  const DOIS = ['Leonardo S Castilho', 'Rhyesla Siqueira']
+
+  async function montar({ titulares = DOIS, eu_sugerido = DOIS[0] } = {}) {
+    vi.resetModules()
+    vi.doMock('../api', () => ({
+      upload: vi.fn(),
+      uploadPeriodo: vi.fn().mockResolvedValue({
+        // O intervalo vem junto de propósito: é o SINAL de que a resposta do
+        // pré-voo já assentou no estado. Sem um marcador assim, um teste que
+        // clique em "Processar" logo depois do upload roda com `titulares`
+        // ainda vazio e passa sem exercitar nada — foi o que a mutação achou.
+        purchase_range: { inicio: '2025-07-01', fim: '2025-08-20' },
+        titulares, eu_sugerido }),
+    }))
+    const { default: Step } = await import('../components/UploadStep')
+    const onUpload = vi.fn()
+    const { container } = render(
+      <Step busy={false} onUpload={onUpload} banco={sicredi}
+            travelRanges={[]} onTravelRangesChange={vi.fn()} />)
+    await userEvent.upload(container.querySelector('input[type="file"]'),
+                           new File(['x'], 'fatura.csv', { type: 'text/csv' }))
+    await screen.findByText(/Viajou entre 01\/07\/2025/, {}, { timeout: 3000 })
+    return { onUpload, container }
+  }
+
+  it('não pergunta nada quando só há um titular', async () => {
+    // E o mapa vai VAZIO — que é a asserção que segura o bug de verdade. Com um
+    // titular cujo nome não bate com o "Associado", `eu` fica vazio, o rótulo
+    // cai no primeiro nome e toda linha do arquivo levaria a marca da única
+    // pessoa que existe. Um teste de mutação foi quem mostrou isso.
+    const { onUpload } = await montar({ titulares: ['Leonardo S Castilho'],
+                                        eu_sugerido: null })
+    await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
+    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '', '')
+    expect(screen.queryByText(/Quem é você nesta fatura/)).toBeNull()
+  })
+
+  it('sugere o titular da conta como "esse sou eu"', async () => {
+    await montar()
+    const marcado = await screen.findByRole('radio', { checked: true })
+    expect(marcado.value).toBe('Leonardo S Castilho')
+  })
+
+  it('o rótulo padrão é o primeiro nome, com o completo em cinza abaixo', async () => {
+    await montar()
+    const campo = await screen.findByLabelText('Nome de Rhyesla Siqueira na planilha')
+    expect(campo.value).toBe('Rhyesla')
+    // O completo é referência, não conteúdo: fica embaixo e apagado.
+    expect(campo.parentElement.querySelector('.muted').textContent)
+      .toBe('Rhyesla Siqueira')
+  })
+
+  it('manda o mapa com o meu nome VAZIO e o do outro preenchido', async () => {
+    const { onUpload } = await montar()
+    await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
+    expect(onUpload).toHaveBeenCalledWith(
+      expect.any(Array), '',
+      'Rhyesla Siqueira=Rhyesla')
+  })
+
+  it('editar o rótulo muda o que vai para o arquivo', async () => {
+    const { onUpload } = await montar()
+    const campo = await screen.findByLabelText('Nome de Rhyesla Siqueira na planilha')
+    await userEvent.clear(campo)
+    await userEvent.type(campo, 'Rhy')
+    await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
+    expect(onUpload).toHaveBeenCalledWith(
+      expect.any(Array), '', 'Rhyesla Siqueira=Rhy')
+  })
+
+  it('trocar quem sou eu inverte quem leva a marca', async () => {
+    const { onUpload } = await montar()
+    const radios = await screen.findAllByRole('radio')
+    await userEvent.click(radios[1])
+    await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
+    expect(onUpload).toHaveBeenCalledWith(
+      expect.any(Array), '', 'Leonardo S Castilho=Leonardo')
+  })
+
+  it('sem sugestão do banco, ninguém vem marcado e todos levam nome', async () => {
+    // O "Associado" pode não bater com nenhum nome da lista — em lote de dois
+    // bancos, por exemplo. Melhor nenhuma seleção do que uma seleção errada.
+    const { onUpload } = await montar({ eu_sugerido: null })
+    await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
+    expect(onUpload).toHaveBeenCalledWith(
+      expect.any(Array), '',
+      'Leonardo S Castilho=Leonardo\nRhyesla Siqueira=Rhyesla')
   })
 })
 
@@ -331,10 +428,10 @@ describe('RecategorizeStep', () => {
     const { container } = render(<RecategorizeStep onUpload={vi.fn()} busy={false} />)
     await userEvent.upload(container.querySelector('input[type="file"]'), [
       new File(['x'], 'saida.csv', { type: 'text/csv' }),
-      new File(['x'], 'sicredi_extrato_export_site.xls', { type: 'application/vnd.ms-excel' }),
+      new File(['x'], 'extrato.xls', { type: 'application/vnd.ms-excel' }),
     ])
     expect(screen.getByText('saida.csv')).toBeInTheDocument()
-    expect(screen.queryByText('sicredi_extrato_export_site.xls')).not.toBeInTheDocument()
+    expect(screen.queryByText('extrato.xls')).not.toBeInTheDocument()
   })
 
   it('diz que só a coluna Categoria muda', () => {

@@ -33,6 +33,10 @@ class Entry:
     installment: str | None
     amount: float
     international: bool = False
+    # Quem passou o cartão. Só existe onde o banco diz — o CSV do app do
+    # Sicredi tem uma coluna `Nome`; o `.xls` do site, não. Vazio significa
+    # "o extrato não conta", não "foi o titular".
+    cardholder: str = ""
 
 
 @dataclass
@@ -44,6 +48,23 @@ class Statement:
     declared_credits: float | None
     declared_balance: float | None
     bank_id: str = "sicredi"
+    # O nome que o banco imprime como dono da conta. Serve para SUGERIR quem é
+    # "eu" na conta conjunta, em vez de fazer o usuário procurar o próprio nome
+    # numa lista.
+    titular: str = ""
+
+    @property
+    def cardholders(self) -> list[str]:
+        """Os nomes distintos que aparecem nos lançamentos, em ordem.
+
+        Um só (ou nenhum) significa cartão de uma pessoa: não há o que
+        perguntar, e a tela não pergunta.
+        """
+        vistos: list[str] = []
+        for e in self.entries:
+            if e.cardholder and e.cardholder not in vistos:
+                vistos.append(e.cardholder)
+        return sorted(vistos)
 
     @property
     def debits(self) -> float:
@@ -290,6 +311,7 @@ def _ler_csv_com_preambulo(source, name: str, profile: BankProfile,
     i_valor = coluna("valor", "Valor")
     i_parcela = coluna("parcela", "Parcela")
     i_moeda = coluna("moeda_estrangeira")
+    i_nome = coluna("titular")
     if i_data is None or i_desc is None or i_valor is None:
         raise ProfileError(
             f"{name}: o cabeçalho tem {linhas[inicio]} e faltam colunas de "
@@ -314,6 +336,7 @@ def _ler_csv_com_preambulo(source, name: str, profile: BankProfile,
                          else parcela or None),
             amount=valor,
             international=bool(celula(linha, i_moeda)),
+            cardholder=celula(linha, i_nome),
         ))
 
     resumo = cfg.get("resumo") or {}
@@ -329,6 +352,7 @@ def _ler_csv_com_preambulo(source, name: str, profile: BankProfile,
         declared_credits=None if creditos is None else abs(creditos),
         declared_balance=somar(resumo.get("total")),
         bank_id=profile.id,
+        titular=rotulado((cfg.get("titular") or {}).get("rotulo")) or "",
     )
 
 

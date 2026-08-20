@@ -471,3 +471,22 @@ tr.abre-grupo:first-child > td { border-top: none; }
 .viz-legenda-item:hover { background: var(--surface-2); color: var(--text); }
 .viz-legenda-item.oculta { opacity: .55; text-decoration: line-through; }
 .viz-legenda-item:focus-visible { outline: 2px solid var(--verde); }
+
+/* ------------------------------------------------------------ conta conjunta
+
+   Uma linha por pessoa: o rádio "esse sou eu" à esquerda e, à direita, o campo
+   do rótulo com o nome completo em cinza embaixo. O completo fica DEBAIXO de
+   propósito — quem vai para o arquivo é o de cima, e a hierarquia visual tem
+   que dizer isso sem legenda.                                                 */
+.titulares {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 14px; margin: 16px 0; background: var(--surface-2);
+}
+.titular {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 8px 0; border-top: 1px solid var(--border);
+}
+.titular:first-of-type { border-top: none; }
+.titular .checkbox { white-space: nowrap; padding-top: 6px; }
+.titular .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.titular input[type="text"] { max-width: 260px; }

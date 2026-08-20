@@ -136,8 +136,8 @@ export default function App() {
     [assignments],
   )
 
-  async function handleUpload(files, vencimento) {
-    await processar(() => api.upload(files, bankId, vencimento), 'unmapped')
+  async function handleUpload(files, vencimento, titulares = '') {
+    await processar(() => api.upload(files, bankId, vencimento, titulares), 'unmapped')
   }
 
   async function handleRecategorize(files) {

@@ -7,6 +7,35 @@ const diaMesAno = (iso) => {
   return d ? `${d}/${m}/${a}` : iso
 }
 
+/**
+ * O primeiro nome — o padrão do rótulo que vai para a planilha.
+ *
+ * "Rhyesla Siqueira" vira "Rhyesla" porque a descrição já é longa e o nome
+ * inteiro empurraria o resto para fora da coluna. É só o PADRÃO: o campo é
+ * editável, e duas pessoas com o mesmo primeiro nome se resolvem lá.
+ */
+export const primeiroNome = (completo) => (completo || '').trim().split(/\s+/)[0] || ''
+
+/**
+ * O mapa de titulares no formato que o backend espera: `Completo=Rótulo`.
+ *
+ * VAI SÓ QUEM LEVA MARCA. "Eu" simplesmente não entra na lista — para o
+ * servidor, nome ausente e rótulo vazio são a mesma coisa (`apelidos.get(nome,
+ * "")`), então mandar o par vazio seria carregar uma distinção que ninguém do
+ * outro lado consegue ler.
+ *
+ * COM MENOS DE DUAS PESSOAS O MAPA É VAZIO, e a guarda não é decorativa: sem
+ * ela, uma fatura de um titular só cujo nome não bate com o "Associado" — outro
+ * banco, ou o campo ausente — deixaria `eu` vazio, o rótulo cairia no primeiro
+ * nome e TODA linha do arquivo levaria a marca da única pessoa que existe. É a
+ * mesma condição que esconde o seletor, escrita onde a decisão acontece.
+ */
+export const formTitulares = (titulares, eu, apelidos) => (
+  titulares.length < 2 ? '' : titulares
+    .filter((nome) => nome !== eu && (apelidos[nome] || '').trim())
+    .map((nome) => `${nome}=${apelidos[nome].trim()}`)
+    .join('\n'))
+
 export default function UploadStep({
   onUpload, busy, banco, travelRanges = [], onTravelRangesChange,
 }) {
@@ -17,6 +46,11 @@ export default function UploadStep({
   // não sei (ou não deu para saber), e aí o editor de viagem fica solto.
   const [limites, setLimites] = useState(null)
   const [lendoPeriodo, setLendoPeriodo] = useState(false)
+  // Conta conjunta: os nomes que aparecem na coluna de titular do extrato, quem
+  // deles sou eu, e o rótulo que cada um dos OUTROS leva para a planilha.
+  const [titulares, setTitulares] = useState([])
+  const [eu, setEu] = useState('')
+  const [apelidos, setApelidos] = useState({})
   const inputRef = useRef(null)
 
   const extensoes = banco?.extensoes || ['.xls', '.xlsx']
@@ -46,11 +80,23 @@ export default function UploadStep({
       setLendoPeriodo(true)
       try {
         const r = await api.uploadPeriodo(files, banco?.id || '', vencimento)
-        if (!cancelado) setLimites(r.purchase_range || null)
+        if (cancelado) return
+        setLimites(r.purchase_range || null)
+        const nomes = r.titulares || []
+        setTitulares(nomes)
+        // A sugestão vem do "Associado" impresso na fatura — o banco já diz de
+        // quem é a conta. Confirmar é mais rápido que procurar o próprio nome.
+        //
+        // Sem validar contra `nomes`: quem garante que a sugestão está na lista
+        // é o servidor, que devolve `null` quando o "Associado" não aparece nos
+        // lançamentos. Repetir a checagem aqui daria dois donos para a mesma
+        // regra e um galho que nenhum teste consegue alcançar.
+        setEu(r.eu_sugerido || '')
+        setApelidos(Object.fromEntries(nomes.map((n) => [n, primeiroNome(n)])))
       } catch {
         // Conveniência, não pré-requisito: falhou, o editor volta a ficar solto
         // e a validação real continua acontecendo no processamento.
-        if (!cancelado) setLimites(null)
+        if (!cancelado) { setLimites(null); setTitulares([]) }
       } finally {
         if (!cancelado) setLendoPeriodo(false)
       }
@@ -145,8 +191,50 @@ export default function UploadStep({
         </details>
       )}
 
+      {/* CONTA CONJUNTA. Só aparece com mais de um nome na fatura: com um só
+          não há o que perguntar, e perguntar assim mesmo seria uma etapa a
+          mais em toda importação para responder sempre a mesma coisa. */}
+      {titulares.length > 1 && (
+        <div className="titulares">
+          <strong className="small">Quem é você nesta fatura?</strong>
+          <p className="muted small">
+            As compras dos outros ganham o nome no fim da descrição — as suas
+            ficam como estão. Marcar as próprias seria escrever o mesmo nome em
+            quase toda linha do arquivo para não distinguir nada.
+          </p>
+
+          {titulares.map((nome) => (
+            <div className="titular" key={nome}>
+              <label className="checkbox">
+                <input type="radio" name="titular-eu" value={nome}
+                       checked={eu === nome} disabled={busy}
+                       onChange={() => setEu(nome)} />
+                Esse sou eu
+              </label>
+
+              {eu === nome ? (
+                <div className="grow">
+                  <span className="muted small">{nome} — sem marca na descrição</span>
+                </div>
+              ) : (
+                <div className="grow">
+                  <input type="text" value={apelidos[nome] ?? ''} disabled={busy}
+                         aria-label={`Nome de ${nome} na planilha`}
+                         onChange={(e) => setApelidos((atuais) =>
+                           ({ ...atuais, [nome]: e.target.value }))} />
+                  {/* O nome completo fica embaixo, em cinza: é a referência de
+                      quem é quem, mas quem vai para o arquivo é o de cima. */}
+                  <span className="muted small">{nome}</span>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       <button className="primary" disabled={!pronto || busy}
-              onClick={() => onUpload(files, vencimento)}>
+              onClick={() => onUpload(files, vencimento,
+                                      formTitulares(titulares, eu, apelidos))}>
         {busy ? 'Processando…' : 'Processar'}
       </button>
     </section>

@@ -174,6 +174,10 @@ class OutputSchema:
     data_formato: str = "%m/%d/%Y"
     modelo: str = "[Cartão] {descricao}{parcela}{sufixo_data}"
     parcela_modelo: str = " (Parcela {parcela})"
+    # Numa conta conjunta, de quem foi a compra. Vai no FIM da descrição, depois
+    # da data, porque é a informação menos usada das três — e porque colocá-la
+    # antes moveria o `{Em 3/Jan}` de lugar em toda linha já exportada.
+    titular_modelo: str = " <{titular}>"
     sufixo_data: str = " {{Em {dia}/{mes}}}"
     titlecase: bool = True
     colapsar_espacos: bool = True
@@ -240,6 +244,7 @@ class OutputSchema:
             data_formato=data.get("formato", defaults.data_formato),
             modelo=desc.get("modelo", defaults.modelo),
             parcela_modelo=desc.get("parcela", defaults.parcela_modelo),
+            titular_modelo=desc.get("titular", defaults.titular_modelo),
             sufixo_data=desc.get("sufixo_data", defaults.sufixo_data),
             titlecase=bool(desc.get("titlecase", True)),
             colapsar_espacos=bool(desc.get("colapsar_espacos", True)),

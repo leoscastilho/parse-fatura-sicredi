@@ -263,6 +263,64 @@ def test_csv_sem_o_cabecalho_esperado_e_recusado_com_explicacao(tmp_path, config
         read_statement(arquivo, name="qualquer.csv", profile=perfil)
 
 
+# --- conta conjunta: de quem foi a compra --------------------------------
+
+def _app_com_dois(tmp_path, config_dir):
+    from .conftest import _sicredi_app_csv
+    caminho = _sicredi_app_csv(tmp_path / "conjunta.csv", rows=[
+        ("20/08/2025", "LOJA DELE", "", "R$ 100,00", ""),
+        ("21/08/2025", "LOJA DELA", "", "R$ 50,00", ""),
+    ], nomes=["Leonardo S Castilho", "Rhyesla Siqueira"])
+    return ConfigSet.load(config_dir), caminho
+
+
+def test_o_nome_do_outro_vai_para_o_fim_da_descricao(tmp_path, config_dir):
+    """O que a conta conjunta precisa: separar a compra dela da compra dele.
+
+    A marca fica no FIM, depois da data, porque é a informação menos usada das
+    três — e porque pô-la antes moveria o `{Em 3/Jan}` de lugar em toda linha já
+    exportada, quebrando o diff de quem reprocessa arquivos antigos.
+    """
+    cfg, caminho = _app_com_dois(tmp_path, config_dir)
+    linhas, _, _ = classify_sources(
+        [("c.csv", caminho)], Ruleset.from_text(cfg.categories_text),
+        profile=cfg.bank("sicredi"), schema=cfg.output,
+        apelidos={"Leonardo S Castilho": "", "Rhyesla Siqueira": "Rhyesla"})
+
+    dele = next(l for l in linhas if "Dele" in l.descricao)
+    dela = next(l for l in linhas if "Dela" in l.descricao)
+    assert dele.descricao == "[Cartão] Loja Dele {Em 20/Aug}", "sou eu: sem marca"
+    assert dela.descricao == "[Cartão] Loja Dela {Em 21/Aug} <Rhyesla>"
+
+
+def test_sem_o_mapa_nada_e_marcado(tmp_path, config_dir):
+    """O `.xls` do site não diz quem passou o cartão, e o cartão de uma pessoa
+    não tem o que separar. Nos dois casos a descrição sai como sempre saiu."""
+    cfg, caminho = _app_com_dois(tmp_path, config_dir)
+    linhas, _, _ = classify_sources(
+        [("c.csv", caminho)], Ruleset.from_text(cfg.categories_text),
+        profile=cfg.bank("sicredi"), schema=cfg.output)
+    assert not any(l.descricao.endswith(">") for l in linhas)
+
+
+def test_o_extrato_sugere_quem_e_o_dono_da_conta(tmp_path, config_dir):
+    """O "Associado" impresso na fatura — confirmar é mais rápido que procurar
+    o próprio nome numa lista de titulares."""
+    cfg, caminho = _app_com_dois(tmp_path, config_dir)
+    statement = read_statement(caminho, name="c.csv", profile=cfg.bank("sicredi"))
+    assert statement.titular == "Leonardo S Castilho"
+    assert statement.cardholders == ["Leonardo S Castilho", "Rhyesla Siqueira"]
+
+
+def test_um_titular_so_nao_vira_pergunta(sicredi_app_csv, config_dir):
+    """A fixture padrão tem uma pessoa: `cardholders` traz um nome, e é isso que
+    a tela usa para não perguntar nada."""
+    cfg = ConfigSet.load(config_dir)
+    statement = read_statement(sicredi_app_csv, name="f.csv",
+                               profile=cfg.bank("sicredi"))
+    assert len(statement.cardholders) == 1
+
+
 def test_secao_internacional_nao_e_perdida(sicredi_xlsx_intl):
     """Bug histórico: o parser parava no primeiro 'Valor Total'."""
     statement = read_statement(sicredi_xlsx_intl, name="intl.xlsx")

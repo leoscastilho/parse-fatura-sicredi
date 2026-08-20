@@ -102,7 +102,8 @@ def sicredi_xlsx_intl(tmp_path) -> Path:
     )
 
 
-def _sicredi_app_csv(path: Path, *, vencimento="10/09/2025", rows=None) -> Path:
+def _sicredi_app_csv(path: Path, *, vencimento="10/09/2025", rows=None,
+                     nomes=None) -> Path:
     """O CSV que o APLICATIVO do Sicredi exporta — o outro formato do mesmo banco.
 
     Reproduz as três coisas que o separam do `.xls` do site e que o leitor
@@ -123,7 +124,7 @@ def _sicredi_app_csv(path: Path, *, vencimento="10/09/2025", rows=None) -> Path:
         return f'"R$ {v:,.2f}"'.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
 
     linhas = [
-        " Associado ;Fulano de Tal;;;;",
+        f" Associado ;{(nomes or ['Fulano de Tal'])[0]};;;;",
         " Cooperativa ;0230;;;;",
         "",
         f" Data de Vencimento ;{vencimento};;;;",
@@ -138,8 +139,12 @@ def _sicredi_app_csv(path: Path, *, vencimento="10/09/2025", rows=None) -> Path:
         "",
         " Data ; Descrição ; Parcela ; Valor ; Valor em Dólar ; Adicional ; Nome;",
     ]
-    for data, desc, parcela, valor, dolar in rows:
-        linhas.append(f'{data};{desc};{parcela};"{valor}";{dolar};;Fulano de Tal')
+    # Conta conjunta: `nomes` dá um titular por linha, ciclicamente. Sem ele,
+    # todas as compras são do mesmo dono — o cartão de uma pessoa só.
+    titulares = nomes or ["Fulano de Tal"]
+    for i, (data, desc, parcela, valor, dolar) in enumerate(rows):
+        quem = titulares[i % len(titulares)]
+        linhas.append(f'{data};{desc};{parcela};"{valor}";{dolar};;{quem}')
     # O app grava com BOM; `utf-8-sig` na escrita é o que o reproduz.
     path.write_text("\n".join(linhas) + "\n", encoding="utf-8-sig")
     return path

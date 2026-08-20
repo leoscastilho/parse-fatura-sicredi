@@ -96,6 +96,14 @@ leitura:
         # Preenchida só na compra internacional; o valor em reais continua no
         # `Valor`. Serve para marcar a linha, não para somar.
         moeda_estrangeira: "Valor em Dólar"
+        # Quem passou o cartão. Numa conta conjunta são vários nomes, e é o que
+        # permite marcar na descrição de quem foi a compra.
+        titular: Nome
+
+      # O dono da conta, para o portal SUGERIR quem é "eu" em vez de fazer você
+      # procurar o próprio nome numa lista.
+      titular:
+        rotulo: "Associado"
 
       # Os rótulos são casados por PREFIXO e sem acento, então "(-) Pagamentos
       # / Creditos (R$)" acha com o texto abaixo.

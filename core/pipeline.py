@@ -94,8 +94,17 @@ class DroppedLine:
     valor: float
 
 
-def build_description(entry: Entry, schema: OutputSchema | bool | None = None) -> str:
+def build_description(entry: Entry, schema: OutputSchema | bool | None = None,
+                      apelidos: dict[str, str] | None = None) -> str:
     """Monta a descrição conforme o modelo do `config/output.yml`.
+
+    `apelidos` mapeia o titular do cartão para o rótulo que vai na descrição —
+    numa conta conjunta, é o que separa a compra dela da compra dele. Rótulo
+    VAZIO significa "sou eu", e some: marcar as próprias compras seria escrever
+    o mesmo nome em quase toda linha do arquivo para não distinguir nada.
+
+    Sem o mapa, nada muda. É o caso do `.xls` do site, que não diz quem passou
+    o cartão, e do cartão de uma pessoa só, onde não há o que perguntar.
 
     Aceita um bool no lugar do schema por compatibilidade com o código antigo,
     que passava só o flag `collapse_whitespace`.
@@ -118,14 +127,21 @@ def build_description(entry: Entry, schema: OutputSchema | bool | None = None) -
         ano=entry.purchase_date.year,
     )
 
+    # O rótulo entra DEPOIS do modelo, não dentro dele: quem já tem um
+    # `output.yml` gravado não precisou acrescentar `{titular}` ao `modelo` para
+    # a marcação começar a funcionar.
+    apelido = (apelidos or {}).get(entry.cardholder, "")
+    marca = schema.titular_modelo.format(titular=apelido) if apelido else ""
+
     return schema.modelo.format(
         descricao=merchant, parcela=parcela, sufixo_data=sufixo,
-    )
+    ) + marca
 
 
 def classify_statement(
     statement: Statement, rules: Ruleset, index: int = 0,
     schema: OutputSchema | None = None,
+    apelidos: dict[str, str] | None = None,
 ) -> tuple[list[ClassifiedLine], list[DroppedLine]]:
     schema = schema or OutputSchema()
     if statement.due_date is None:
@@ -152,7 +168,7 @@ def classify_statement(
                 purchase_date=entry.purchase_date.date().isoformat(),
                 merchant_raw=entry.description.strip(),
                 merchant=merchant_key(entry.description),
-                descricao=build_description(entry, schema),
+                descricao=build_description(entry, schema, apelidos),
                 valor=entry.amount,
                 pago=schema.pago,
                 categoria=match.categoria,
@@ -168,7 +184,7 @@ def classify_statement(
 def classify_sources(
     sources: Iterable[tuple[str, Path | BinaryIO]], rules: Ruleset,
     profile: BankProfile | None = None, schema: OutputSchema | None = None,
-    due_date=None,
+    due_date=None, apelidos: dict[str, str] | None = None,
 ) -> tuple[list[ClassifiedLine], list[DroppedLine], list[Statement]]:
     """Processa vários extratos de uma vez, mantendo `line_id` único."""
     schema = schema or OutputSchema()
@@ -178,7 +194,8 @@ def classify_sources(
 
     for index, (name, source) in enumerate(sources):
         statement = read_statement(source, name=name, profile=profile, due_date=due_date)
-        lines, dropped = classify_statement(statement, rules, index=index, schema=schema)
+        lines, dropped = classify_statement(statement, rules, index=index,
+                                            schema=schema, apelidos=apelidos)
         all_lines += lines
         all_dropped += dropped
         statements.append(statement)

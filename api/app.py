@@ -324,6 +324,26 @@ def _linhas_do_form(bruto: str) -> list[str]:
     return [item for item in (l.strip() for l in (bruto or "").splitlines()) if item]
 
 
+def _apelidos_do_form(bruto: str) -> dict[str, str]:
+    """`Nome Completo=Rótulo`, uma linha por pessoa.
+
+    Quem não está no mapa não recebe marca — é assim que "sou eu" viaja: pela
+    ausência. Rótulo vazio dá no mesmo, e é por isso que o cliente nem manda o
+    par: seriam duas grafias para a mesma coisa.
+
+    A GUARDA DO NOME não é formalidade. Uma linha `=Rhyesla`, sem o lado
+    esquerdo, gravaria `{"": "Rhyesla"}` — e aí todo lançamento cujo titular é
+    vazio (ou seja, o `.xls` inteiro do site, que não traz a coluna) sairia
+    marcado com o nome de outra pessoa.
+    """
+    saida: dict[str, str] = {}
+    for linha in _linhas_do_form(bruto):
+        nome, _, apelido = linha.partition("=")
+        if nome.strip():
+            saida[nome.strip()] = apelido.strip()
+    return saida
+
+
 def _vencimento(bruto: str, profile) -> datetime | None:
     if bruto.strip():
         try:
@@ -418,6 +438,7 @@ async def upload(
     files: list[UploadFile] = File(..., description="extrato do banco escolhido"),
     banco: str = Form("", description="id do perfil; vazio = o primeiro validado"),
     vencimento: str = Form("", description="AAAA-MM-DD, para bancos que não trazem a data"),
+    titulares: str = Form("", description="`Nome Completo=Rótulo` por linha; vazio = sou eu"),
     settings: Settings = Depends(get_settings),
     store: Store = Depends(get_store),
 ) -> UploadResponse:
@@ -444,7 +465,8 @@ async def upload(
 
     try:
         lines, dropped, statements = classify_sources(
-            sources, rules, profile=profile, schema=cfg.output, due_date=due)
+            sources, rules, profile=profile, schema=cfg.output, due_date=due,
+            apelidos=_apelidos_do_form(titulares))
     # `ProfileError` entra aqui junto com `ValueError` porque agora ele é
     # alcançável pelo uso normal: com o Sicredi aceitando `.csv`, soltar um CSV
     # que não é a fatura do app é um erro de CONTEÚDO, não de extensão — e o
@@ -536,7 +558,7 @@ async def upload_periodo(
     sources = await _fontes(files, profile, settings)
 
     try:
-        lines, _, _ = classify_sources(
+        lines, _, statements = classify_sources(
             sources, Ruleset.from_text(cfg.categories_text),
             profile=profile, schema=cfg.output, due_date=due)
     # `ProfileError` entra aqui junto com `ValueError` porque agora ele é
@@ -546,7 +568,23 @@ async def upload_periodo(
     except (ValueError, ProfileError) as exc:
         raise HTTPException(422, detail=str(exc))
 
-    return PurchaseRangeResponse(purchase_range=_purchase_range(lines))
+    # Os titulares saem dos EXTRATOS, não das linhas: `ClassifiedLine` já é a
+    # descrição pronta, e a essa altura o nome ou virou marca ou foi descartado.
+    vistos: list[str] = []
+    for statement in statements:
+        for nome in statement.cardholders:
+            if nome not in vistos:
+                vistos.append(nome)
+    sugerido = next((s.titular for s in statements if s.titular), None)
+
+    return PurchaseRangeResponse(
+        purchase_range=_purchase_range(lines),
+        titulares=sorted(vistos),
+        # Só sugere o que existe: com dois arquivos de bancos diferentes, o
+        # "Associado" de um pode não aparecer nos lançamentos do outro, e
+        # sugerir um nome que não está na lista deixaria a tela sem seleção.
+        eu_sugerido=sugerido if sugerido in vistos else None,
+    )
 
 
 # ---------------------------------------------------------------------------

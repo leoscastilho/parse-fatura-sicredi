@@ -165,6 +165,76 @@ def test_csv_de_outro_banco_no_sicredi_explica_em_vez_de_estourar(client, nubank
     assert "cabeçalho" in resposta.json()["detail"]
 
 
+def test_o_pre_voo_lista_os_titulares_e_sugere_quem_sou_eu(client, tmp_path):
+    """A tela precisa dos nomes ANTES de processar — é onde a pergunta cabe."""
+    from .conftest import _sicredi_app_csv
+    caminho = _sicredi_app_csv(tmp_path / "c.csv", rows=[
+        ("20/08/2025", "LOJA DELE", "", "R$ 100,00", ""),
+        ("21/08/2025", "LOJA DELA", "", "R$ 50,00", ""),
+    ], nomes=["Leonardo S Castilho", "Rhyesla Siqueira"])
+    corpo = client.post(
+        "/upload/periodo", data={"banco": "sicredi"},
+        files=[("files", ("c.csv", caminho.read_bytes(), "text/csv"))]).json()
+    assert corpo["titulares"] == ["Leonardo S Castilho", "Rhyesla Siqueira"]
+    assert corpo["eu_sugerido"] == "Leonardo S Castilho"
+
+
+def test_sugestao_que_nao_esta_na_lista_vira_None(client, tmp_path):
+    """O "Associado" pode não aparecer nos lançamentos — ele é o dono da conta,
+    não necessariamente quem passou o cartão. Sugerir um nome fora da lista
+    deixaria a tela com um rádio marcado em ninguém, e aí `eu` não casaria com
+    titular nenhum e TODOS levariam marca."""
+    from .conftest import _sicredi_app_csv
+    caminho = _sicredi_app_csv(tmp_path / "c.csv", rows=[
+        ("20/08/2025", "LOJA DELA", "", "R$ 100,00", ""),
+        ("21/08/2025", "LOJA DA FILHA", "", "R$ 50,00", ""),
+    ], nomes=["Rhyesla Siqueira", "Alice Castilho"])
+    # A fixture põe o primeiro nome como Associado; troco só o Associado.
+    texto = caminho.read_text(encoding="utf-8-sig").replace(
+        " Associado ;Rhyesla Siqueira", " Associado ;Leonardo S Castilho", 1)
+    caminho.write_text(texto, encoding="utf-8-sig")
+
+    corpo = client.post(
+        "/upload/periodo", data={"banco": "sicredi"},
+        files=[("files", ("c.csv", caminho.read_bytes(), "text/csv"))]).json()
+    assert corpo["titulares"] == ["Alice Castilho", "Rhyesla Siqueira"]
+    assert corpo["eu_sugerido"] is None
+
+
+def test_upload_aplica_o_mapa_de_titulares(client, tmp_path):
+    """A escolha da primeira aba tem que CASCATEAR: a marca entra na descrição
+    no processamento, então ela já chega pronta em Novos, Revisão e no CSV."""
+    from .conftest import _sicredi_app_csv
+    caminho = _sicredi_app_csv(tmp_path / "c.csv", rows=[
+        ("20/08/2025", "LOJA DELE", "", "R$ 100,00", ""),
+        ("21/08/2025", "LOJA DELA", "", "R$ 50,00", ""),
+    ], nomes=["Leonardo S Castilho", "Rhyesla Siqueira"])
+    corpo = client.post(
+        "/upload",
+        data={"banco": "sicredi", "titulares": "Rhyesla Siqueira=Rhyesla"},
+        files=[("files", ("c.csv", caminho.read_bytes(), "text/csv"))]).json()
+
+    amostras = [s for g in corpo["unmapped_items"] + corpo["auto_classified_items"]
+                for s in g["samples"]]
+    assert any(s.endswith("<Rhyesla>") for s in amostras)
+    assert not any("Dele" in s and s.endswith(">") for s in amostras)
+
+
+def test_rotulo_sem_nome_nao_marca_o_extrato_inteiro(client, sicredi_xlsx):
+    """`=Rhyesla`, sem o lado esquerdo, gravaria `{"": "Rhyesla"}`.
+
+    O `.xls` do site não traz a coluna de titular, então TODO lançamento dele
+    tem titular vazio — e sairia marcado com o nome de outra pessoa.
+    """
+    corpo = client.post(
+        "/upload", data={"banco": "sicredi", "titulares": "=Rhyesla"},
+        files=[("files", ("s.xlsx", sicredi_xlsx.read_bytes(),
+                          "application/octet-stream"))]).json()
+    amostras = [s for g in corpo["unmapped_items"] + corpo["auto_classified_items"]
+                for s in g["samples"]]
+    assert amostras and not any(s.endswith(">") for s in amostras)
+
+
 def test_a_fatura_do_app_sobe_sem_perguntar_nada(client, sicredi_app_csv):
     """O outro formato do MESMO banco, pelo mesmo caminho e sem vencimento.
 

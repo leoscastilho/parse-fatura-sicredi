@@ -36,11 +36,14 @@ export const getRules = () => json('/rules')
 export const editRules = (operations, commit = false) =>
   json('/rules/edit', asJson({ operations, commit }))
 
-export function upload(files, banco = '', vencimento = '') {
+export function upload(files, banco = '', vencimento = '', titulares = '') {
   const form = new FormData()
   for (const file of files) form.append('files', file)
   form.append('banco', banco)
   form.append('vencimento', vencimento)
+  // `Nome Completo=Rótulo`, uma linha por pessoa. Lado direito vazio = sou eu,
+  // e a linha não recebe marca nenhuma.
+  form.append('titulares', titulares)
   return json('/upload', { method: 'POST', body: form })
 }
 
