@@ -167,6 +167,36 @@ regras:
   - padrao: '\b(ROUPAS|CUECA|CAMISETA|SHORTS?|MEIAS)\b'
     categoria: Vestuário    # so o plural ROUPAS: "roupa de cama" e Casa
 
+  # -- PALAVRAS CURTAS QUE PRECISAM DE FRONTEIRA ------------------------------
+  #
+  # Estas nove estavam em `palavras`, e lá não existe fronteira: a busca é por
+  # trecho, e ainda tenta a versão SEM ESPAÇOS dos dois lados (é o que faz
+  # `GRELHA GRILL` achar `GrelhaGrill`). Para trecho curto isso vira sorteio —
+  # `RACAO` achava "CastRACAO", `NATURA` achava "Cobasi NATURAL" (ração do
+  # cachorro, 16 linhas), `OBRA` achava "cadeira DOBRAvel" e "JogOBRAzil",
+  # `UBER` achava "TUBERculose". Eram 34 linhas e R$ 10.809 decididas por acaso.
+  #
+  # Aqui embaixo de propósito: `regras` vence `palavras`, e no fim da lista elas
+  # não roubam nada das regras que já existiam acima.
+  - padrao: '\bRACAO\b'
+    categoria: Cachorro
+  - padrao: '\bNATURA\b'
+    categoria: Presentes
+  - padrao: '\bEBOOK\b'
+    categoria: Educação
+  - padrao: '\bOBRA\b'
+    categoria: Construção
+  - padrao: '\bOTICA\b'
+    categoria: Saúde          # não pegar O BOTICARIO, que é perfumaria
+  - padrao: '\bUBER\b'
+    categoria: Transporte
+  - padrao: '\bCIMENTO\b'
+    categoria: Construção     # não pegar NASCIMENTO nem ABASTECIMENTO
+  - padrao: '\bVIVO\b'
+    categoria: Serviços
+  - padrao: '\bZARA\b'
+    categoria: Vestuário
+
 
 # -----------------------------------------------------------------------------
 # 3. PALAVRAS-CHAVE POR CATEGORIA (vence o trecho mais longo)
@@ -174,6 +204,11 @@ regras:
 palavras:
 
   Alimentação:
+    # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
+    - CASA DA EMPADA
+    - SUJISMUNDO
+    - MERCADINHO TEIXEIRA   # o histórico tem 4 Alimentação e 3 Lazer
+    - RODOLFO REIS SANCHO
     - SUPERMERCADO
     - ALVORA                  # Supermercados Alvorada
     - EPA SANTA RITA
@@ -185,6 +220,7 @@ palavras:
     - MUNDIAL PAES
     - PAO DO CEU
     - CAFETERIA
+    - POUSADA DO BARAO       # mais longa que POUSADA, então vence: você come lá
     - PROSA E CAFE
     - COFFEE
     - RESTAURANTE
@@ -193,13 +229,11 @@ palavras:
     - ARMAZEM DO VALE
     - ELITE MINEIRA
     - CIA DO SABOR
-    - CHURRASCO
     - CHAPA HAUS
     - HAMBURGUE
     - BURGERS
     - BISTRO
     - GRELHA GRILL
-    - GRELHAGRILL
     - MASSAS
     - PIZZARIA
     - SANTA PIZZA
@@ -229,6 +263,24 @@ palavras:
     - LANCHONETE
 
   Lazer:
+    # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
+    - BAR CLUB
+    - CHURRASCO              # encontro, não açougue: 15 de 16 no histórico
+    # Hospedagem e passagem: eram `Viagem` e voltaram para onde a planilha as
+    # põe. `Viagem` agora é só janela de tempo — quando a compra cair num
+    # período marcado, a etapa Viagem troca a coluna e guarda `(Lazer)` dentro
+    # da descrição. Fora de período, hotel de fim de semana é Lazer mesmo.
+    - AIRBNB                 # 8 de 11 no histórico
+    - BOOKING                # 3 de 3
+    - HOTEL                  # 9 de 9 (as outras 9 são "Hotel Joyner", e
+                             #  JOYNER é mais longa, então vence: Cachorro)
+    - POUSADA
+    - PAMPAS PALACE
+    - LATAM
+    - DECOLAR
+    - 123MILHAS
+    - UNITED                 # 5 de 7; os 2 "IOF de United" já são Imposto
+    - AMERICAN AIR
     - SYMPLA
     - CINEMA
     - INGRESSO
@@ -247,18 +299,18 @@ palavras:
     - OGGI
     - THE TOWN BAR
 
-  Viagem:
-    - AIRBNB
-    - BOOKING
-    - HOTEL
-    - POUSADA
-    - PAMPAS PALACE
-    - AIRPORTPARK
-    - LATAM
-    - DECOLAR
-    - 123MILHAS
-    - UNITED
-    - AMERICAN AIR
+  # VIAGEM NÃO TEM PALAVRA-CHAVE, e isso é decisão, não esquecimento.
+  #
+  # Viagem é uma JANELA DE TEMPO, não um estabelecimento: o hotel a trabalho e o
+  # hotel das férias têm o mesmo nome. Quem decide é a etapa Viagem, que compara
+  # a data da COMPRA com os períodos que você marcou.
+  #
+  # E há um custo concreto em fazer por palavra: a regra escreve `Viagem` na
+  # coluna sem guardar a categoria real na descrição — o módulo de período
+  # escreve `(Lazer) {Peru}`. Sem essa marca a linha fica congelada (a
+  # recategorização protege o que já está em Viagem) e não sobra registro do que
+  # ela era. No histórico eram 36 linhas e R$ 32.047 assim: AIRPORTPARK 6x, que
+  # você chama de Transporte, e HOTEL 8x, que você chama de Lazer.
 
   Assinaturas:
     - NETFLIX
@@ -286,11 +338,13 @@ palavras:
 
   Presentes:
     - PRESENTE
-    - NATURA
     - RI HAPP
 
   Transporte:
-    - UBER
+    # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
+    - VIA MONDO
+    - COOPERRITA
+    - AIRPORTPARK            # estacionamento de aeroporto: 6 de 6 no histórico
     - PEDAGIO
     - ESTACIONAMENTO
     - GASOLINA
@@ -305,6 +359,8 @@ palavras:
     - CONSORCIO
 
   Saúde:
+    # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
+    - VACINAS SAO BENTO
     - DROGARIA
     - DROGASIL
     - FARMA
@@ -317,17 +373,19 @@ palavras:
     - PSICOLOGO
     - DERMATOLOGISTA
     - ECONOMIZE JA
-    - OTICA
     - UNIMED
     - PLANO DE SAUDE
 
   Vestuário:
+    # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
+    - PUKET
+    - PANTYS
+    - RRUNDERWEAR
     - RENNER
     - RIACHUELO
     - YOUCOM
     - HERING
     - MARISA
-    - ZARA
     - CALCADO
     - SAPATO
     - TENIS
@@ -335,7 +393,8 @@ palavras:
     - SANDRA HELENA VESTUA
 
   Casa:
-    - CASASBAHIA
+    # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
+    - VIVEIRO DIEGO
     - CASAS BAHIA
     - MAGAZINE
     - MOBLY
@@ -353,11 +412,12 @@ palavras:
     - TOKDCOR
 
   Construção:
-    - OBRA
+    # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
+    - PA BLOCOS
+    - MAGLIONI ACABAMENTOS   # a loja `Maglioni Casa e Const` do histórico é Casa
     - PEDREIRO
     - ELETRICISTA
     - PINTOR
-    - CIMENTO
     - MATERIAL DE CONSTRUCAO
     - CONSTRUMINAS
     - LC TINTAS
@@ -370,11 +430,9 @@ palavras:
     - BELAMETAIS
 
   Cachorro:
-    - PETLOVE
     - PET LOVE
     - COBASI
     - PETZ
-    - RACAO
     - VETERINARI
     - ZOOCORRO
     - JOYNER
@@ -388,6 +446,8 @@ palavras:
     - BEST BUY
 
   Hobby:
+    # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
+    - SPECIALIZED
     - NINTEND
     - PLAYSTATION
     - STEAM
@@ -404,13 +464,13 @@ palavras:
     - ALURA
     - KINDLE
     - AUDIBLE
-    - EBOOK
     - INGLES
 
   Serviços:
+    # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
+    - FOTO SANTA RITA
     - ANUIDADE
     - CESTA DE RELACIONAMENTO
-    - VIVO
     - CLARO
     - RECARGA
     - CLOUDFLARE
@@ -425,6 +485,8 @@ palavras:
     - TAXA MEI
 
   Filha:
+    # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
+    - BABY DAYBOOK
     - CRESCI E PERDI
     - PBKIDS
 
