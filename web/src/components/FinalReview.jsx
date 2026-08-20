@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import * as api from '../api'
+import { passaLinha, useTitularFiltro } from '../titulares'
 
 const brl = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 
@@ -57,9 +58,14 @@ export default function FinalReview({
   const mudou = (row) =>
     row.categoria_anterior !== null && row.categoria !== row.categoria_anterior
   const alteradas = recategorizando ? data.rows.filter(mudou).length : 0
-  const linhas = (recategorizando && soAlteradas)
+  // O filtro por titular é PURAMENTE VISUAL, e aqui a distinção fica mais
+  // visível do que nas outras telas: `data.rows.length` continua contando o
+  // arquivo INTEIRO, porque é ele que vai ser exportado. Esconder linhas da
+  // conferência não tira nada do CSV.
+  const filtroTitular = useTitularFiltro()
+  const linhas = ((recategorizando && soAlteradas)
     ? data.rows.filter(mudou)
-    : data.rows
+    : data.rows).filter((r) => passaLinha(filtroTitular, r.titular))
 
   return (
     <section className="card">

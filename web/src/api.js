@@ -144,8 +144,10 @@ export const updateMapping = (transaction_id, assignments, commit_now = false) =
 
 // Substitutivo: a lista enviada VIRA a lista de períodos. Remover um período é
 // mandar a lista sem ele — não existe DELETE aqui.
-export const travel = (transaction_id, ranges) =>
-  json('/travel', asJson({ transaction_id, ranges }))
+// `pinned` (`line_id -> chave do período`) segue a mesma regra: o mapa enviado
+// VIRA o mapa guardado, então despendurar uma linha é mandar o mapa sem ela.
+export const travel = (transaction_id, ranges, pinned = {}) =>
+  json('/travel', asJson({ transaction_id, ranges, pinned }))
 
 export const preview = (transaction_id, assignments, travel_rejected = []) =>
   json('/preview', asJson({ transaction_id, assignments, travel_rejected }))

@@ -924,3 +924,214 @@ def test_encolher_periodo_esquece_rejeicoes_orfas(client, tmp_path):
     original = antes[alvora["descricao"]]
     esperada = _anotada(original["descricao"], original["categoria"])
     assert f"Viagem,{esperada}," in csv_texto
+
+
+# ---------------------------------------------------------------------------
+# Pendurar uma compra na viagem à mão
+# ---------------------------------------------------------------------------
+
+def _chave(inicio, fim):
+    return f"{inicio}|{fim}"
+
+
+def test_fixar_marca_linha_fora_de_qualquer_janela(client, tmp_path):
+    """A passagem comprada meses antes é da viagem, e a data não conta isso.
+
+    A fixture tem uma parcela comprada em 21/08/2024. Nenhuma janela de julho
+    de 2026 a pega — e alargar a janela até agosto de 2024 arrastaria junto
+    dois anos de supermercado.
+    """
+    dados = _fatura(client, tmp_path)
+    tid = dados["transaction_id"]
+    antes = _baseline(client, tid)
+    antiga = next(d for d in antes if "Mercadolivre" in d or "MERCADOLIVRE" in d.upper())
+    line_id = antes[antiga]["line_id"]
+
+    resposta = client.post("/travel", json={
+        "transaction_id": tid,
+        "ranges": [{"inicio": "2026-07-01", "fim": "2026-07-08", "rotulo": "Gramado"}],
+        "pinned": {line_id: _chave("2026-07-01", "2026-07-08")},
+    }).json()
+
+    fixada = next(i for i in resposta["items"] if i["line_id"] == line_id)
+    assert fixada["viagem_a_mao"] is True
+    assert fixada["viagem_periodo"]["rotulo"] == "Gramado"
+    assert fixada["purchase_date"] == "2024-08-21", "a data não mudou; só a marca"
+    # E ela sai da lista de candidatas a pendurar — não dá para pendurar duas vezes.
+    assert line_id not in {o["line_id"] for o in resposta["outros"]}
+
+
+def test_linha_fixada_vira_viagem_no_preview(client, tmp_path):
+    dados = _fatura(client, tmp_path)
+    tid = dados["transaction_id"]
+    antes = _baseline(client, tid)
+    alvo = next(d for d in antes if "Mercadolivre" in d or "MERCADOLIVRE" in d.upper())
+    line_id, categoria_real = antes[alvo]["line_id"], antes[alvo]["categoria"]
+
+    client.post("/travel", json={
+        "transaction_id": tid,
+        "ranges": [{"inicio": "2026-07-01", "fim": "2026-07-08", "rotulo": "Gramado"}],
+        "pinned": {line_id: _chave("2026-07-01", "2026-07-08")},
+    })
+    linha = next(r for r in client.post("/preview", json={
+        "transaction_id": tid, "assignments": [], "travel_rejected": [],
+    }).json()["rows"] if r["line_id"] == line_id)
+
+    assert linha["categoria"] == "Viagem"
+    assert f"({categoria_real})" in linha["descricao"]
+    assert "{Gramado}" in linha["descricao"]
+
+
+def test_fixacao_vence_o_periodo_que_pegaria_por_data(client, tmp_path):
+    """Dois períodos disputam a linha; quem foi explícito ganha.
+
+    Sem esta regra, pendurar a passagem no `Peru` não adiantaria nada quando a
+    data dela caísse por azar dentro de um feriado marcado — e o usuário não
+    teria como saber por que a tela ignorou o que ele mandou.
+    """
+    dados = _fatura(client, tmp_path)
+    tid = dados["transaction_id"]
+    antes = _baseline(client, tid)
+    alvo = next(d for d in antes if "Supermercados Alvora" in d)
+    line_id = antes[alvo]["line_id"]          # comprada em 02/07/2026
+
+    resposta = client.post("/travel", json={
+        "transaction_id": tid,
+        "ranges": [
+            {"inicio": "2026-07-01", "fim": "2026-07-08", "rotulo": "Ferroão"},
+            {"inicio": "2026-06-26", "fim": "2026-06-27", "rotulo": "Peru"},
+        ],
+        "pinned": {line_id: _chave("2026-06-26", "2026-06-27")},
+    }).json()
+
+    fixada = next(i for i in resposta["items"] if i["line_id"] == line_id)
+    assert fixada["viagem_periodo"]["rotulo"] == "Peru"
+
+
+def test_apagar_o_periodo_solta_o_que_estava_pendurado(client, tmp_path):
+    """Sem a poda, a linha ficaria presa a uma viagem que não existe mais."""
+    dados = _fatura(client, tmp_path)
+    tid = dados["transaction_id"]
+    antes = _baseline(client, tid)
+    line_id = next(iter(antes.values()))["line_id"]
+
+    client.post("/travel", json={
+        "transaction_id": tid,
+        "ranges": [{"inicio": "2026-07-01", "fim": "2026-07-08", "rotulo": "Gramado"}],
+        "pinned": {line_id: _chave("2026-07-01", "2026-07-08")},
+    })
+    resposta = client.post("/travel", json={
+        "transaction_id": tid, "ranges": [], "pinned": {},
+    }).json()
+    assert resposta["pinned"] == {}
+    assert resposta["count"] == 0
+
+
+def test_mudar_as_datas_do_periodo_tambem_solta(client, tmp_path):
+    """A identidade de um período é a JANELA: 18/10–26/10 ≠ 18/10–30/10.
+
+    Guardar pelo nome pareceria mais amigável e seria pior: dois períodos sem
+    nome não teriam chave, e renomear a viagem desligaria as linhas dela.
+    """
+    dados = _fatura(client, tmp_path)
+    tid = dados["transaction_id"]
+    line_id = next(iter(_baseline(client, tid).values()))["line_id"]
+
+    resposta = client.post("/travel", json={
+        "transaction_id": tid,
+        "ranges": [{"inicio": "2026-07-01", "fim": "2026-07-09", "rotulo": "Gramado"}],
+        "pinned": {line_id: _chave("2026-07-01", "2026-07-08")},
+    }).json()
+    assert resposta["pinned"] == {}
+
+
+def test_fixada_desmarcada_volta_atras(client, tmp_path):
+    """Pendurar e depois desmarcar na caixinha reverte tudo, como as outras."""
+    dados = _fatura(client, tmp_path)
+    tid = dados["transaction_id"]
+    antes = _baseline(client, tid)
+    alvo = next(d for d in antes if "Mercadolivre" in d or "MERCADOLIVRE" in d.upper())
+    line_id, original = antes[alvo]["line_id"], antes[alvo]
+
+    client.post("/travel", json={
+        "transaction_id": tid,
+        "ranges": [{"inicio": "2026-07-01", "fim": "2026-07-08", "rotulo": "Gramado"}],
+        "pinned": {line_id: _chave("2026-07-01", "2026-07-08")},
+    })
+    linha = next(r for r in client.post("/preview", json={
+        "transaction_id": tid, "assignments": [], "travel_rejected": [line_id],
+    }).json()["rows"] if r["line_id"] == line_id)
+    assert linha["categoria"] == original["categoria"]
+    assert linha["descricao"] == original["descricao"]
+
+
+def test_periodo_vazio_nao_e_acusado_como_erro(client, tmp_path):
+    """Ele passou a ter função: é o nome onde a compra antecipada se pendura."""
+    dados = _fatura(client, tmp_path)
+    avisos = client.post("/travel", json={
+        "transaction_id": dados["transaction_id"],
+        "ranges": [{"inicio": "2019-01-01", "fim": "2019-01-05", "rotulo": "Peru"}],
+    }).json()["warnings"]
+    assert any("pendurar" in a for a in avisos), avisos
+
+
+def test_periodo_dentro_do_lote_mas_sem_compra_tambem_convida_a_pendurar(client, tmp_path):
+    """O outro braço do aviso: dentro do intervalo, e ainda assim vazio.
+
+    As compras da fixture vão de 26/06 a 08/07/2026. Um período de 06/07 a
+    07/07 está dentro do intervalo e não pega nada — dia sem compra.
+    """
+    dados = _fatura(client, tmp_path)
+    avisos = client.post("/travel", json={
+        "transaction_id": dados["transaction_id"],
+        "ranges": [{"inicio": "2026-07-06", "fim": "2026-07-06", "rotulo": "Peru"}],
+    }).json()["warnings"]
+    assert len(avisos) == 1
+    assert "não tem nenhuma compra por data" in avisos[0]
+    assert "pendurar" in avisos[0]
+
+
+def test_muitos_periodos_vazios_viram_um_aviso_so(client, tmp_path):
+    """Importar as 57 viagens de oito anos não pode virar 55 caixas amarelas.
+
+    E importar a lista inteira é o uso RECOMENDADO: é assim que todo nome fica
+    disponível para pendurar uma compra antecipada. O aviso viraria ruído
+    exatamente no momento em que a lista fica útil.
+    """
+    dados = _fatura(client, tmp_path)
+    periodos = [{"inicio": f"20{a:02d}-03-01", "fim": f"20{a:02d}-03-05",
+                 "rotulo": f"Viagem {a}"} for a in range(10, 30)]
+    avisos = client.post("/travel", json={
+        "transaction_id": dados["transaction_id"], "ranges": periodos,
+    }).json()["warnings"]
+
+    assert len(avisos) == 1
+    assert "20 dos 20 períodos" in avisos[0]
+    assert "pendurar" in avisos[0]
+
+
+def test_poucos_periodos_vazios_continuam_nomeados(client, tmp_path):
+    """Até três, dizer QUAL período está vazio ainda é a informação melhor."""
+    dados = _fatura(client, tmp_path)
+    avisos = client.post("/travel", json={
+        "transaction_id": dados["transaction_id"], "ranges": [
+            {"inicio": "2019-03-01", "fim": "2019-03-05", "rotulo": "Ubatuba"},
+            {"inicio": "2020-03-01", "fim": "2020-03-05", "rotulo": "Brotas"},
+        ],
+    }).json()["warnings"]
+    assert len(avisos) == 2
+    assert any("Ubatuba" in a for a in avisos)
+    assert any("Brotas" in a for a in avisos)
+
+
+def test_aviso_de_sobreposicao_traz_o_ano(client, tmp_path):
+    """Entre 57 viagens de oito anos, `24/11–26/11` não identifica nenhuma."""
+    dados = _fatura(client, tmp_path)
+    avisos = client.post("/travel", json={
+        "transaction_id": dados["transaction_id"], "ranges": [
+            {"inicio": "2026-07-01", "fim": "2026-07-05", "rotulo": "A"},
+            {"inicio": "2026-07-04", "fim": "2026-07-08", "rotulo": "B"},
+        ],
+    }).json()["warnings"]
+    sobreposicao = next(a for a in avisos if "sobrep" in a)
+    assert "01/07/2026" in sobreposicao and "08/07/2026" in sobreposicao

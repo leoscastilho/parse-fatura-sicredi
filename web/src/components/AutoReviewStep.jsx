@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import CategorySelect from './CategorySelect'
+import { passaGrupo, useTitularFiltro } from '../titulares'
 
 const brl = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 
@@ -19,11 +20,21 @@ export default function AutoReviewStep({
 }) {
   const [query, setQuery] = useState('')
   const [onlyChanged, setOnlyChanged] = useState(false)
+  // O filtro por titular é PURAMENTE VISUAL, e por isso ele entra no ÚLTIMO
+  // momento possível: só nas linhas que a tabela desenha.
+  //
+  // Aplicá-lo em `items` teria parecido igual e mudado o comportamento — os
+  // contadores, o "quantos faltam" e principalmente o preenchimento em lote
+  // passariam a enxergar meio lote. "Continuar e aplicar Outros em 4" deixaria
+  // os estabelecimentos da outra pessoa em branco, e a promessa desta tela ("não
+  // deixa passar estabelecimento em branco") pararia de valer em silêncio.
+  const filtroTitular = useTitularFiltro()
   const items = session.auto_classified_items
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return items.filter((item) => {
+      if (!passaGrupo(filtroTitular, item.titulares)) return false
       if (onlyChanged && !getAssignment('merchant', item.merchant)) return false
       if (!needle) return true
       return (
@@ -31,7 +42,7 @@ export default function AutoReviewStep({
         item.categoria.toLowerCase().includes(needle)
       )
     })
-  }, [items, query, onlyChanged, getAssignment])
+  }, [items, query, onlyChanged, getAssignment, filtroTitular])
 
   const changed = items.filter((i) => getAssignment('merchant', i.merchant)).length
   const lines = items.reduce((sum, i) => sum + i.count, 0)

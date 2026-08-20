@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import CategorySelect from './CategorySelect'
+import { passaLinha, useTitularFiltro } from '../titulares'
 
 const brl = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 
@@ -20,6 +21,15 @@ export default function MarketplaceStep({
 }) {
   const [hideResolved, setHideResolved] = useState(false)
   const [bulkCategory, setBulkCategory] = useState('Outros')
+  // O filtro por titular é PURAMENTE VISUAL, e por isso ele entra no ÚLTIMO
+  // momento possível: só nas linhas que a tabela desenha.
+  //
+  // Aplicá-lo em `items` teria parecido igual e mudado o comportamento — os
+  // contadores, o "quantos faltam" e principalmente o preenchimento em lote
+  // passariam a enxergar meio lote. "Continuar e aplicar Outros em 4" deixaria
+  // os estabelecimentos da outra pessoa em branco, e a promessa desta tela ("não
+  // deixa passar estabelecimento em branco") pararia de valer em silêncio.
+  const filtroTitular = useTitularFiltro()
   const items = session.marketplace_items
 
   // A categoria em vigor: a escolha do usuário vence a que veio no arquivo.
@@ -36,7 +46,8 @@ export default function MarketplaceStep({
     () => items.filter((i) => !categoriaDe(i)),
     [items, getAssignment],
   )
-  const visible = hideResolved ? pending : items
+  const visible = (hideResolved ? pending : items)
+    .filter((i) => passaLinha(filtroTitular, i.titular))
   const resolved = items.length - pending.length
   // "Limpar tudo" desfaz o que VOCÊ escolheu; a categoria que veio no arquivo
   // não é sua para limpar aqui, então o botão fica apagado quando você ainda

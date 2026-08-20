@@ -1,55 +1,53 @@
 /**
- * Quem pegou esta compra: o período, e como chamá-lo na tela.
+ * Como uma viagem se chama na tela, e qual viagem pegou cada linha.
  *
- * Vive fora dos componentes porque DUAS telas precisam da mesma resposta — a
- * etapa Viagem, que mostra a coluna "Qual viagem", e a aba Novos, que mostra a
- * dica embaixo da descrição. Duas cópias da mesma regra divergiriam no dia em
- * que uma delas resolvesse o empate de outro jeito, e a divergência apareceria
- * como "a tela A diz Peru e a tela B diz Chile" sem ninguém saber qual está
- * certa.
+ * QUEM DECIDE QUAL VIAGEM É O BACKEND. Cada `LineItem` chega com
+ * `viagem_periodo` já resolvido, e este módulo só cuida da apresentação. Isso é
+ * deliberado: a resposta depende de duas regras — a fixação à mão vence a data,
+ * e entre períodos sobrepostos vence o primeiro da lista — e uma segunda
+ * implementação delas em JavaScript significaria a tela dizendo "Peru" e o
+ * arquivo saindo "Ferroão", sem ninguém saber qual dos dois está certo.
+ *
+ * A identidade de um período é a JANELA (`inicio|fim`), não o nome: é o que
+ * permite renomear uma viagem sem soltar as linhas penduradas nela, e é a mesma
+ * chave que a importação de CSV usa para não duplicar período.
  */
+
+export const chaveDoPeriodo = (periodo) =>
+  periodo ? `${periodo.inicio}|${periodo.fim}` : ''
 
 /**
- * O primeiro período que contém a data — a MESMA regra do backend
- * (`core/travel.py::range_of`).
+ * `2018-12-15` -> `15/12/2018`. COM O ANO, e isso não é preciosismo.
  *
- * Períodos sobrepostos: vence o primeiro da lista. Resolver diferente aqui
- * mostraria na tela um nome de viagem que o arquivo não vai levar.
- *
- * As datas são ISO (`AAAA-MM-DD`), então comparar as strings é comparar as
- * datas — sem `new Date`, que leria a string como UTC e deslocaria o dia para
- * quem está em fuso negativo.
+ * O `dd/mm` de antes nasceu quando um lote era uma fatura, cobrindo um mês: ali
+ * o ano era óbvio e só ocupava espaço. Com o histórico inteiro na tela e 57
+ * viagens entre 2018 e 2026, `15/12 → 16/12` não diz qual Sorocaba é — e o
+ * usuário passa a desconfiar que o ano foi perdido no meio do caminho, o que
+ * não aconteceu: a comparação sempre foi em ISO completo.
  */
-export const periodoDe = (iso, ranges = []) =>
-  (iso && ranges.find((r) => r.inicio <= iso && iso <= r.fim)) || null
-
-const diaMes = (iso) => {
-  const [, m, d] = (iso || '').split('-')
-  return d ? `${d}/${m}` : iso
+export const dataCurta = (iso) => {
+  const [a, m, d] = (iso || '').split('-')
+  return d ? `${d}/${m}/${a}` : iso
 }
 
 /**
- * Como chamar um período na tela: o nome, ou a janela quando não tem nome.
+ * O nome da viagem, ou a janela quando ela não tem nome.
  *
- * Célula vazia seria pior do que a data: com dois períodos abertos, o que essa
+ * Vazio seria pior do que a data: com dois períodos abertos, o que esta
  * informação responde é "qual dos dois", e `24/10 → 30/10` responde isso tão
  * bem quanto um nome que ninguém digitou.
  */
 export const rotuloDoPeriodo = (periodo) =>
-  !periodo ? '' : (periodo.rotulo || `${diaMes(periodo.inicio)} → ${diaMes(periodo.fim)}`)
+  !periodo ? '' : (periodo.rotulo || `${dataCurta(periodo.inicio)} → ${dataCurta(periodo.fim)}`)
 
 /**
- * `line_id -> rótulo da viagem`, a partir do que o backend devolveu em /travel.
- *
- * `items` já vem filtrado pelo backend (só o que caiu dentro de algum período),
- * então não há data para reconferir aqui — só descobrir QUAL período pegou cada
- * um, que é o que o backend não devolve.
+ * `line_id -> rótulo da viagem`, para as telas que acontecem ANTES da etapa
+ * Viagem — onde a marca ainda não está na descrição.
  */
-export function viagensPorLinha(items = [], ranges = []) {
+export function viagensPorLinha(items = []) {
   const mapa = new Map()
   for (const item of items) {
-    const periodo = periodoDe(item.purchase_date, ranges)
-    if (periodo) mapa.set(item.line_id, rotuloDoPeriodo(periodo))
+    if (item.viagem_periodo) mapa.set(item.line_id, rotuloDoPeriodo(item.viagem_periodo))
   }
   return mapa
 }

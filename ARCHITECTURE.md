@@ -123,6 +123,23 @@ ali.
 Os períodos também entram por **CSV** (`start_date,end_date,trip_name`), lido no
 navegador. Vinte viagens de cinco anos não se digitam uma a uma.
 
+**A janela é o atalho, não a lei.** O primitivo é "linha → viagem", e existem as
+duas exceções: `travel_rejected` diz "caiu na janela e não é viagem" (o jogo
+comprado no eShop no meio das férias) e `travel_pinned` diz o contrário — "não
+caiu e é". A segunda existe porque a data não conta tudo: passagem, hospedagem e
+passeio são pagos meses antes, e alargar a janela até agosto para pegar a
+passagem do Peru arrastaria junto o supermercado do mês inteiro. Entre as duas,
+**a fixação à mão vence a data**: quem pendurou aquela linha foi explícito sobre
+ela, enquanto o período fala de um intervalo.
+
+A fixação aponta para o período pela **janela** (`AAAA-MM-DD|AAAA-MM-DD`), não
+pelo nome nem pelo índice: renomear a viagem não solta as linhas dela, dois
+períodos sem nome não colidem, e remover um período não muda a viagem dos
+outros. Quem resolve qual período pegou cada linha é sempre o backend
+(`range_of`), e o `LineItem` chega na tela com `viagem_periodo` pronto — uma
+segunda implementação do desempate em JavaScript faria a tela dizer "Peru" e o
+arquivo sair "Ferroão".
+
 ## Autenticação no GitHub
 
 * **Fine-grained PAT**, `Contents: Read and write`, **um repositório só**.

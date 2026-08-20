@@ -630,3 +630,88 @@ def test_marcar_desconhecido_tambem_persiste(client, sicredi_xlsx, config_dir):
     assert novo in gravado
     segunda = _upload(client, sicredi_xlsx).json()
     assert novo not in {g["merchant"] for g in segunda["unmapped_items"]}
+
+
+def _lote_de_dois(client, tmp_path, rows):
+    """Um lote de conta conjunta já processado, com a marca aplicada."""
+    from .conftest import _sicredi_app_csv
+    caminho = _sicredi_app_csv(tmp_path / "conjunta.csv", rows=rows,
+                               nomes=["Leonardo S Castilho", "Rhyesla Siqueira"])
+    return client.post(
+        "/upload",
+        data={"banco": "sicredi", "titulares": "Rhyesla Siqueira=Rhyesla"},
+        files=[("files", ("conjunta.csv", caminho.read_bytes(), "text/csv"))]).json()
+
+
+def test_grupo_diz_de_quem_sao_as_linhas_dele(client, tmp_path):
+    """O filtro por pessoa das telas de revisão se apoia nisto.
+
+    A lista vem do grupo INTEIRO e inclui a string vazia — o balde de quem se
+    identificou como "eu". Sem o vazio, filtrar pelas MINHAS compras esconderia
+    todo estabelecimento em que ela também comprou.
+    """
+    corpo = _lote_de_dois(client, tmp_path, [
+        ("20/08/2025", "SO DELE", "", "R$ 100,00", ""),
+        ("21/08/2025", "SO DELA", "", "R$ 50,00", ""),
+    ])
+    grupos = {g["merchant"]: g["titulares"]
+              for g in corpo["unmapped_items"] + corpo["auto_classified_items"]}
+    assert grupos["SO DELE"] == [""]
+    assert grupos["SO DELA"] == ["Rhyesla"]
+
+
+def test_grupo_dos_dois_aparece_nos_dois_filtros(client, tmp_path):
+    """O mesmo mercado nos dois cartões. A decisão dele vale para as duas."""
+    corpo = _lote_de_dois(client, tmp_path, [
+        ("20/08/2025", "MERCADO COMUM", "", "R$ 100,00", ""),
+        ("21/08/2025", "MERCADO COMUM", "", "R$ 50,00", ""),
+    ])
+    grupo = next(g for g in corpo["unmapped_items"] + corpo["auto_classified_items"]
+                 if g["merchant"] == "MERCADO COMUM")
+    assert grupo["count"] == 2
+    assert grupo["titulares"] == ["", "Rhyesla"]
+
+
+def test_titulares_saem_do_grupo_inteiro_e_nao_das_amostras(client, tmp_path):
+    """`samples` tem três; um estabelecimento pode ter dez linhas.
+
+    Se a lista viesse das amostras, a pessoa que só aparece na quarta compra
+    sumiria do filtro — e o estabelecimento dela ficaria invisível.
+    """
+    from .conftest import _sicredi_app_csv
+    # `nomes` gira um titular por linha: quatro minhas e a DELA só na quinta,
+    # fora das três amostras. É o caso que distingue "do grupo" de "da amostra".
+    caminho = _sicredi_app_csv(
+        tmp_path / "tarde.csv",
+        rows=[("20/08/2025", "MUITAS LINHAS", "", "R$ 10,00", "")] * 5,
+        nomes=["Leonardo S Castilho"] * 4 + ["Rhyesla Siqueira"])
+    corpo = client.post(
+        "/upload",
+        data={"banco": "sicredi", "titulares": "Rhyesla Siqueira=Rhyesla"},
+        files=[("files", ("tarde.csv", caminho.read_bytes(), "text/csv"))]).json()
+
+    grupo = next(g for g in corpo["unmapped_items"] + corpo["auto_classified_items"]
+                 if g["merchant"] == "MUITAS LINHAS")
+    assert grupo["count"] == 5
+    assert len(grupo["samples"]) == 3
+    assert not any(s.endswith("<Rhyesla>") for s in grupo["samples"]), (
+        "a montagem do teste falhou: ela precisa estar FORA das amostras")
+    assert grupo["titulares"] == ["", "Rhyesla"]
+
+
+def test_a_linha_diz_de_quem_ela_e(client, tmp_path):
+    """`LineItem.titular`, para as telas que listam LINHA e não estabelecimento.
+
+    Sai do backend, e não de uma segunda leitura da descrição em JavaScript:
+    a regra é a mesma de `core.text.titular_de` e ter duas cópias dela faria a
+    tela e o arquivo discordarem no dia em que uma passasse a aceitar espaço
+    antes do `<`.
+    """
+    corpo = _lote_de_dois(client, tmp_path, [
+        ("20/08/2025", "AMAZON BR", "", "R$ 100,00", ""),
+        ("21/08/2025", "AMAZON BR", "", "R$ 50,00", ""),
+    ])
+    linhas = corpo["marketplace_items"]
+    assert sorted(l["titular"] for l in linhas) == ["", "Rhyesla"]
+    dela = next(l for l in linhas if l["titular"] == "Rhyesla")
+    assert dela["descricao"].endswith("<Rhyesla>")

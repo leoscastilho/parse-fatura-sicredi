@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import * as api from '../api'
 import CategorySelect from './CategorySelect'
+import { passaGrupo, useTitularFiltro } from '../titulares'
 
 const brl = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 
@@ -23,6 +24,15 @@ export default function UnmappedStep({
   const [saving, setSaving] = useState(false)
   const [esconderResolvidos, setEsconderResolvidos] = useState(false)
   const [categoriaLote, setCategoriaLote] = useState('Outros')
+  // O filtro por titular é PURAMENTE VISUAL, e por isso ele entra no ÚLTIMO
+  // momento possível: só nas linhas que a tabela desenha.
+  //
+  // Aplicá-lo em `items` teria parecido igual e mudado o comportamento — os
+  // contadores, o "quantos faltam" e principalmente o preenchimento em lote
+  // passariam a enxergar meio lote. "Continuar e aplicar Outros em 4" deixaria
+  // os estabelecimentos da outra pessoa em branco, e a promessa desta tela ("não
+  // deixa passar estabelecimento em branco") pararia de valer em silêncio.
+  const filtroTitular = useTitularFiltro()
   const items = session.unmapped_items
 
   // A categoria em vigor, na mesma precedência do backend: o que o usuário
@@ -64,7 +74,8 @@ export default function UnmappedStep({
     return Boolean(categoriaDe(item) || a?.mark_unknown)
   }
   const pendentes = items.filter((i) => !resolvido(i))
-  const visiveis = esconderResolvidos ? pendentes : items
+  const visiveis = (esconderResolvidos ? pendentes : items)
+    .filter((i) => passaGrupo(filtroTitular, i.titulares))
   // Quantos chegaram já preenchidos pelo arquivo, sem o usuário ter tocado.
   const doArquivo = items.filter(
     (i) => i.categoria && !getAssignment('merchant', i.merchant)?.categoria).length

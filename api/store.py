@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     mapping_changes_json TEXT NOT NULL DEFAULT '[]',
     travel_json         TEXT NOT NULL DEFAULT '[]',
     travel_rejected_json TEXT NOT NULL DEFAULT '[]',
+    travel_pinned_json  TEXT NOT NULL DEFAULT '{}',
     committed_url       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_transactions_expires ON transactions(expires_at);
@@ -80,6 +81,7 @@ class Store:
                 ("modo", "TEXT NOT NULL DEFAULT 'fatura'"),
                 ("travel_json", "TEXT NOT NULL DEFAULT '[]'"),
                 ("travel_rejected_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("travel_pinned_json", "TEXT NOT NULL DEFAULT '{}'"),
             ):
                 if nome not in colunas:
                     conn.execute(f"ALTER TABLE transactions ADD COLUMN {nome} {ddl}")
@@ -149,7 +151,8 @@ class Store:
             raise TransactionNotFound(transaction_id)
 
         for column in ("statements", "dropped", "lines", "assignments",
-                       "mapping_changes", "travel", "travel_rejected"):
+                       "mapping_changes", "travel", "travel_rejected",
+                       "travel_pinned"):
             record[column] = json.loads(record.pop(f"{column}_json"))
         return record
 
@@ -179,6 +182,20 @@ class Store:
             conn.execute(
                 "UPDATE transactions SET travel_rejected_json = ? WHERE id = ?",
                 (json.dumps(line_ids, ensure_ascii=False), transaction_id),
+            )
+
+    def save_travel_pinned(self, transaction_id: str, pinned: dict[str, str]) -> None:
+        """`line_id -> chave do período`: as linhas penduradas na viagem à mão.
+
+        Fica ao lado de `travel_rejected` porque é a mesma ideia com o sinal
+        trocado: uma lista diz "caiu na janela e NÃO é viagem", a outra diz
+        "não caiu e É". Nenhuma das duas toca `lines_json` — as duas são
+        aplicadas na leitura, o que mantém editar períodos idempotente.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE transactions SET travel_pinned_json = ? WHERE id = ?",
+                (json.dumps(pinned, ensure_ascii=False), transaction_id),
             )
 
     def save_yaml_working(

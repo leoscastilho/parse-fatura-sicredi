@@ -61,6 +61,7 @@ import yaml
 from .planilha import (
     chave as _chave, ler_tabela, parse_valor, tabela_da_primeira_linha,
 )
+from .text import TITULAR_RE
 
 # Papéis. Só `gasto` entra na conta de "quanto gastei".
 GASTO = "gasto"
@@ -214,10 +215,9 @@ class Lancamento:
         return f"{self.ano:04d}-{self.mes:02d}"
 
 
-# " <Rhyesla>" no FIM da descrição. Ancorado no fim de propósito: um `<` no meio
-# do nome de um estabelecimento não é marca de titular, e sem a âncora
-# "[Cartão] Loja <3 {Em 3/Jan}" viraria um titular chamado "3".
-TITULAR_RE = re.compile(r"<([^<>]+)>\s*$")
+# `TITULAR_RE` vem de `core.text`: as telas de revisão fazem a mesma pergunta
+# durante a importação, e duas cópias do padrão divergiriam no dia em que uma
+# delas passasse a aceitar espaço antes do `<`.
 
 # O balde de quem NÃO tem marca precisa de um nome para viajar pela rede: o
 # campo de formulário é uma lista separada por quebra de linha, e linha vazia é

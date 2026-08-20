@@ -15,6 +15,7 @@ import TravelStep from './components/TravelStep'
 import AnalyticsView from './components/AnalyticsView'
 import { applyTheme } from './theme'
 import { viagensPorLinha } from './viagens'
+import { TODOS, TitularFiltro, opcoesDeTitular } from './titulares'
 
 const STEPS = [
   { id: 'upload', label: 'Upload' },
@@ -68,10 +69,21 @@ export default function App() {
   const [travelItems, setTravelItems] = useState([])
   const [travelWarnings, setTravelWarnings] = useState([])
   const [travelRejected, setTravelRejected] = useState(new Set())
+  // `line_id -> chave do período`: as compras penduradas na viagem à mão,
+  // apesar da data. Passagem e hospedagem são pagas meses antes, e nenhuma
+  // janela razoável pega as duas coisas.
+  const [travelPinned, setTravelPinned] = useState({})
+  const [travelOutros, setTravelOutros] = useState([])
   // Etapas já liberadas. Avançar exige clicar em "Continuar" — pular uma etapa
   // pela barra deixava para trás decisões que a etapa seguinte já consome.
   // Chegando na última, tudo destrava e a navegação vira livre.
   const [liberadas, setLiberadas] = useState(['upload'])
+  // Conta conjunta: de quem são os lançamentos que as tabelas mostram. `TODOS`
+  // é o padrão, e o filtro não muda nada além do que está na tela.
+  const [titularFiltro, setTitularFiltro] = useState(TODOS)
+  // Quem eu disse ser, na tela de upload. Só para o seletor ter um nome no
+  // lugar de "Sem marca" — não vai para o backend nem para o arquivo.
+  const [euNome, setEuNome] = useState('')
   const [banks, setBanks] = useState([])
   const [bankId, setBankId] = useState('')
   const [error, setError] = useState(null)
@@ -138,7 +150,8 @@ export default function App() {
     [assignments],
   )
 
-  async function handleUpload(files, vencimento, titulares = '') {
+  async function handleUpload(files, vencimento, titulares = '', eu = '') {
+    setEuNome(eu)
     await processar(() => api.upload(files, bankId, vencimento, titulares), 'unmapped')
   }
 
@@ -156,6 +169,9 @@ export default function App() {
       setTravelItems([])
       setTravelWarnings([])
       setTravelRejected(new Set())
+      setTravelPinned({})
+      setTravelOutros([])
+      setTitularFiltro(TODOS)
       setLiberadas(['upload', proximaEtapa])
       setStep(proximaEtapa)
       aoTopo()
@@ -184,13 +200,20 @@ export default function App() {
     setTravelItems([])
     setTravelWarnings([])
     setTravelRejected(new Set())
+    setTravelPinned({})
+    setTravelOutros([])
   }
 
-  async function enviarPeriodos(transactionId, ranges) {
-    const resposta = await api.travel(transactionId, ranges)
+  async function enviarPeriodos(transactionId, ranges, pinned = travelPinned) {
+    const resposta = await api.travel(transactionId, ranges, pinned)
     setTravelRanges(resposta.ranges)
     setTravelItems(resposta.items)
     setTravelWarnings(resposta.warnings)
+    setTravelOutros(resposta.outros || [])
+    // O backend PODA: fixação de período que não existe mais é descartada lá,
+    // e refletir a poda aqui evita a tela mostrar uma viagem que o arquivo não
+    // vai levar. Vale o mesmo raciocínio das rejeições, logo abaixo.
+    setTravelPinned(resposta.pinned || {})
     // Quem deixou de ser candidata deixa de ter rejeição — o backend faz a
     // mesma poda; refletir aqui evita a caixa reaparecer desmarcada.
     const vivas = new Set(resposta.items.map((i) => i.line_id))
@@ -215,6 +238,25 @@ export default function App() {
     }
   }
 
+  // Pendurar (ou despendurar) uma linha numa viagem. Substitutivo como os
+  // períodos: o mapa que sobe VIRA o mapa guardado, então tirar é mandar sem.
+  async function handleTravelPin(lineId, chave) {
+    const proximo = { ...travelPinned }
+    if (chave) proximo[lineId] = chave
+    else delete proximo[lineId]
+    setTravelPinned(proximo)
+    if (!session) return
+    setBusy(true)
+    setError(null)
+    try {
+      await enviarPeriodos(session.transaction_id, travelRanges, proximo)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const toggleTravel = useCallback((lineId) => {
     setTravelRejected((atual) => {
       const proximo = new Set(atual)
@@ -226,19 +268,36 @@ export default function App() {
 
   const travelRejectedList = useMemo(() => [...travelRejected], [travelRejected])
 
+  /**
+   * Os nomes que este lote tem, para o seletor de "de quem são os lançamentos".
+   *
+   * Sai dos BALDES da sessão, e não de uma rota nova: cada grupo já traz os
+   * titulares das linhas dele e cada item de marketplace traz o seu. Com menos
+   * de dois nomes distintos `opcoesDeTitular` devolve lista vazia, e o seletor
+   * não aparece — cartão de uma pessoa só não tem o que filtrar.
+   */
+  const titularesDoLote = useMemo(() => {
+    if (!session) return []
+    const grupos = [...(session.unmapped_items || []), ...(session.auto_classified_items || []),
+                    ...(session.ignored_items || [])]
+    return opcoesDeTitular([
+      ...grupos.flatMap((g) => g.titulares || []),
+      ...(session.marketplace_items || []).map((i) => i.titular || ''),
+    ], euNome)
+  }, [session, euNome])
+
   // Qual viagem pegou cada linha. Serve às etapas que acontecem ANTES da etapa
   // Viagem: ali a marca ainda não está na descrição, e sem esta dica quem
   // categoriza "Sco Miraflores" não tem como saber que aquilo foi no Peru — a
   // única pista, `{Em 24/Oct}`, exige lembrar de cabeça o que aconteceu no dia.
   // É informativo: quem confirma continua sendo a etapa Viagem.
-  const viagemPorLinha = useMemo(
-    () => viagensPorLinha(travelItems, travelRanges),
-    [travelItems, travelRanges],
-  )
+  const viagemPorLinha = useMemo(() => viagensPorLinha(travelItems), [travelItems])
 
   function restart() {
     setSession(null)
     setAssignments(new Map())
+    setTitularFiltro(TODOS)
+    setEuNome('')
     limparViagem()
     setLiberadas(['upload'])
     setStep('upload')
@@ -279,6 +338,7 @@ export default function App() {
     // erro em qualquer tela. Como prop, ela precisava ser repassada em seis
     // seletores, e apagá-la em três deles não derrubava teste nenhum.
     <CategoriasFixas.Provider value={fixas}>
+    <TitularFiltro.Provider value={titularFiltro}>
     <div className="shell">
       <aside className={`sidebar ${sidebarOpen ? '' : 'closed'}`}>
         <div className="brand">
@@ -391,6 +451,28 @@ export default function App() {
                          mudança(s)`
                       : `${session.statements.length} fatura(s) de ${bancoAtual?.nome || '—'} carregada(s)`}
                   </span>
+                  {/* O filtro mora AQUI, e não dentro de cada etapa: ele vale
+                      para todas elas e sobrevive à navegação entre elas.
+                      Repetido em cada tela, seria cinco controles que precisam
+                      concordar entre si. */}
+                  {titularesDoLote.length > 0 && (
+                    // Sem rótulo visível de propósito: a primeira opção é
+                    // "Todos", que já explica o controle, e o `<span>` acima do
+                    // seletor o desalinhava do "Começar de novo" ao lado. O
+                    // `aria-label` continua nomeando o campo para quem não vê.
+                    <select
+                      className="titular-filtro"
+                      value={titularFiltro === TODOS ? '__todos__' : titularFiltro}
+                      aria-label="Mostrar lançamentos de quem"
+                      onChange={(e) => setTitularFiltro(
+                        e.target.value === '__todos__' ? TODOS : e.target.value)}
+                    >
+                      <option value="__todos__">Todos</option>
+                      {titularesDoLote.map((o) => (
+                        <option key={o.valor} value={o.valor}>{o.rotulo}</option>
+                      ))}
+                    </select>
+                  )}
                   <button className="ghost" onClick={restart}>Começar de novo</button>
                 </div>
               )}
@@ -492,9 +574,12 @@ export default function App() {
                   categories={categories}
                   ranges={travelRanges}
                   items={travelItems}
+                  outros={travelOutros}
+                  pinned={travelPinned}
                   warnings={travelWarnings}
                   rejected={travelRejected}
                   onRangesChange={handleTravelRanges}
+                  onPin={handleTravelPin}
                   getAssignment={getAssignment}
                   setAssignment={setAssignment}
                   onToggle={toggleTravel}
@@ -516,6 +601,7 @@ export default function App() {
         </div>
       </div>
     </div>
+    </TitularFiltro.Provider>
     </CategoriasFixas.Provider>
   )
 }

@@ -50,6 +50,10 @@ ROTULO_RE = re.compile(r"\s*\{([^{}]*)\}")
 PARENTESES_RE = re.compile(r"\s*\(([^()]*)\)")
 
 
+# Acima disto, os períodos vazios viram um aviso só. Ver `validate_ranges`.
+LIMITE_DE_AVISOS = 3
+
+
 class TravelError(ValueError):
     pass
 
@@ -66,6 +70,21 @@ class TravelRange:
     @property
     def dias(self) -> int:
         return (self.fim - self.inicio).days + 1
+
+    @property
+    def chave(self) -> str:
+        """A identidade de um período: a JANELA, não o nome.
+
+        É por esta chave que uma linha fixada à mão aponta para a viagem dela.
+        Pelo nome não daria: renomear "Peru" para "Peru 2025" desligaria as
+        linhas fixadas, e período sem nome não teria chave nenhuma. Pelo índice
+        na lista também não: remover o primeiro período mudaria a viagem de
+        todas as outras linhas em silêncio.
+
+        É a mesma identidade que a importação de CSV usa para não duplicar
+        período (`web/src/travelCsv.js::juntarPeriodos`).
+        """
+        return f"{self.inicio.isoformat()}|{self.fim.isoformat()}"
 
     def to_dict(self) -> dict:
         return {"inicio": self.inicio.isoformat(), "fim": self.fim.isoformat(),
@@ -151,36 +170,79 @@ def validate_ranges(
     if inicio is None:
         return avisos
 
-    for periodo in ranges:
-        rotulo = periodo.rotulo or f"{periodo.inicio:%d/%m} a {periodo.fim:%d/%m}"
-        if periodo.fim < inicio or periodo.inicio > fim:
-            avisos.append(
-                f"O período {rotulo} está fora das compras deste lote "
-                f"({inicio:%d/%m/%Y} a {fim:%d/%m/%Y}) e não marca nada.")
-        elif not any(periodo.contains(d) for d in purchase_dates(linhas)):
-            avisos.append(f"O período {rotulo} não tem nenhuma compra.")
+    # PERÍODO VAZIO NÃO É ERRO desde que dá para pendurar linhas nele à mão.
+    # A fatura de agosto que só tem a passagem de trem do Peru é o caso exato:
+    # a viagem é em outubro, a janela de outubro não pega nada ali, e mesmo
+    # assim ela precisa existir — é o nome ao qual a passagem se pendura.
+    # "Fora do lote" não precisa entrar nesta conta: um período que termina
+    # antes da primeira compra também não contém nenhuma delas. A distinção
+    # entre os dois casos existe só para escolher a FRASE, no laço abaixo.
+    dias = purchase_dates(linhas)
+    vazios = [p for p in ranges if not any(p.contains(d) for d in dias)]
+
+    # UM AVISO POR PERÍODO SÓ ENQUANTO FOREM POUCOS. Quem importa o CSV com as
+    # 57 viagens dos últimos oito anos — que é o uso recomendado, porque é
+    # assim que todo nome fica disponível para pendurar — recebia 55 caixas
+    # amarelas iguais empurrando a tabela para fora da tela. O aviso vira
+    # ruído no exato momento em que a lista fica útil.
+    if len(vazios) > LIMITE_DE_AVISOS:
+        avisos.append(
+            f"{len(vazios)} dos {len(ranges)} períodos não pegaram compra "
+            f"nenhuma por data neste lote (as compras vão de "
+            f"{inicio:%d/%m/%Y} a {fim:%d/%m/%Y}). É o normal quando se importa "
+            "a lista de viagens inteira — os nomes continuam disponíveis para "
+            "pendurar compras à mão lá embaixo.")
+    else:
+        for periodo in vazios:
+            rotulo = periodo.rotulo or f"{periodo.inicio:%d/%m/%Y} a {periodo.fim:%d/%m/%Y}"
+            if periodo.fim < inicio or periodo.inicio > fim:
+                avisos.append(
+                    f"O período {rotulo} está fora das compras deste lote "
+                    f"({inicio:%d/%m/%Y} a {fim:%d/%m/%Y}) — por data ele não pega "
+                    "nada, mas dá para pendurar compras nele à mão lá embaixo.")
+            else:
+                avisos.append(
+                    f"O período {rotulo} não tem nenhuma compra por data — dá para "
+                    "pendurar compras nele à mão lá embaixo.")
 
     for i, a in enumerate(ranges):
         for b in ranges[i + 1:]:
             if a.inicio <= b.fim and b.inicio <= a.fim:
+                # Com o ano, pela mesma razão do resto da tela: entre 57
+                # viagens de oito anos, "24/11–26/11" não identifica nenhuma.
                 avisos.append(
-                    f"Os períodos {a.inicio:%d/%m}–{a.fim:%d/%m} e "
-                    f"{b.inicio:%d/%m}–{b.fim:%d/%m} se sobrepõem; "
+                    f"Os períodos {a.inicio:%d/%m/%Y}–{a.fim:%d/%m/%Y} e "
+                    f"{b.inicio:%d/%m/%Y}–{b.fim:%d/%m/%Y} se sobrepõem; "
                     "as compras em comum contam uma vez só.")
     return avisos
 
 
 def mark_travel(
-    linhas: list[ClassifiedLine], ranges: list[TravelRange]
+    linhas: list[ClassifiedLine], ranges: list[TravelRange],
+    fixadas: dict[str, str] | None = None,
 ) -> list[ClassifiedLine]:
-    """Marca como candidatas a viagem as linhas cuja COMPRA cai numa janela."""
+    """Marca como candidatas a viagem as linhas cuja COMPRA cai numa janela —
+    mais as que o usuário pendurou na viagem à mão.
+
+    `fixadas` é `line_id -> chave do período`, e existe porque A DATA NÃO
+    ENTREGA TUDO: passagem, hospedagem e passeio são pagos meses antes da
+    viagem. A passagem de trem do Peru saiu em 14 de agosto e a viagem foi em
+    outubro — nenhuma janela razoável pega as duas coisas, e alargar a janela
+    até agosto arrastaria junto o supermercado do mês inteiro.
+
+    O período continua sendo o atalho que resolve o caso comum; a fixação é a
+    exceção nomeada, do mesmo jeito que `travel_rejected` é a exceção para o
+    contrário (caiu na janela e não era viagem).
+    """
+    penduradas = fixadas or {}
     marcadas: list[ClassifiedLine] = []
     for linha in linhas:
         try:
             dia = date.fromisoformat(linha.purchase_date)
         except (ValueError, TypeError):
             dia = date.min
-        dentro = dia != date.min and any(p.contains(dia) for p in ranges)
+        dentro = (linha.line_id in penduradas
+                  or (dia != date.min and any(p.contains(dia) for p in ranges)))
         # `replace` e não `ClassifiedLine(**linha.to_dict())`: o to_dict
         # serializa `state` para string (é o que a API guarda no SQLite), e
         # reconstruir a partir dele devolveria um `state` str em vez de
@@ -189,14 +251,28 @@ def mark_travel(
     return marcadas
 
 
-def range_of(linha: ClassifiedLine, ranges: list[TravelRange]) -> TravelRange | None:
-    """Qual período pegou esta linha — o primeiro que contém a data da COMPRA.
+def range_of(linha: ClassifiedLine, ranges: list[TravelRange],
+             fixadas: dict[str, str] | None = None) -> TravelRange | None:
+    """Qual período pegou esta linha.
 
-    Períodos sobrepostos: vence o primeiro da lista. A compra em comum já conta
-    uma vez só (é o que `validate_ranges` avisa), então o único efeito aqui é
-    qual dos dois nomes vai para a descrição — e escolher um em silêncio é
-    melhor do que escrever os dois.
+    A FIXAÇÃO À MÃO VENCE A DATA, e não é empate técnico: quem pendurou aquela
+    linha naquela viagem foi explícito sobre aquela linha, enquanto o período é
+    um atalho que fala de um intervalo inteiro. A passagem comprada em agosto
+    pode cair, por azar, dentro de um feriado marcado em agosto — e ela é do
+    Peru mesmo assim.
+
+    Sem fixação, vence o primeiro período que contém a data da COMPRA. Períodos
+    sobrepostos: vence o primeiro da lista. A compra em comum já conta uma vez
+    só (é o que `validate_ranges` avisa), então o único efeito aqui é qual dos
+    dois nomes vai para a descrição — e escolher um em silêncio é melhor do que
+    escrever os dois.
     """
+    chave = (fixadas or {}).get(linha.line_id)
+    if chave:
+        achado = next((p for p in ranges if p.chave == chave), None)
+        if achado is not None:
+            return achado
+
     try:
         dia = date.fromisoformat(linha.purchase_date)
     except (ValueError, TypeError):

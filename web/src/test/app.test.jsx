@@ -26,7 +26,10 @@ import {
 import FiltrosLaterais from '../components/FiltrosLaterais'
 import { gravarFiltros, lerFiltros } from '../filtrosSalvos'
 import { juntarPeriodos, lerPeriodosCsv } from '../travelCsv'
-import { periodoDe, viagensPorLinha } from '../viagens'
+import { chaveDoPeriodo, rotuloDoPeriodo, viagensPorLinha } from '../viagens'
+import {
+  TODOS, TitularFiltro, opcoesDeTitular, passaGrupo, passaLinha,
+} from '../titulares'
 import Reservas from '../components/Reservas'
 import Sankey from '../components/Sankey'
 import Residuos from '../components/Residuos'
@@ -222,7 +225,7 @@ describe('UploadStep', () => {
 
     await userEvent.click(processar)
     // O terceiro argumento é o mapa de titulares, vazio num banco sem a coluna.
-    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '2026-08-10', '')
+    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '2026-08-10', '', '')
   })
 })
 
@@ -265,7 +268,7 @@ describe('UploadStep — quem é você nesta fatura', () => {
     const { onUpload } = await montar({ titulares: ['Leonardo S Castilho'],
                                         eu_sugerido: null })
     await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
-    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '', '')
+    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '', '', '')
     expect(screen.queryByText(/Quem é você nesta fatura/)).toBeNull()
   })
 
@@ -287,9 +290,13 @@ describe('UploadStep — quem é você nesta fatura', () => {
   it('manda o mapa com o meu nome VAZIO e o do outro preenchido', async () => {
     const { onUpload } = await montar()
     await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
+    // O 4º argumento é quem eu disse ser. Não vai para o backend — o servidor
+    // só precisa saber quem LEVA marca, e eu sou justamente quem não leva.
+    // Quem o usa é o filtro das telas seguintes, para dizer "Leonardo S
+    // Castilho" em vez de "Sem marca".
     expect(onUpload).toHaveBeenCalledWith(
       expect.any(Array), '',
-      'Rhyesla Siqueira=Rhyesla')
+      'Rhyesla Siqueira=Rhyesla', 'Leonardo S Castilho')
   })
 
   it('editar o rótulo muda o que vai para o arquivo', async () => {
@@ -299,7 +306,7 @@ describe('UploadStep — quem é você nesta fatura', () => {
     await userEvent.type(campo, 'Rhy')
     await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
     expect(onUpload).toHaveBeenCalledWith(
-      expect.any(Array), '', 'Rhyesla Siqueira=Rhy')
+      expect.any(Array), '', 'Rhyesla Siqueira=Rhy', 'Leonardo S Castilho')
   })
 
   it('trocar quem sou eu inverte quem leva a marca', async () => {
@@ -308,7 +315,7 @@ describe('UploadStep — quem é você nesta fatura', () => {
     await userEvent.click(radios[1])
     await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
     expect(onUpload).toHaveBeenCalledWith(
-      expect.any(Array), '', 'Leonardo S Castilho=Leonardo')
+      expect.any(Array), '', 'Leonardo S Castilho=Leonardo', 'Rhyesla Siqueira')
   })
 
   it('sem sugestão do banco, ninguém vem marcado e todos levam nome', async () => {
@@ -318,7 +325,7 @@ describe('UploadStep — quem é você nesta fatura', () => {
     await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
     expect(onUpload).toHaveBeenCalledWith(
       expect.any(Array), '',
-      'Leonardo S Castilho=Leonardo\nRhyesla Siqueira=Rhyesla')
+      'Leonardo S Castilho=Leonardo\nRhyesla Siqueira=Rhyesla', '')
   })
 })
 
@@ -527,12 +534,14 @@ const VIAGEM_ITENS = [
 function montarViagem({
   ranges = [], items = VIAGEM_ITENS, warnings = [], rejected = new Set(),
   atribuicoes = {}, fixas = [], purchase_range = { inicio: '2026-06-26', fim: '2026-07-08' },
+  outros = [], pinned = {},
 } = {}) {
   const onRangesChange = vi.fn()
   const onToggle = vi.fn()
   const setAssignment = vi.fn()
   const onNext = vi.fn()
-  render(
+  const onPin = vi.fn()
+  const { container } = render(
     <CategoriasFixas.Provider value={fixas}>
     <TravelStep
       session={{ purchase_range }}
@@ -553,10 +562,13 @@ function montarViagem({
       onToggle={onToggle}
       onNext={onNext}
       busy={false}
+      outros={outros}
+      pinned={pinned}
+      onPin={onPin}
     />
     </CategoriasFixas.Provider>,
   )
-  return { onRangesChange, onToggle, setAssignment, onNext }
+  return { onRangesChange, onToggle, setAssignment, onNext, onPin, container }
 }
 
 describe('TravelStep', () => {
@@ -782,7 +794,14 @@ describe('App', () => {
       ranges: [{ inicio: '2019-07-01', fim: '2019-07-10', rotulo: 'Bariloche' }],
       items: [{ line_id: '0:9', purchase_date: '2019-07-04', valor: 66.07,
                 categoria: '', merchant: 'SCO MIRAFLORES', viagem: true,
+                viagem_periodo: { inicio: '2019-07-01', fim: '2019-07-10',
+                                  rotulo: 'Bariloche' },
                 descricao: '[Cartão] Sco Miraflores {Em 24/Oct}' }],
+      outros: [{ line_id: '1:1', purchase_date: '2019-04-02', valor: 3200.69,
+                 categoria: 'Transporte', merchant: 'CE PERU RAIL',
+                 viagem: false, viagem_periodo: null, viagem_a_mao: false,
+                 descricao: '[Cartão] Ce Peru Rail 1 {Em 2/Apr}' }],
+      pinned: {},
       warnings: [],
     })
     await montarApp()
@@ -800,8 +819,10 @@ describe('App', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Recategorizar' }))
 
     // Digitados antes de existir transação, enviados assim que ela existe.
-    await waitFor(() => expect(api.travel).toHaveBeenCalledWith('tx-1', [
-      { inicio: '2019-07-01', fim: '2019-07-10', rotulo: 'Bariloche' }]))
+    await waitFor(() => expect(api.travel).toHaveBeenCalledWith(
+      'tx-1',
+      [{ inicio: '2019-07-01', fim: '2019-07-10', rotulo: 'Bariloche' }],
+      {}))
 
     await userEvent.click(await screen.findByRole('button', { name: /Continuar a revisão/ }))
 
@@ -817,6 +838,18 @@ describe('App', () => {
     }
     expect(screen.getByRole('heading', { name: /Períodos de viagem/ }))
       .toBeInTheDocument()
+
+    // E a compra antecipada — fora de qualquer janela — se pendura na viagem
+    // pela gaveta. É o caminho inteiro: a prop `outros` desce, o `onPin` sobe,
+    // e o mapa vai no terceiro argumento do /travel.
+    await userEvent.click(screen.getByText(/Comprou algo para a viagem antes dela/))
+    const antecipada = screen.getByText('[Cartão] Ce Peru Rail 1 {Em 2/Apr}').closest('tr')
+    await userEvent.selectOptions(within(antecipada).getByRole('combobox'),
+                                  '2019-07-01|2019-07-10')
+    await waitFor(() => expect(api.travel).toHaveBeenLastCalledWith(
+      'tx-1',
+      [{ inicio: '2019-07-01', fim: '2019-07-10', rotulo: 'Bariloche' }],
+      { '1:1': '2019-07-01|2019-07-10' }))
   })
 })
 
@@ -3241,20 +3274,81 @@ describe('a coluna "Qual viagem"', () => {
     { inicio: '2026-07-01', fim: '2026-07-02', rotulo: 'Gramado' },
     { inicio: '2026-07-03', fim: '2026-07-05', rotulo: '' },
   ]
+  // O período de cada linha vem RESOLVIDO do backend (`LineItem.viagem_periodo`):
+  // a fixação à mão vence a data, e períodos sobrepostos têm desempate. A tela
+  // só apresenta.
+  const ITENS = [
+    { ...VIAGEM_ITENS[0], viagem_periodo: RANGES[0] },
+    { ...VIAGEM_ITENS[1], viagem_periodo: RANGES[1] },
+  ]
 
   it('diz de qual período cada linha veio', async () => {
     // Com dois períodos abertos, "4 compras viraram Viagem" não diz de qual —
     // e é justamente aí que se descobre que a janela pegou o mês errado.
-    montarViagem({ ranges: RANGES })
+    montarViagem({ ranges: RANGES, items: ITENS })
     const linha = screen.getByText('[Cartão] Supermercados Alvora {Em 2/Jul}')
       .closest('tr')
     expect(within(linha).getByText('Gramado')).toBeInTheDocument()
   })
 
   it('período sem nome mostra a janela, não uma célula vazia', async () => {
-    montarViagem({ ranges: RANGES })
+    montarViagem({ ranges: RANGES, items: ITENS })
     const linha = screen.getByText('[Cartão] Amazon Br {Em 3/Jul}').closest('tr')
-    expect(within(linha).getByText('03/07 → 05/07')).toBeInTheDocument()
+    expect(within(linha).getByText('03/07/2026 → 05/07/2026')).toBeInTheDocument()
+  })
+
+  const AMAO = (extra = {}) => ({
+    ...VIAGEM_ITENS[0], viagem_periodo: RANGES[0], viagem_a_mao: true, ...extra,
+  })
+
+  it('a linha pendurada à mão se identifica como tal: a viagem dela é editável', () => {
+    // Três meses depois, "por que a passagem de agosto está numa viagem de
+    // outubro?" precisa ter resposta na própria tela — e a resposta é que
+    // alguém escolheu, o que se vê por a escolha continuar aberta.
+    montarViagem({ ranges: RANGES, items: [AMAO()] })
+    const linha = screen.getByText('[Cartão] Supermercados Alvora {Em 2/Jul}')
+      .closest('tr')
+    expect(within(linha).getByRole('combobox')).toHaveValue(chaveDoPeriodo(RANGES[0]))
+  })
+
+  it('a linha pega pela DATA não é editável aqui', () => {
+    // A viagem dela vem do período; trocá-la nesta célula seria mentir sobre o
+    // que a janela decidiu. Para essa, o caminho é mexer no período.
+    montarViagem({ ranges: RANGES, items: [AMAO({ viagem_a_mao: false })] })
+    const linha = screen.getByText('[Cartão] Supermercados Alvora {Em 2/Jul}')
+      .closest('tr')
+    expect(within(linha).queryByRole('combobox')).toBeNull()
+  })
+
+  it('errou a viagem: dá para trocar sem desfazer nada', () => {
+    // O bug que isto fixa: pendurar tira a linha da gaveta de baixo, então uma
+    // escolha errada subia para a tabela e ficava irreversível.
+    const { onPin } = montarViagem({ ranges: RANGES, items: [AMAO()] })
+    const linha = screen.getByText('[Cartão] Supermercados Alvora {Em 2/Jul}')
+      .closest('tr')
+    fireEvent.change(within(linha).getByRole('combobox'),
+                     { target: { value: chaveDoPeriodo(RANGES[1]) } })
+    expect(onPin).toHaveBeenCalledWith('0:2', chaveDoPeriodo(RANGES[1]))
+  })
+
+  it('e dá para devolvê-la à gaveta', () => {
+    // Desmarcar a caixa não servia: aquilo exclui da viagem, não desfaz a
+    // fixação — a linha continuaria aqui, com o nome errado.
+    const { onPin, onToggle } = montarViagem({ ranges: RANGES, items: [AMAO()] })
+    const linha = screen.getByText('[Cartão] Supermercados Alvora {Em 2/Jul}')
+      .closest('tr')
+    const seletor = within(linha).getByRole('combobox')
+
+    // A opção precisa EXISTIR, e valer string vazia: é ela que desfaz a
+    // fixação e devolve a linha para a gaveta. `fireEvent.change` com um valor
+    // qualquer chegaria em '' de qualquer jeito, então sem esta asserção o
+    // teste passaria com a opção apagada.
+    const vazia = within(seletor).getByRole('option', { name: /tirar da viagem/ })
+    expect(vazia).toHaveValue('')
+
+    fireEvent.change(seletor, { target: { value: '' } })
+    expect(onPin).toHaveBeenCalledWith('0:2', '')
+    expect(onToggle).not.toHaveBeenCalled()
   })
 })
 
@@ -3302,33 +3396,507 @@ describe('dica de viagem na aba Novos', () => {
   })
 })
 
-describe('periodoDe — o desempate é o mesmo do backend', () => {
-  it('períodos sobrepostos: vence o PRIMEIRO da lista', () => {
-    // `core/travel.py::range_of` faz exatamente isto. Desempatar diferente
-    // aqui mostraria na tela um nome de viagem que o arquivo não vai levar —
-    // e ninguém saberia qual das duas telas está certa.
-    const ranges = [
-      { inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'Gramado' },
-      { inicio: '2026-07-05', fim: '2026-07-20', rotulo: 'Serra' },
-    ]
-    expect(periodoDe('2026-07-07', ranges).rotulo).toBe('Gramado')
-    expect(periodoDe('2026-07-15', ranges).rotulo).toBe('Serra')
-    expect(periodoDe('2026-08-01', ranges)).toBeNull()
-    expect(periodoDe('', ranges)).toBeNull()
+describe('viagens.js — só apresentação, a decisão é do backend', () => {
+  it('rotuloDoPeriodo: o nome, ou a janela quando não tem nome', () => {
+    expect(rotuloDoPeriodo({ inicio: '2026-07-01', fim: '2026-07-10',
+                             rotulo: 'Gramado' })).toBe('Gramado')
+    expect(rotuloDoPeriodo({ inicio: '2026-07-01', fim: '2026-07-10',
+                             rotulo: '' })).toBe('01/07/2026 → 10/07/2026')
+    expect(rotuloDoPeriodo(null)).toBe('')
   })
 
-  it('viagensPorLinha indexa por line_id com o mesmo desempate', () => {
-    const ranges = [
-      { inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'Gramado' },
-      { inicio: '2026-07-05', fim: '2026-07-20', rotulo: '' },
-    ]
+  it('chaveDoPeriodo é a JANELA — é por ela que a fixação aponta', () => {
+    // Pelo nome não daria: renomear a viagem soltaria as linhas dela, e dois
+    // períodos sem nome teriam a mesma chave. É a mesma identidade que a
+    // importação de CSV usa para não duplicar período.
+    expect(chaveDoPeriodo({ inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'X' }))
+      .toBe('2026-07-01|2026-07-10')
+    expect(chaveDoPeriodo({ inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'Y' }))
+      .toBe(chaveDoPeriodo({ inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'X' }))
+    expect(chaveDoPeriodo(null)).toBe('')
+  })
+
+  it('viagensPorLinha indexa pelo período que o backend resolveu', () => {
     const mapa = viagensPorLinha([
-      { line_id: '0:1', purchase_date: '2026-07-07' },
-      { line_id: '0:2', purchase_date: '2026-07-15' },
-      { line_id: '0:3', purchase_date: '2026-09-01' },
-    ], ranges)
+      { line_id: '0:1', viagem_periodo: { inicio: '2026-07-01', fim: '2026-07-10',
+                                          rotulo: 'Gramado' } },
+      { line_id: '0:2', viagem_periodo: { inicio: '2026-07-05', fim: '2026-07-20',
+                                          rotulo: '' } },
+      { line_id: '0:3', viagem_periodo: null },
+    ])
     expect(mapa.get('0:1')).toBe('Gramado')
-    expect(mapa.get('0:2')).toBe('05/07 → 20/07')
+    expect(mapa.get('0:2')).toBe('05/07/2026 → 20/07/2026')
     expect(mapa.has('0:3')).toBe(false)
+  })
+})
+
+describe('pendurar uma compra antecipada na viagem', () => {
+  const PERU = { inicio: '2026-10-18', fim: '2026-10-26', rotulo: 'Peru' }
+  const FERIADO = { inicio: '2026-08-10', fim: '2026-08-20', rotulo: '' }
+
+  const fora = (n, desc, valor, data) => ({
+    line_id: `1:${n}`, purchase_date: data, valor, categoria: 'Transporte',
+    merchant: desc.toUpperCase(), descricao: desc, viagem: false,
+    viagem_periodo: null, viagem_a_mao: false,
+  })
+  // Chegam do backend já ordenados pelo maior valor.
+  const OUTROS = [
+    fora(1, '[Cartão] Ce Peru Rail 1 {Em 14/Aug}', 3200.69, '2026-08-14'),
+    fora(2, '[Cartão] Latam Passagem Lim {Em 28/Jul}', 900.00, '2026-07-28'),
+    ...Array.from({ length: 12 }, (_, i) =>
+      fora(10 + i, `[Cartão] Miudeza ${i} {Em 1/Jul}`, 12 - i, '2026-07-01')),
+  ]
+
+  const abrir = async (props) => {
+    const r = montarViagem({ ranges: [PERU], outros: OUTROS, ...props })
+    await userEvent.click(screen.getByText(/Comprou algo para a viagem antes dela/))
+    return r
+  }
+
+  it('a gaveta começa fechada — a tabela de cima é o que importa', () => {
+    // `open` e não visibilidade: o jsdom deixa o conteúdo de um `<details>`
+    // fechado no DOM (quem o esconde é o CSS do navegador), então procurar
+    // pelo texto passaria dizendo o contrário do que se quer.
+    const { container } = montarViagem({ ranges: [PERU], outros: OUTROS })
+    const gaveta = container.querySelector('details.pendurar')
+    expect(gaveta).not.toBeNull()
+    expect(gaveta.open).toBe(false)
+  })
+
+  it('sem período nenhum não há onde pendurar, e a gaveta some', () => {
+    montarViagem({ ranges: [], outros: OUTROS })
+    expect(screen.queryByText(/Comprou algo para a viagem antes dela/)).toBeNull()
+  })
+
+  it('abre mostrando as 10 maiores, não as 14', async () => {
+    await abrir()
+    expect(screen.getByText('[Cartão] Ce Peru Rail 1 {Em 14/Aug}')).toBeInTheDocument()
+    expect(screen.getByText(/as 10 maiores de 14/)).toBeInTheDocument()
+    // A menor de todas ficou de fora do corte inicial.
+    expect(screen.queryByText('[Cartão] Miudeza 11 {Em 1/Jul}')).toBeNull()
+  })
+
+  it('a busca varre o lote inteiro, não só as 10', async () => {
+    await abrir()
+    await userEvent.type(
+      screen.getByLabelText(/Procurar um lançamento/), 'miudeza 11')
+    expect(screen.getByText('[Cartão] Miudeza 11 {Em 1/Jul}')).toBeInTheDocument()
+    expect(screen.getByText(/1 de 14 lançamentos/)).toBeInTheDocument()
+  })
+
+  it('escolher a viagem manda line_id e a CHAVE do período', async () => {
+    // A chave é a janela: renomear "Peru" depois não solta esta linha.
+    const { onPin } = await abrir()
+    const linha = screen.getByText('[Cartão] Ce Peru Rail 1 {Em 14/Aug}').closest('tr')
+    await userEvent.selectOptions(within(linha).getByRole('combobox'),
+                                  '2026-10-18|2026-10-26')
+    expect(onPin).toHaveBeenCalledWith('1:1', '2026-10-18|2026-10-26')
+  })
+
+  it('"— nenhuma —" despendura', async () => {
+    const { onPin } = await abrir({ pinned: { '1:1': '2026-10-18|2026-10-26' } })
+    const linha = screen.getByText('[Cartão] Ce Peru Rail 1 {Em 14/Aug}').closest('tr')
+    await userEvent.selectOptions(within(linha).getByRole('combobox'), '')
+    expect(onPin).toHaveBeenCalledWith('1:1', '')
+  })
+
+  it('período sem nome aparece pela janela no seletor', async () => {
+    await abrir({ ranges: [PERU, FERIADO] })
+    const linha = screen.getByText('[Cartão] Ce Peru Rail 1 {Em 14/Aug}').closest('tr')
+    const opcoes = [...within(linha).getByRole('combobox').options].map((o) => o.text)
+    expect(opcoes).toEqual(['— nenhuma —', 'Peru', '10/08/2026 → 20/08/2026'])
+  })
+
+  it('o contador do resumo conta as penduradas', async () => {
+    montarViagem({
+      ranges: [PERU], outros: OUTROS,
+      items: [{ ...VIAGEM_ITENS[0], viagem_periodo: PERU, viagem_a_mao: true }],
+    })
+    expect(screen.getByText(/Comprou algo para a viagem antes dela/)
+      .querySelector('.badge').textContent).toBe('1')
+  })
+
+  it('busca sem resultado diz isso em vez de tabela vazia', async () => {
+    await abrir()
+    await userEvent.type(screen.getByLabelText(/Procurar um lançamento/), 'zzzz')
+    expect(screen.getByText(/Nada com esse texto neste lote/)).toBeInTheDocument()
+  })
+})
+
+describe('api.travel — o corpo que sobe de verdade', () => {
+  it('leva os períodos E o mapa de fixações', async () => {
+    // O teste do App confere os ARGUMENTOS com o módulo mockado; este confere
+    // o JSON. Sem ele, `travel` podia aceitar `pinned` e não mandar, e as duas
+    // pontas continuariam verdes enquanto o backend não recebia nada.
+    // Outros blocos deste arquivo mockam `../api` inteiro; aqui o alvo é o
+    // módulo de verdade, então o mock precisa sair da frente.
+    vi.doUnmock('../api')
+    vi.resetModules()
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ ranges: [], items: [], outros: [], pinned: {} }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const api = await import('../api')
+
+    await api.travel('tx-9', [{ inicio: '2026-10-18', fim: '2026-10-26', rotulo: 'Peru' }],
+                     { '1:1': '2026-10-18|2026-10-26' })
+
+    const [url, opcoes] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/travel')
+    expect(JSON.parse(opcoes.body)).toEqual({
+      transaction_id: 'tx-9',
+      ranges: [{ inicio: '2026-10-18', fim: '2026-10-26', rotulo: 'Peru' }],
+      pinned: { '1:1': '2026-10-18|2026-10-26' },
+    })
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('ano nas datas e ordem da tabela de confirmação', () => {
+  const CAMPO_BELO = { inicio: '2025-12-06', fim: '2025-12-07', rotulo: 'Campo Belo' }
+  const DALLAS = { inicio: '2025-12-13', fim: '2025-12-18', rotulo: 'Dallas' }
+
+  // A ordem em que o BACKEND entrega: `[data, categoria, data_compra]` do
+  // output.yml, que é a ordem do CSV — categoria antes da data.
+  const COMO_VEM = [
+    { line_id: '0:1', purchase_date: '2025-12-18', valor: 11.56, categoria: 'Imposto',
+      merchant: 'IOF', descricao: '[Cartão] Iof Compra Internacional {Em 18/Dec}',
+      viagem: true, viagem_periodo: DALLAS, viagem_a_mao: false },
+    { line_id: '0:2', purchase_date: '2025-12-18', valor: 73.47, categoria: 'Saúde',
+      merchant: 'NATUS', descricao: '[Cartão] Natus Farma Filial 1 {Em 18/Dec}',
+      viagem: true, viagem_periodo: DALLAS, viagem_a_mao: false },
+    { line_id: '0:3', purchase_date: '2025-12-06', valor: 301.48, categoria: 'Transporte',
+      merchant: 'POSTO', descricao: '[Cartão] Posto Santa Rita {Em 6/Dec}',
+      viagem: true, viagem_periodo: CAMPO_BELO, viagem_a_mao: false },
+    { line_id: '0:4', purchase_date: '2025-12-13', valor: 299.50, categoria: 'Transporte',
+      merchant: 'AIRPORTPARK', descricao: '[Cartão] Airportpark {Em 13/Dec}',
+      viagem: true, viagem_periodo: DALLAS, viagem_a_mao: false },
+  ]
+
+  const linhas = () => [...document.querySelectorAll('.grid.sticky tbody tr')]
+    .map((tr) => tr.querySelectorAll('td')[3].textContent)
+
+  it('agrupa por viagem e ordena pela data da compra dentro dela', () => {
+    // Como vem do backend, as linhas saem por CATEGORIA (Imposto, Saúde,
+    // Transporte) e a coluna "Qual viagem" pula Dallas → Campo Belo → Dallas.
+    // Aqui a pergunta é "o que entrou nesta viagem?".
+    montarViagem({ ranges: [CAMPO_BELO, DALLAS], items: COMO_VEM })
+    expect(linhas()).toEqual([
+      '[Cartão] Posto Santa Rita {Em 6/Dec}',        // Campo Belo, 06/12
+      '[Cartão] Airportpark {Em 13/Dec}',            // Dallas, 13/12
+      '[Cartão] Iof Compra Internacional {Em 18/Dec}',
+      '[Cartão] Natus Farma Filial 1 {Em 18/Dec}',   // 18/12, desempate alfabético
+    ])
+  })
+
+  it('a coluna Compra mostra o ano', () => {
+    // O `{Em 18/Dec}` da descrição não tem ano — é o formato da planilha. Num
+    // lote com o histórico inteiro, `18/12` não diz de qual dezembro.
+    montarViagem({ ranges: [DALLAS], items: [COMO_VEM[0]] })
+    expect(screen.getByText('18/12/2025')).toBeInTheDocument()
+  })
+
+  it('a ordem do CSV não é afetada — isto é ordenação de tela', () => {
+    // `items` chega pronto do backend e a tela não o muta; quem manda no
+    // arquivo é o /preview.
+    const copia = COMO_VEM.map((i) => i.line_id)
+    montarViagem({ ranges: [CAMPO_BELO, DALLAS], items: COMO_VEM })
+    expect(COMO_VEM.map((i) => i.line_id)).toEqual(copia)
+  })
+})
+
+describe('a gaveta mostra mais 10 por vez', () => {
+  const PERU = { inicio: '2026-10-18', fim: '2026-10-26', rotulo: 'Peru' }
+  const MUITOS = Array.from({ length: 25 }, (_, i) => ({
+    line_id: `1:${i}`, purchase_date: '2026-08-14', valor: 1000 - i,
+    categoria: 'Outros', merchant: `M${i}`, descricao: `[Cartão] Compra ${i}`,
+    viagem: false, viagem_periodo: null, viagem_a_mao: false,
+  }))
+
+  const abrir = async () => {
+    montarViagem({ ranges: [PERU], outros: MUITOS })
+    await userEvent.click(screen.getByText(/Comprou algo para a viagem antes dela/))
+  }
+
+  it('começa em 10 e diz quantas faltam', async () => {
+    await abrir()
+    expect(screen.getByText('[Cartão] Compra 9')).toBeInTheDocument()
+    expect(screen.queryByText('[Cartão] Compra 10')).toBeNull()
+    expect(screen.getByRole('button', { name: /Mostrar mais 10 · faltam 15/ }))
+      .toBeInTheDocument()
+  })
+
+  it('cada clique traz mais 10', async () => {
+    await abrir()
+    await userEvent.click(screen.getByRole('button', { name: /Mostrar mais/ }))
+    expect(screen.getByText('[Cartão] Compra 19')).toBeInTheDocument()
+    expect(screen.queryByText('[Cartão] Compra 20')).toBeNull()
+    expect(screen.getByRole('button', { name: /Mostrar mais 5 · faltam 5/ }))
+      .toBeInTheDocument()
+  })
+
+  it('no fim da lista o botão some', async () => {
+    await abrir()
+    await userEvent.click(screen.getByRole('button', { name: /Mostrar mais/ }))
+    await userEvent.click(screen.getByRole('button', { name: /Mostrar mais/ }))
+    expect(screen.getByText('[Cartão] Compra 24')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Mostrar mais/ })).toBeNull()
+  })
+
+  it('buscando, o botão não aparece — a busca já mostra tudo que casa', async () => {
+    // Paginar o resultado da busca esconderia justamente o que foi pedido
+    // pelo nome.
+    await abrir()
+    await userEvent.type(screen.getByLabelText(/Procurar um lançamento/), 'Compra 2')
+    expect(screen.queryByRole('button', { name: /Mostrar mais/ })).toBeNull()
+    expect(screen.getByText('[Cartão] Compra 24')).toBeInTheDocument()
+  })
+})
+
+describe('a viagem agrupa antes da data', () => {
+  const CAMPO_BELO = { inicio: '2025-12-06', fim: '2025-12-07', rotulo: 'Campo Belo' }
+  const DALLAS = { inicio: '2025-12-13', fim: '2025-12-18', rotulo: 'Dallas' }
+
+  it('a passagem de agosto fica com Dallas, não no topo da tabela', () => {
+    // O caso que distingue "agrupa por viagem" de "ordena por data": a
+    // passagem de Dallas foi comprada em AGOSTO e pendurada à mão. Por data
+    // pura ela abriria a tabela, longe das outras compras de Dallas — e a
+    // coluna "Qual viagem" voltaria a pular, que é o problema que a ordenação
+    // existe para resolver.
+    montarViagem({
+      ranges: [CAMPO_BELO, DALLAS],
+      items: [
+        { line_id: '0:1', purchase_date: '2025-12-06', valor: 301.48,
+          categoria: 'Transporte', merchant: 'POSTO', viagem: true,
+          descricao: '[Cartão] Posto Santa Rita {Em 6/Dec}',
+          viagem_periodo: CAMPO_BELO, viagem_a_mao: false },
+        { line_id: '0:2', purchase_date: '2025-08-14', valor: 4320.59,
+          categoria: 'Transporte', merchant: 'AA', viagem: true,
+          descricao: '[Cartão] American Air {Em 14/Aug}',
+          viagem_periodo: DALLAS, viagem_a_mao: true },
+        { line_id: '0:3', purchase_date: '2025-12-13', valor: 299.50,
+          categoria: 'Transporte', merchant: 'AIRPORTPARK', viagem: true,
+          descricao: '[Cartão] Airportpark {Em 13/Dec}',
+          viagem_periodo: DALLAS, viagem_a_mao: false },
+      ],
+    })
+    const descricoes = [...document.querySelectorAll('.grid.sticky tbody tr')]
+      .map((tr) => tr.querySelectorAll('td')[3].textContent)
+    expect(descricoes).toEqual([
+      '[Cartão] Posto Santa Rita {Em 6/Dec}',   // Campo Belo abre: viagem mais antiga
+      '[Cartão] American Air {Em 14/Aug}',      // Dallas, e dentro dela a mais antiga
+      '[Cartão] Airportpark {Em 13/Dec}',
+    ])
+  })
+})
+
+describe('a lista de períodos mostra o ano', () => {
+  it('15/12/2018 → 16/12/2018, não 15/12 → 16/12', async () => {
+    // São 57 viagens entre 2018 e 2026 na lista dele. Sem o ano, "Sorocaba
+    // 15/12 → 16/12" não diz qual Sorocaba é — e passa a impressão de que o
+    // ano se perdeu no caminho, o que nunca aconteceu: a comparação é ISO.
+    const { default: TravelRanges } = await import('../components/TravelRanges')
+    render(<TravelRanges ranges={[{ inicio: '2018-12-15', fim: '2018-12-16',
+                                    rotulo: 'Sorocaba' }]} onChange={vi.fn()} />)
+    expect(screen.getByText('15/12/2018 → 16/12/2018')).toBeInTheDocument()
+  })
+})
+
+// ------------------------------------------- filtro por titular (conta conjunta)
+
+describe('titulares.js', () => {
+  it('passaLinha: TODOS passa tudo; um nome passa só o dele', () => {
+    expect(passaLinha(TODOS, 'Rhyesla')).toBe(true)
+    expect(passaLinha(TODOS, '')).toBe(true)
+    expect(passaLinha('Rhyesla', 'Rhyesla')).toBe(true)
+    expect(passaLinha('Rhyesla', '')).toBe(false)
+    // `''` é o balde de quem não tem marca — eu. Não é "todos".
+    expect(passaLinha('', '')).toBe(true)
+    expect(passaLinha('', 'Rhyesla')).toBe(false)
+  })
+
+  it('passaGrupo: basta UMA linha da pessoa', () => {
+    // A decisão de um estabelecimento vale para todas as linhas dele, então
+    // escondê-lo de mim porque ela também comprou lá esconderia uma decisão
+    // que é minha também.
+    expect(passaGrupo('Rhyesla', ['', 'Rhyesla'])).toBe(true)
+    expect(passaGrupo('', ['', 'Rhyesla'])).toBe(true)
+    expect(passaGrupo('Rhyesla', [''])).toBe(false)
+    expect(passaGrupo(TODOS, [])).toBe(true)
+  })
+
+  it('opcoesDeTitular: cartão de uma pessoa só não oferece filtro', () => {
+    expect(opcoesDeTitular([''])).toEqual([])
+    expect(opcoesDeTitular(['Rhyesla', 'Rhyesla'])).toEqual([])
+  })
+
+  it('opcoesDeTitular: o balde sem marca leva o nome que eu escolhi', () => {
+    expect(opcoesDeTitular(['', 'Rhyesla'], 'Leonardo S Castilho')).toEqual([
+      { valor: '', rotulo: 'Leonardo S Castilho' },
+      { valor: 'Rhyesla', rotulo: 'Rhyesla' },
+    ])
+    // Sem o nome (recategorização, por exemplo) ainda precisa de um rótulo.
+    expect(opcoesDeTitular(['', 'Rhyesla'])[0]).toEqual(
+      { valor: '', rotulo: 'Sem marca' })
+  })
+})
+
+describe('o filtro por titular nas telas de revisão', () => {
+  const CATS = ['Casa', 'Outros']
+  const GRUPOS = [
+    { merchant: 'SO MINHA', categoria: '', count: 1, total: 10, samples: ['[Cartão] So Minha'],
+      line_ids: ['0:1'], titulares: [''], matched: null },
+    { merchant: 'SO DELA', categoria: '', count: 1, total: 20, samples: ['[Cartão] So Dela <Rhyesla>'],
+      line_ids: ['0:2'], titulares: ['Rhyesla'], matched: null },
+    { merchant: 'DOS DOIS', categoria: '', count: 2, total: 30, samples: ['[Cartão] Dos Dois'],
+      line_ids: ['0:3', '0:4'], titulares: ['', 'Rhyesla'], matched: null },
+  ]
+
+  const comFiltro = (filtro, ui) => render(
+    <TitularFiltro.Provider value={filtro}>
+      <CategoriasFixas.Provider value={[]}>{ui}</CategoriasFixas.Provider>
+    </TitularFiltro.Provider>)
+
+  const novos = (filtro) => comFiltro(filtro, <UnmappedStep
+    session={{ unmapped_items: GRUPOS, transaction_id: 't' }} categories={CATS}
+    getAssignment={() => null} setAssignment={vi.fn()} setManyAssignments={vi.fn()}
+    onCategoriesChanged={vi.fn()} onNext={vi.fn()} onError={vi.fn()} />)
+
+  it('Todos mostra tudo', () => {
+    novos(TODOS)
+    expect(screen.getByText('SO MINHA')).toBeInTheDocument()
+    expect(screen.getByText('SO DELA')).toBeInTheDocument()
+    expect(screen.getByText('DOS DOIS')).toBeInTheDocument()
+  })
+
+  it('escolher uma pessoa esconde o que não é dela', () => {
+    novos('Rhyesla')
+    expect(screen.queryByText('SO MINHA')).toBeNull()
+    expect(screen.getByText('SO DELA')).toBeInTheDocument()
+    // O compartilhado fica: a decisão dele vale para as linhas dela também.
+    expect(screen.getByText('DOS DOIS')).toBeInTheDocument()
+  })
+
+  it('o balde sem marca é um filtro como outro qualquer', () => {
+    novos('')
+    expect(screen.getByText('SO MINHA')).toBeInTheDocument()
+    expect(screen.queryByText('SO DELA')).toBeNull()
+    expect(screen.getByText('DOS DOIS')).toBeInTheDocument()
+  })
+
+  it('o lote NÃO enxerga só metade: o filtro é da tabela, não da decisão', () => {
+    // Este é o teste que separa "visual" de "funcional". Filtrando por ela e
+    // clicando em "Continuar e aplicar Outros", os MEUS estabelecimentos
+    // precisam receber Outros do mesmo jeito — senão a tela deixa passar
+    // estabelecimento em branco, que é exatamente o que ela promete não fazer.
+    const setManyAssignments = vi.fn()
+    comFiltro('Rhyesla', <UnmappedStep
+      session={{ unmapped_items: GRUPOS, transaction_id: 't' }} categories={CATS}
+      getAssignment={() => null} setAssignment={vi.fn()}
+      setManyAssignments={setManyAssignments} onCategoriesChanged={vi.fn()}
+      onNext={vi.fn()} onError={vi.fn()} />)
+
+    // O botão conta os TRÊS, não os dois visíveis.
+    const botao = screen.getByRole('button', { name: /Continuar e aplicar/ })
+    expect(botao).toHaveTextContent('em 3')
+
+    fireEvent.click(botao)
+    expect(setManyAssignments).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ target: 'SO MINHA' }),
+        expect.objectContaining({ target: 'SO DELA' }),
+        expect.objectContaining({ target: 'DOS DOIS' }),
+      ]))
+    expect(setManyAssignments.mock.calls[0][0]).toHaveLength(3)
+  })
+
+  it('Revisão filtra igual a Novos — as duas listam estabelecimento', () => {
+    comFiltro('Rhyesla', <AutoReviewStep
+      session={{ auto_classified_items: GRUPOS.map(
+        (g) => ({ ...g, categoria: 'Casa', matched: 'X' })) }}
+      categories={CATS} getAssignment={() => null} setAssignment={vi.fn()}
+      onNext={vi.fn()} />)
+    expect(screen.queryByText('SO MINHA')).toBeNull()
+    expect(screen.getByText('SO DELA')).toBeInTheDocument()
+    expect(screen.getByText('DOS DOIS')).toBeInTheDocument()
+  })
+
+  it('Conferir e exportar filtra a tabela sem tirar nada do CSV', async () => {
+    // Aqui a distinção fica mais visível do que nas outras telas: o contador
+    // "Linhas" continua sendo o arquivo INTEIRO, porque é ele que vai ser
+    // exportado. Esconder linhas da conferência não tira nada do download.
+    vi.resetModules()
+    vi.doMock('../api', () => ({
+      preview: vi.fn().mockResolvedValue({
+        rows: [
+          { line_id: '0:1', data: '07/10/2026', categoria: 'Casa', categoria_anterior: null,
+            descricao: '[Cartão] Minha Compra', valor: 10, pago: 'x', titular: '' },
+          { line_id: '0:2', data: '07/10/2026', categoria: 'Casa', categoria_anterior: null,
+            descricao: '[Cartão] Compra Dela <Rhyesla>', valor: 20, pago: 'x',
+            titular: 'Rhyesla' },
+        ],
+        total: 30, by_category: { Casa: 30 }, remaining_blank: 0, filename: 's.csv',
+      }),
+      exportCsv: vi.fn(),
+    }))
+    const { default: Final } = await import('../components/FinalReview')
+    // O contexto vem do módulo RECÉM-CARREGADO: `vi.resetModules()` cria um
+    // `createContext` novo, e o provedor importado no topo deste arquivo seria
+    // outro objeto — o componente leria o padrão e o filtro não valeria.
+    const { TitularFiltro: Contexto } = await import('../titulares')
+    render(
+      <Contexto.Provider value="Rhyesla">
+        <Final session={{ transaction_id: 't', modo: 'fatura', statements: [] }}
+               assignmentList={[]} onError={vi.fn()} />
+      </Contexto.Provider>)
+    await screen.findByText('[Cartão] Compra Dela <Rhyesla>')
+    expect(screen.queryByText('[Cartão] Minha Compra')).toBeNull()
+    // As duas linhas continuam no arquivo.
+    expect(screen.getByText('Linhas').nextSibling).toHaveTextContent('2')
+  })
+
+  it('Marketplace filtra por LINHA, não por grupo', () => {
+    comFiltro('Rhyesla', <MarketplaceStep
+      session={{ marketplace_items: [
+        { line_id: '0:1', descricao: '[Cartão] Amazon A', valor: 10, merchant: 'AMAZON',
+          categoria: '', titular: '' },
+        { line_id: '0:2', descricao: '[Cartão] Amazon B <Rhyesla>', valor: 20,
+          merchant: 'AMAZON', categoria: '', titular: 'Rhyesla' },
+      ] }} categories={CATS} getAssignment={() => null} setAssignment={vi.fn()}
+      setManyAssignments={vi.fn()} onNext={vi.fn()} />)
+    expect(screen.queryByText('[Cartão] Amazon A')).toBeNull()
+    expect(screen.getByText('[Cartão] Amazon B <Rhyesla>')).toBeInTheDocument()
+  })
+
+  it('Viagem filtra as duas listas dela', async () => {
+    const PERU = { inicio: '2026-10-18', fim: '2026-10-26', rotulo: 'Peru' }
+    comFiltro('Rhyesla', <TravelStep
+      session={{ purchase_range: null }} categories={CATS} ranges={[PERU]}
+      items={[
+        { line_id: '0:1', purchase_date: '2026-10-20', valor: 10, categoria: 'Outros',
+          merchant: 'A', descricao: '[Cartão] Minha Compra', viagem: true,
+          viagem_periodo: PERU, viagem_a_mao: false, titular: '' },
+        { line_id: '0:2', purchase_date: '2026-10-21', valor: 20, categoria: 'Outros',
+          merchant: 'B', descricao: '[Cartão] Compra Dela <Rhyesla>', viagem: true,
+          viagem_periodo: PERU, viagem_a_mao: false, titular: 'Rhyesla' },
+      ]}
+      outros={[
+        { line_id: '0:3', purchase_date: '2026-08-01', valor: 30, categoria: 'Outros',
+          merchant: 'C', descricao: '[Cartão] Antecipada Minha', viagem: false,
+          viagem_periodo: null, viagem_a_mao: false, titular: '' },
+        { line_id: '0:4', purchase_date: '2026-08-02', valor: 40, categoria: 'Outros',
+          merchant: 'D', descricao: '[Cartão] Antecipada Dela <Rhyesla>', viagem: false,
+          viagem_periodo: null, viagem_a_mao: false, titular: 'Rhyesla' },
+      ]}
+      warnings={[]} rejected={new Set()} pinned={{}} onPin={vi.fn()}
+      onRangesChange={vi.fn()} getAssignment={() => null} setAssignment={vi.fn()}
+      onToggle={vi.fn()} onNext={vi.fn()} busy={false} />)
+
+    expect(screen.queryByText('[Cartão] Minha Compra')).toBeNull()
+    expect(screen.getByText('[Cartão] Compra Dela <Rhyesla>')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByText(/Comprou algo para a viagem antes dela/))
+    expect(screen.queryByText('[Cartão] Antecipada Minha')).toBeNull()
+    expect(screen.getByText('[Cartão] Antecipada Dela <Rhyesla>')).toBeInTheDocument()
   })
 })

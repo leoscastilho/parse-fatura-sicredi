@@ -1,14 +1,8 @@
 import { useRef, useState } from 'react'
 import { juntarPeriodos, lerPeriodosCsv, textoDoArquivo } from '../travelCsv'
+import { dataCurta } from '../viagens'
 
-const diaMes = (iso) => {
-  const [, m, d] = (iso || '').split('-')
-  return d ? `${d}/${m}` : iso
-}
-const porExtenso = (iso) => {
-  const [a, m, d] = (iso || '').split('-')
-  return d ? `${d}/${m}/${a}` : iso
-}
+const porExtenso = dataCurta
 
 /**
  * Editor de períodos de viagem — o mesmo nas duas telas onde aparece.
@@ -176,7 +170,9 @@ export default function TravelRanges({
           {ranges.map((r, i) => (
             <li key={`${r.inicio}-${r.fim}-${i}`}>
               <span>
-                <strong>{diaMes(r.inicio)} → {diaMes(r.fim)}</strong>
+                {/* Com o ano: são 57 viagens entre 2018 e 2026 nesta
+                    lista, e `15/12 → 16/12` não diz qual Sorocaba é. */}
+                <strong>{dataCurta(r.inicio)} → {dataCurta(r.fim)}</strong>
                 {r.rotulo && <span className="muted"> · {r.rotulo}</span>}
               </span>
               <button className="link" onClick={() => remover(i)} disabled={busy}>

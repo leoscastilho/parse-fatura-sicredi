@@ -233,8 +233,12 @@ export default function UploadStep({
       )}
 
       <button className="primary" disabled={!pronto || busy}
+              // `eu` vai junto e NÃO para o backend: o servidor só precisa
+              // saber quem leva marca, e quem sou eu é justamente quem não
+              // leva. Quem quer o nome é o filtro das telas seguintes, para
+              // dizer "Leonardo" em vez de "Sem marca".
               onClick={() => onUpload(files, vencimento,
-                                      formTitulares(titulares, eu, apelidos))}>
+                                      formTitulares(titulares, eu, apelidos), eu)}>
         {busy ? 'Processando…' : 'Processar'}
       </button>
     </section>

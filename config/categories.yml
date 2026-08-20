@@ -261,6 +261,10 @@ palavras:
     - BURGUER
     - OGREFF
     - LANCHONETE
+    - COSTELA NO BAFO
+    - EMPORIUM DO PASTEL
+    - CASA DE FRUTAS STA R
+    - SUPERMERCA MARISTELA
 
   Lazer:
     # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
@@ -298,6 +302,7 @@ palavras:
     - FAIR PLAY
     - OGGI
     - THE TOWN BAR
+    - SANTA RITA COUNTRY
 
   # VIAGEM NÃO TEM PALAVRA-CHAVE, e isso é decisão, não esquecimento.
   #
@@ -359,6 +364,7 @@ palavras:
     - LAVA JATO
     - CONSORSIO
     - CONSORCIO
+    - CE PERU RAIL
 
   Saúde:
     # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
@@ -379,6 +385,8 @@ palavras:
     - PLANO DE SAUDE
     - POUSOTICA
     - CLINICA
+    - METHODOS
+    - DROGA LUNA
 
   Vestuário:
     # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
@@ -415,6 +423,7 @@ palavras:
     - ESCRITORIO
     - TOKDCOR
     - MONTREAL POUSO
+    - IRENE TECIDOS
 
   Construção:
     # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
@@ -507,6 +516,9 @@ palavras:
 #    As sub-lojas identificáveis ficam em `regras` lá em cima e ganham destas
 #    aqui — MERCADOLIVRE LIVROS vira Educação, MERCADOLIVRE GROW vira Hobby.
 # -----------------------------------------------------------------------------
+
+  Viagem:
+    - TAXA VISTO
 marketplaces:
   - AMAZON
   - AMAZONMKTPLC

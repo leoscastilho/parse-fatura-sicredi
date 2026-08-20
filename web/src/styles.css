@@ -237,6 +237,23 @@ input.keyword { width: 100%; max-width: 220px; margin-top: 5px; font-size: 13px;
    tem. Cor da marca para separar as duas sem virar alerta — não há nada de
    errado com a linha, e a etapa Viagem é quem confirma. */
 .samples.viagem-dica { color: var(--verde-escuro); }
+
+/* A linha pendurada na viagem à mão. Tarja, e não cor de alerta: não há nada
+   de errado com ela — só não foi a data que a colocou ali, e essa diferença
+   importa quando o usuário volta para conferir por que a passagem de agosto
+   está numa viagem de outubro. A etiqueta "à mão" que existia aqui saiu junto
+   com a célula de texto: hoje a viagem dessa linha é um seletor, e um controle
+   aberto no meio de uma coluna de texto já diz que alguém escolheu. */
+tr.amao td:first-child { box-shadow: inset 3px 0 0 var(--amarelo); }
+details.pendurar {
+  border: 1px dashed var(--border); border-radius: 10px;
+  padding: 10px 14px; margin-top: 16px; background: var(--surface-2);
+}
+details.pendurar > summary {
+  cursor: pointer; font-size: 14px; font-weight: 600; color: var(--verde-escuro);
+}
+/* Sem isto o contador cola no ponto de interrogação: "antes dela?1". */
+details.pendurar > summary .badge { margin-left: 8px; }
 .rule { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
 
 .scroll { max-height: 58vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; margin-top: 14px; }
@@ -285,7 +302,10 @@ a { color: var(--verde-escuro); }
   margin-bottom: 14px; padding: 10px 14px;
   background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
 }
-.session-bar .ghost { margin-left: auto; }
+/* O filtro por titular encosta no "Começar de novo": o `auto` aqui empurra os
+   dois para a direita, e a margem do botão faz o respiro entre eles. */
+.titular-filtro { margin-left: auto; }
+.session-bar .ghost { margin-left: 12px; }
 
 /* A caixa de regex é visualmente separada de propósito: ela obedece a outra
    regra de decisão (primeira que casa vence, não trecho mais longo). */

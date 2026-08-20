@@ -30,11 +30,22 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from core import ClassifiedLine, LineState
+from core.text import titular_de
 
 
 # ---------------------------------------------------------------------------
 # Linha
 # ---------------------------------------------------------------------------
+
+# Aqui em cima, antes de `LineItem`, porque `LineItem.viagem_periodo` aponta
+# para ele: com a definição lá embaixo o Pydantic teria de resolver uma
+# referência adiante, que funciona por acidente e para de funcionar no dia em
+# que alguém importar o módulo de um jeito diferente.
+class TravelRangeItem(BaseModel):
+    inicio: str                 # AAAA-MM-DD
+    fim: str                    # AAAA-MM-DD
+    rotulo: str = ""
+
 
 class LineItem(BaseModel):
     line_id: str
@@ -56,10 +67,31 @@ class LineItem(BaseModel):
     # "03/05" da coluna Parcela — o que separa uma compra deste ciclo da data
     # original de uma parcela antiga.
     parcela: str | None = None
+    # QUAL viagem pegou esta linha, resolvido pelo backend.
+    #
+    # Vem daqui e não do front de propósito: a resposta depende de duas regras
+    # (a fixação à mão vence a data; períodos sobrepostos, vence o primeiro) e
+    # ter uma segunda implementação delas em JavaScript significaria uma tela
+    # dizendo "Peru" e o arquivo saindo "Ferroão", sem ninguém saber qual está
+    # certo. `null` = nenhum período pegou.
+    viagem_periodo: TravelRangeItem | None = None
+    # A linha foi pendurada nesta viagem À MÃO, apesar da data. O front usa
+    # para marcar a tarja e para oferecer o "tirar da viagem".
+    viagem_a_mao: bool = False
+    # Quem passou o cartão, extraído do ` <Rhyesla>` no fim da descrição.
+    # Vazio = sem marca, que é como saem as compras de quem se identificou como
+    # "eu" no upload. Vem do backend pelo mesmo motivo de `viagem_periodo`: a
+    # regra é uma só e mora num lugar só (`core.text.titular_de`).
+    titular: str = ""
 
     @classmethod
-    def from_core(cls, line: ClassifiedLine) -> "LineItem":
-        return cls(**line.to_dict())
+    def from_core(cls, line: ClassifiedLine, periodo=None,
+                  a_mao: bool = False) -> "LineItem":
+        return cls(**line.to_dict(),
+                   viagem_periodo=(TravelRangeItem(**periodo.to_dict())
+                                   if periodo is not None else None),
+                   viagem_a_mao=a_mao,
+                   titular=titular_de(line.descricao))
 
     def to_core(self) -> ClassifiedLine:
         return ClassifiedLine.from_dict(self.model_dump())
@@ -80,6 +112,12 @@ class MerchantGroup(BaseModel):
     line_ids: list[str]
     samples: list[str] = Field(default_factory=list)
     statements: list[str] = Field(default_factory=list)
+    # Quem passou o cartão nas linhas deste grupo, sem repetir, com `""` para
+    # as linhas sem marca. Um grupo pode ter mais de um: o mesmo mercado
+    # aparece nos dois cartões da conta conjunta. Por isso é lista — filtrar
+    # por pessoa MOSTRA o grupo se ela estiver nele, e não o esconde por causa
+    # das outras.
+    titulares: list[str] = Field(default_factory=list)
     matched: str | None = None
 
 
@@ -205,15 +243,13 @@ class PurchaseRangeResponse(BaseModel):
     eu_sugerido: str | None = None
 
 
-class TravelRangeItem(BaseModel):
-    inicio: str                 # AAAA-MM-DD
-    fim: str                    # AAAA-MM-DD
-    rotulo: str = ""
-
-
 class TravelRequest(BaseModel):
     transaction_id: str
     ranges: list[TravelRangeItem] = Field(default_factory=list)
+    # `line_id -> chave do período` (`AAAA-MM-DD|AAAA-MM-DD`). Substitutivo,
+    # como `ranges`: o mapa enviado VIRA o mapa guardado, então despendurar uma
+    # linha é mandar o mapa sem ela.
+    pinned: dict[str, str] = Field(default_factory=dict)
 
 
 class TravelResponse(BaseModel):
@@ -224,6 +260,11 @@ class TravelResponse(BaseModel):
     # nada. Quem decide se isso é engano é o usuário.
     warnings: list[str] = Field(default_factory=list)
     items: list[LineItem] = Field(default_factory=list)
+    # Todo o resto do lote, para a gaveta "comprou algo antes da viagem?".
+    # Ordenado pelo valor absoluto: passagem e hospedagem são caras e aparecem
+    # antes de o usuário digitar qualquer coisa.
+    outros: list[LineItem] = Field(default_factory=list)
+    pinned: dict[str, str] = Field(default_factory=dict)
     count: int = 0
     total: float = 0.0
 

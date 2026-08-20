@@ -122,3 +122,27 @@ def sort_key_category(categoria: str) -> tuple[int, str]:
 def format_purchase_suffix(purchase_date: date) -> str:
     """`{Em 15/Jul}` — sempre em inglês, independente do locale."""
     return f"{{Em {purchase_date.day}/{MONTH_ABBR[purchase_date.month - 1]}}}"
+
+
+# " <Rhyesla>" no FIM da descrição — a marca de quem passou o cartão numa conta
+# conjunta, posta na importação por `pipeline.build_description`.
+#
+# Ancorado no fim de propósito: um `<` no meio do nome de um estabelecimento não
+# é marca de titular, e sem a âncora "[Cartão] Loja <3 {Em 3/Jan}" viraria um
+# titular chamado "3".
+#
+# Mora aqui, e não em `analytics`, porque três lugares perguntam a mesma coisa:
+# a aba de Análise (para filtrar por pessoa), as telas de revisão (idem) e
+# qualquer coisa que venha depois. Duas cópias deste padrão divergiriam no dia
+# em que uma delas aceitasse espaço antes do `<`.
+TITULAR_RE = re.compile(r"<([^<>]+)>\s*$")
+
+
+def titular_de(descricao: str) -> str:
+    """Quem passou o cartão, ou "" quando a linha não tem marca.
+
+    Vazio quer dizer "sem marca": as compras de quem se identificou como "eu"
+    no upload, e todo o histórico anterior a este recurso existir.
+    """
+    achado = TITULAR_RE.search(descricao or "")
+    return achado.group(1).strip() if achado else ""

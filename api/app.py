@@ -41,7 +41,7 @@ from core.travel import (
     range_of,
     validate_ranges,
 )
-from core.text import compact, normalize
+from core.text import compact, normalize, titular_de
 from core.yaml_edit import (
     YamlEditError, add_category, add_keyword, add_to_list,
     list_entries, move_entry, remove_entry, set_comment,
@@ -154,7 +154,20 @@ def _lines_of(record: dict) -> list[ClassifiedLine]:
     """
     lines = [ClassifiedLine.from_dict(payload) for payload in record["lines"]]
     ranges = _ranges_of(record)
-    return mark_travel(lines, ranges) if ranges else lines
+    fixadas = _fixadas_de(record)
+    return mark_travel(lines, ranges, fixadas) if ranges else lines
+
+
+def _fixadas_de(record: dict) -> dict[str, str]:
+    """`line_id -> chave do período` das linhas penduradas à mão.
+
+    Devolve o que está gravado, sem filtrar. A poda contra os períodos vivos
+    acontece uma vez só, no /travel, ANTES de gravar — e repeti-la aqui seria
+    código que nenhum teste consegue distinguir da sua ausência, porque não
+    existe caminho que grave uma fixação órfã. Quem quiser mudar isso muda o
+    /travel, não os dois lugares.
+    """
+    return dict(record.get("travel_pinned") or {})
 
 
 def _ranges_of(record: dict) -> list[TravelRange]:
@@ -185,6 +198,15 @@ def _group_by_merchant(lines: list[ClassifiedLine]) -> list[MerchantGroup]:
             line_ids=[i.line_id for i in items],
             samples=[i.descricao for i in items[:3]],
             statements=sorted({i.statement for i in items}),
+            # Do grupo INTEIRO, não das três amostras: o filtro por pessoa
+            # esconderia o estabelecimento em que ela só aparece a partir da
+            # quarta linha.
+            #
+            # A string vazia FICA na lista, e é ela que representa "sem marca"
+            # — as compras de quem se identificou como "eu" no upload. Um grupo
+            # com três linhas da Rhyesla e duas minhas precisa aparecer nos dois
+            # filtros, e tirar o vazio daqui o esconderia do meu.
+            titulares=sorted({titular_de(i.descricao) for i in items}),
             matched=items[0].matched,
         )
         for (merchant, categoria), items in buckets.items()
@@ -253,6 +275,7 @@ def _apply_travel(
     lines: list[ClassifiedLine], rejected: list[str] | set[str],
     ranges: list[TravelRange] | None = None,
     conhecidas: list[str] | None = None,
+    fixadas: dict[str, str] | None = None,
 ) -> list[ClassifiedLine]:
     """Converte em `Viagem` as linhas confirmadas, guardando a categoria real.
 
@@ -273,7 +296,7 @@ def _apply_travel(
         if not line.viagem or line.line_id in rejeitadas:
             saida.append(line)
             continue
-        periodo = range_of(line, periodos)
+        periodo = range_of(line, periodos, fixadas)
         categoria, descricao = apply_travel(
             line, line.categoria, periodo.rotulo if periodo else "",
             conhecidas or [])
@@ -791,8 +814,17 @@ def travel(payload: TravelRequest, store: Store = Depends(get_store)) -> TravelR
 
     store.save_travel(payload.transaction_id, [r.to_dict() for r in ranges])
 
+    # As fixações só valem para períodos que ainda existem. Apagar a viagem
+    # apaga as linhas penduradas nela — e como a chave é a JANELA, mudar as
+    # datas de um período também solta o que estava pendurado ali: a viagem
+    # 18/10–26/10 não é a mesma coisa que 18/10–30/10.
+    vivos = {r.chave for r in ranges}
+    fixadas = {lid: chave for lid, chave in (payload.pinned or {}).items()
+               if chave in vivos}
+    store.save_travel_pinned(payload.transaction_id, fixadas)
+
     cru = [ClassifiedLine.from_dict(p) for p in record["lines"]]
-    marcadas = mark_travel(cru, ranges)
+    marcadas = mark_travel(cru, ranges, fixadas)
     candidatas = [l for l in marcadas if l.viagem]
 
     # Períodos novos podem ter deixado de pegar linhas que o usuário já havia
@@ -801,12 +833,25 @@ def travel(payload: TravelRequest, store: Store = Depends(get_store)) -> TravelR
     rejeitadas = [i for i in (record.get("travel_rejected") or []) if i in vivas]
     store.save_travel_rejected(payload.transaction_id, rejeitadas)
 
+    def item(linha: ClassifiedLine) -> LineItem:
+        return LineItem.from_core(
+            linha, periodo=range_of(linha, ranges, fixadas),
+            a_mao=linha.line_id in fixadas)
+
+    # O resto do lote vai junto para alimentar a gaveta "comprou algo antes da
+    # viagem?". Do maior para o menor em módulo: passagem e hospedagem são as
+    # compras caras, e aparecem antes de o usuário digitar qualquer coisa.
+    outros = sorted((l for l in marcadas if not l.viagem),
+                    key=lambda l: -abs(l.valor))
+
     return TravelResponse(
         transaction_id=payload.transaction_id,
         ranges=[TravelRangeItem(**r.to_dict()) for r in ranges],
         purchase_range=_purchase_range(cru),
         warnings=validate_ranges(ranges, cru),
-        items=[LineItem.from_core(l) for l in sort_lines(candidatas)],
+        items=[item(l) for l in sort_lines(candidatas)],
+        outros=[item(l) for l in outros],
+        pinned=fixadas,
         count=len(candidatas),
         total=round(sum(l.valor for l in candidatas), 2),
     )
@@ -1023,7 +1068,7 @@ def preview(payload: PreviewRequest, store: Store = Depends(get_store)) -> Previ
     # A viagem entra por ÚLTIMO: a categoria que vai para o parêntese é a
     # final, já com marketplace e correções manuais resolvidos.
     resolvidas = _apply_travel(resolvidas, payload.travel_rejected, _ranges_of(record),
-                               _conhecidas_para_marca(record))
+                               _conhecidas_para_marca(record), _fixadas_de(record))
     # Recategorização não reordena: o compromisso é que só a coluna Categoria
     # e as marcas de viagem mudem em relação ao arquivo de entrada.
     resolved = (resolvidas if record["modo"] == "recategorizacao"
@@ -1067,7 +1112,7 @@ def export(
     )
     resolved = _apply_travel(
         _apply_assignments(_lines_of(record), assignments), rejected,
-        _ranges_of(record), _conhecidas_para_marca(record))
+        _ranges_of(record), _conhecidas_para_marca(record), _fixadas_de(record))
     cfg = load_config(settings)
     blob = (lines_to_csv_preserving_order(resolved, schema=cfg.output,
                                           encoding=payload.encoding)
