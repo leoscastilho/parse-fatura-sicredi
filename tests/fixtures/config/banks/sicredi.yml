@@ -22,38 +22,93 @@ tema:
   inicial: S
 
 leitura:
-  # `excel_secoes`: planilha em que os lançamentos vivem em blocos, cada um
-  # com sua linha de cabeçalho e um "Valor Total" fechando.  É o caso do
-  # Sicredi, que separa Despesas no Brasil de Despesas Internacionais.
-  estrategia: excel_secoes
-  extensoes: [".xls", ".xlsx"]
-  planilha: 0
+  # DOIS FORMATOS, e o portal escolhe pela extensão do arquivo — nunca pergunta.
+  # O site baixa uma planilha `.xls` em seções; o aplicativo manda um `.csv` com
+  # preâmbulo de rótulos. São o mesmo cartão e a mesma fatura, então quem solta
+  # o arquivo na tela não deveria precisar saber qual dos dois tem na mão.
+  #
+  # A lista de extensões que a tela anuncia é a UNIÃO destas — acrescentar um
+  # formato aqui basta para o resto seguir.
+  formatos:
 
-  vencimento:
-    rotulo: "Data de Vencimento"
-    formato: "%d/%m/%Y"
+    # ---------------------------------------------------------------- site
+    # `excel_secoes`: planilha em que os lançamentos vivem em blocos, cada um
+    # com sua linha de cabeçalho e um "Valor Total" fechando.  É o caso do
+    # Sicredi, que separa Despesas no Brasil de Despesas Internacionais.
+    - id: site
+      estrategia: excel_secoes
+      extensoes: [".xls", ".xlsx"]
+      planilha: 0
 
-  # Uma seção começa numa linha cujas duas primeiras células são estas.
-  cabecalho:
-    data: Data
-    descricao: Descrição
-    parcela: Parcela
-    valor: "Valor (R$)"
+      vencimento:
+        rotulo: "Data de Vencimento"
+        formato: "%d/%m/%Y"
 
-  # A seção internacional tem uma coluna a mais (US$); o valor em reais
-  # continua sendo o último. Sem isto, essas linhas somem do CSV.
-  internacional:
-    marcador: "US$"
+      # Uma seção começa numa linha cujas duas primeiras células são estas.
+      cabecalho:
+        data: Data
+        descricao: Descrição
+        parcela: Parcela
+        valor: "Valor (R$)"
 
-  fim_secao: "Valor Total"
+      # A seção internacional tem uma coluna a mais (US$); o valor em reais
+      # continua sendo o último. Sem isto, essas linhas somem do CSV.
+      internacional:
+        marcador: "US$"
 
-  # Para conferir a soma lida contra o que a própria fatura declara.
-  resumo:
-    creditos: "Pagamentos / Créditos"
-    total: "Valor Total(R$)"
+      fim_secao: "Valor Total"
 
-  numeros:
-    milhar: "."
-    decimal: ","
+      # Para conferir a soma lida contra o que a própria fatura declara.
+      resumo:
+        creditos: "Pagamentos / Créditos"
+        total: "Valor Total(R$)"
 
-  data_lancamento: "%d/%m/%Y"
+      numeros:
+        milhar: "."
+        decimal: ","
+
+      data_lancamento: "%d/%m/%Y"
+
+    # ----------------------------------------------------------------- app
+    # `csv_com_preambulo`: treze linhas de `rótulo;valor` e só então a tabela.
+    # Uma seção só — o app já mistura Brasil e exterior na mesma lista e
+    # converte tudo para reais, deixando o valor em dólar numa coluna à parte.
+    - id: app
+      estrategia: csv_com_preambulo
+      extensoes: [".csv"]
+      delimitador: ";"
+      # utf-8-sig come o BOM que o app deixa no começo; sem ele o primeiro
+      # rótulo vira "\ufeff Associado" e nenhuma busca por prefixo o acha.
+      encoding: utf-8-sig
+
+      # A data está DENTRO do arquivo, como no `.xls`: nada a perguntar.
+      vencimento:
+        rotulo: "Data de Vencimento"
+        formato: "%d/%m/%Y"
+
+      # O cabeçalho não fica numa linha fixa — o preâmbulo muda de tamanho com
+      # a situação da fatura —, então ele é achado pelo nome da 1ª coluna.
+      cabecalho:
+        data: Data
+        descricao: Descrição
+        parcela: Parcela
+        valor: Valor
+        # Preenchida só na compra internacional; o valor em reais continua no
+        # `Valor`. Serve para marcar a linha, não para somar.
+        moeda_estrangeira: "Valor em Dólar"
+
+      # Os rótulos são casados por PREFIXO e sem acento, então "(-) Pagamentos
+      # / Creditos (R$)" acha com o texto abaixo.
+      resumo:
+        # Débito declarado = Brasil + exterior. São dois rótulos e uma soma.
+        debitos:
+          - "(+) Despesas / Debitos no Brasil"
+          - "(+) Despesas / Debitos no exterior"
+        creditos: "(-) Pagamentos / Creditos"
+        total: "(=) Total desta fatura"
+
+      numeros:
+        milhar: "."
+        decimal: ","
+
+      data_lancamento: "%d/%m/%Y"

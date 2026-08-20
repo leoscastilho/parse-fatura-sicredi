@@ -85,25 +85,15 @@ export function analytics(files, {
   return json('/analytics', { method: 'POST', body: form })
 }
 
-// --- configuração (bancos, formato de entrada e saída) ---------------------
+// --- configuração (bancos e formato de saída) ------------------------------
+//
+// O formato de ENTRADA não se edita: ele descreve como o banco exporta, que é
+// fato do banco, não preferência de quem usa. O de SAÍDA descreve a planilha
+// de quem usa, e por isso continua aqui.
 
 export const getConfig = () => json('/config')
-export const getBank = (id) => json(`/config/bank/${encodeURIComponent(id)}`)
-
-export const saveBank = (id, yaml_text) =>
-  json('/config/bank', asJson({ id, yaml_text }))
-
 export const saveOutput = (yaml_text) =>
   json('/config/output', asJson({ yaml_text }))
-
-export function testBank(bank_id, file, { yaml_text = '', vencimento = '' } = {}) {
-  const form = new FormData()
-  form.append('bank_id', bank_id)
-  form.append('yaml_text', yaml_text)
-  form.append('vencimento', vencimento)
-  form.append('file', file)
-  return json('/config/bank/test', { method: 'POST', body: form })
-}
 
 // --- regras ordenadas (regex) ---------------------------------------------
 

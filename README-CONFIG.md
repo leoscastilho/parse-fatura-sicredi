@@ -30,21 +30,55 @@ chamam as colunas, se o número usa vírgula ou ponto.
 
 ## Adicionar um banco
 
+O formato de entrada **não se edita pelo portal**. Ele descreve como o banco
+exporta, que é fato do banco e não preferência de quem usa — e um fato que,
+quando muda, muda para todo mundo ao mesmo tempo. Editável, cada instalação
+podia acabar com um leitor diferente. (O formato de SAÍDA continua editável na
+tela, e pelo motivo simétrico: ele descreve a SUA planilha.)
+
 1. Copie `config/banks/nubank.yml` para `config/banks/<id>.yml`.
 2. Ajuste `id`, `nome`, `tema` e o bloco `leitura`.
-3. Na aba **Formato de entrada**, escolha o banco, cole o YAML e use
-   **testar com um arquivo** — ele roda contra um extrato real sem gravar nada.
+3. Rode a suíte contra um extrato real — é o `test_le_extrato_*` que prova que
+   o perfil funciona, e é onde o arquivo de exemplo fica versionado.
 4. Quando os totais fecharem, mude `validado: true`.
 
 Estratégias de leitura disponíveis:
 
-| `estrategia`   | Para que serve                                            |
-|----------------|-----------------------------------------------------------|
-| `excel_secoes` | Planilha com blocos, cada um com cabeçalho e "Valor Total" |
-| `csv_simples`  | Uma tabela, cabeçalho na primeira linha                    |
+| `estrategia`        | Para que serve                                            |
+|---------------------|-----------------------------------------------------------|
+| `excel_secoes`      | Planilha com blocos, cada um com cabeçalho e "Valor Total" |
+| `csv_com_preambulo` | CSV com um bloco de `rótulo;valor` antes da tabela         |
+| `csv_simples`       | Uma tabela, cabeçalho na primeira linha                    |
 
 Um formato novo é uma função nova em `core/statement.py` e um `estrategia:`
 novo no YAML — nada mais no sistema precisa saber que ela existe.
+
+### Mais de um formato no mesmo banco
+
+Um banco pode exportar de vários jeitos. O Sicredi exporta dois — planilha
+`.xls` pelo site, `.csv` pelo aplicativo — e eles não se parecem. Nesse caso
+`leitura` ganha uma lista `formatos:`, cada item com a sua `estrategia` e as
+suas `extensoes`:
+
+```yaml
+leitura:
+  formatos:
+    - id: site
+      estrategia: excel_secoes
+      extensoes: [".xls", ".xlsx"]
+      # …
+    - id: app
+      estrategia: csv_com_preambulo
+      extensoes: [".csv"]
+      # …
+```
+
+**O portal escolhe pela extensão e nunca pergunta.** Quem baixou o arquivo já
+sabe de onde ele veio; ter que contar isso à tela seria transferir ao usuário
+uma distinção que o nome do arquivo resolve sozinho. A lista de extensões que a
+dropzone anuncia é a união de todos os formatos.
+
+Sem a lista, `leitura` inteiro é um formato só — que é o caso do Nubank.
 
 ## Recategorizar um CSV antigo
 

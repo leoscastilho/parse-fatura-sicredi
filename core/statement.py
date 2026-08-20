@@ -10,9 +10,10 @@ despacha. Um banco novo com formato novo = uma função nova aqui + um
 
 from __future__ import annotations
 
+import csv
 import io
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -188,6 +189,150 @@ def _ler_excel_secoes(source, name: str, profile: BankProfile,
 
 
 # ---------------------------------------------------------------------------
+# Estratégia: csv_com_preambulo  (Sicredi, exportação do aplicativo)
+# ---------------------------------------------------------------------------
+
+# "(01/02)" — o app escreve a parcela entre parênteses; o site, sem. O resto do
+# portal só entende a forma do site (`travel.PARCELA_RE`, o `parcela_modelo` do
+# formato de saída), então a diferença morre aqui, na leitura. Deixá-la passar
+# faria a mesma compra sair como "(Parcela (01/02))" num arquivo e
+# "(Parcela 01/02)" no outro, e as parcelas antigas parariam de ser excluídas
+# do intervalo de viagem — a regex não casa com o parêntese.
+PARCELA_ENTRE_PARENTESES = re.compile(r"^\((\d+\s*/\s*\d+)\)$")
+
+
+def _ler_csv_com_preambulo(source, name: str, profile: BankProfile,
+                           due_date: datetime | None) -> Statement:
+    """CSV que começa com um bloco de rótulos e só depois vira tabela.
+
+    É como o aplicativo do Sicredi exporta a fatura: treze linhas de
+    `rótulo;valor` (associado, vencimento, resumo de despesas) e, mais abaixo,
+    o cabeçalho `Data;Descrição;Parcela;Valor;…` com os lançamentos.
+
+    Vale a pena ler o preâmbulo, e não pular direto para a tabela: é dali que
+    saem o VENCIMENTO — que o Nubank obriga a perguntar e este não — e os
+    totais declarados, que fazem a conferência de soma existir para este
+    formato como já existia para o `.xls`. Sem eles a tela diria "não confere"
+    ou, pior, "confere" sem ter conferido nada.
+    """
+    cfg = profile.leitura
+    amount_of = make_amount_parser(cfg.get("numeros"))
+    header = cfg.get("cabecalho") or {}
+    fmt = cfg.get("data_lancamento", "%d/%m/%Y")
+
+    blob = source.read() if hasattr(source, "read") else Path(source).read_bytes()
+    if isinstance(blob, bytes):
+        # utf-8-sig come o BOM que o app deixa no começo — sem isso o primeiro
+        # rótulo vira "﻿ Associado" e nenhuma busca por prefixo o acha.
+        blob = blob.decode(cfg.get("encoding", "utf-8-sig"), errors="replace")
+
+    linhas = [[c.strip() for c in linha]
+              for linha in csv.reader(io.StringIO(blob),
+                                      delimiter=cfg.get("delimitador", ";"))]
+
+    def rotulado(prefixo: str | None) -> str | None:
+        """O primeiro valor da linha cujo rótulo começa com `prefixo`.
+
+        Comparação por `normalize` e por PREFIXO porque o app escreve
+        `(-) Pagamentos / Creditos (R$)` — sem acento em "Créditos" e com um
+        sufixo de unidade que não interessa. Exigir igualdade exata obrigaria a
+        copiar a grafia do banco caractere a caractere no YAML.
+        """
+        if not prefixo:
+            return None
+        alvo = normalize(prefixo)
+        for linha in linhas:
+            if linha and linha[0] and normalize(linha[0]).startswith(alvo):
+                for celula in linha[1:]:
+                    if celula:
+                        return celula
+        return None
+
+    def somar(rotulos) -> float | None:
+        """Soma vários rótulos num número só — ou None se nenhum existir."""
+        if not rotulos:
+            return None
+        if isinstance(rotulos, str):
+            rotulos = [rotulos]
+        achados = [amount_of(rotulado(r)) for r in rotulos]
+        achados = [v for v in achados if v is not None]
+        return round(sum(achados), 2) if achados else None
+
+    if due_date is None:
+        venc = cfg.get("vencimento") or {}
+        bruto = rotulado(venc.get("rotulo"))
+        if bruto and DATE_RE.match(bruto):
+            due_date = datetime.strptime(bruto, venc.get("formato", "%d/%m/%Y"))
+
+    # O cabeçalho não está numa posição fixa: o preâmbulo muda de tamanho com a
+    # situação da fatura. Acha-se pelo NOME da primeira coluna.
+    nome_data = header.get("data", "Data")
+    inicio = next((i for i, l in enumerate(linhas)
+                   if l and normalize(l[0]) == normalize(nome_data)), None)
+    if inicio is None:
+        raise ProfileError(
+            f"{name}: não achei a linha de cabeçalho começando em "
+            f"'{nome_data}'. Este é o CSV que o app do banco exporta?")
+
+    nomes = [normalize(c) for c in linhas[inicio]]
+
+    def coluna(papel: str, padrao: str | None = None) -> int | None:
+        alvo = header.get(papel, padrao)
+        if not alvo:
+            return None
+        try:
+            return nomes.index(normalize(str(alvo)))
+        except ValueError:
+            return None
+
+    i_data = coluna("data", "Data")
+    i_desc = coluna("descricao", "Descrição")
+    i_valor = coluna("valor", "Valor")
+    i_parcela = coluna("parcela", "Parcela")
+    i_moeda = coluna("moeda_estrangeira")
+    if i_data is None or i_desc is None or i_valor is None:
+        raise ProfileError(
+            f"{name}: o cabeçalho tem {linhas[inicio]} e faltam colunas de "
+            "data, descrição ou valor")
+
+    def celula(linha, i):
+        return linha[i] if i is not None and i < len(linha) else ""
+
+    entries: list[Entry] = []
+    for linha in linhas[inicio + 1:]:
+        if not linha or not DATE_RE.match(celula(linha, i_data)):
+            continue
+        valor = amount_of(celula(linha, i_valor))
+        if valor is None:
+            continue
+        parcela = celula(linha, i_parcela)
+        entre_parenteses = PARCELA_ENTRE_PARENTESES.match(parcela)
+        entries.append(Entry(
+            purchase_date=datetime.strptime(celula(linha, i_data), fmt),
+            description=celula(linha, i_desc),
+            installment=(entre_parenteses.group(1) if entre_parenteses
+                         else parcela or None),
+            amount=valor,
+            international=bool(celula(linha, i_moeda)),
+        ))
+
+    resumo = cfg.get("resumo") or {}
+    creditos = somar(resumo.get("creditos"))
+    return Statement(
+        name=name,
+        due_date=due_date,
+        entries=entries,
+        declared_debits=somar(resumo.get("debitos")) or 0.0,
+        # O app escreve o crédito com o sinal de quem SUBTRAI ("R$ -9.857,03");
+        # `Statement.credits` conta a mesma coisa em módulo. Sem o `abs` a
+        # conferência compararia 9.857,03 com -9.857,03 e nunca fecharia.
+        declared_credits=None if creditos is None else abs(creditos),
+        declared_balance=somar(resumo.get("total")),
+        bank_id=profile.id,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Estratégia: csv_simples  (Nubank — placeholder)
 # ---------------------------------------------------------------------------
 
@@ -249,6 +394,7 @@ def _ler_csv_simples(source, name: str, profile: BankProfile,
 
 STRATEGIES = {
     "excel_secoes": _ler_excel_secoes,
+    "csv_com_preambulo": _ler_csv_com_preambulo,
     "csv_simples": _ler_csv_simples,
 }
 
@@ -279,10 +425,22 @@ def read_statement(
             "numeros": {"milhar": ".", "decimal": ","},
         })
 
-    reader = STRATEGIES.get(profile.estrategia)
+    # O FORMATO sai do arquivo, não de uma pergunta na tela. Um banco pode
+    # exportar de mais de um jeito (o Sicredi exporta dois), e a extensão já
+    # separa os casos — ver `BankProfile.formato_de`.
+    formato = profile.formato_de(name)
+    if formato is None:
+        raise ProfileError(
+            f"{name}: {profile.nome} exporta {', '.join(profile.extensoes)}")
+    # A estratégia recebe o formato escolhido como se fosse o `leitura` inteiro,
+    # e por isso nenhuma delas precisou saber que existem vários.
+    profile = replace(profile, leitura=formato)
+
+    reader = STRATEGIES.get(formato.get("estrategia", "excel_secoes"))
     if reader is None:
         raise ProfileError(
-            f"estratégia de leitura desconhecida: {profile.estrategia!r} "
+            f"estratégia de leitura desconhecida: "
+            f"{formato.get('estrategia')!r} "
             f"(disponíveis: {', '.join(STRATEGIES)})"
         )
     return reader(source, name, profile, due_date)

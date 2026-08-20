@@ -8,7 +8,6 @@ import MarketplaceStep from './components/MarketplaceStep'
 import FinalReview from './components/FinalReview'
 import RulesView from './components/RulesView'
 import BankPicker from './components/BankPicker'
-import InputFormatView from './components/InputFormatView'
 import OutputFormatView from './components/OutputFormatView'
 import ConfigBundle from './components/ConfigBundle'
 import RecategorizeStep, { ChangesSummary } from './components/RecategorizeStep'
@@ -258,7 +257,6 @@ export default function App() {
     recategorizar: 'Recategorizar CSV',
     analise: 'Análise do histórico',
     regras: 'Regras de categorização',
-    entrada: 'Formato de entrada',
     saida: 'Formato de saída',
     config: 'Configuração',
   }
@@ -311,12 +309,6 @@ export default function App() {
         <div className="nav-sep" />
 
         <button
-          className={`nav-item ${section === 'entrada' ? 'active' : ''}`}
-          onClick={() => setSection('entrada')}
-        >
-          Formato de entrada
-        </button>
-        <button
           className={`nav-item ${section === 'saida' ? 'active' : ''}`}
           onClick={() => setSection('saida')}
         >
@@ -358,15 +350,6 @@ export default function App() {
               {error}{' '}
               <button className="link" onClick={() => setError(null)}>fechar</button>
             </div>
-          )}
-
-          {section === 'entrada' && (
-            <InputFormatView
-              bankId={bankId}
-              banks={banks}
-              onError={setError}
-              onBanksChanged={loadBanks}
-            />
           )}
 
           {section === 'saida' && <OutputFormatView onError={setError} />}

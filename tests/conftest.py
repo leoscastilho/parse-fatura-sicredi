@@ -102,6 +102,60 @@ def sicredi_xlsx_intl(tmp_path) -> Path:
     )
 
 
+def _sicredi_app_csv(path: Path, *, vencimento="10/09/2025", rows=None) -> Path:
+    """O CSV que o APLICATIVO do Sicredi exporta — o outro formato do mesmo banco.
+
+    Reproduz as três coisas que o separam do `.xls` do site e que o leitor
+    precisa vencer: o preâmbulo de rótulos antes da tabela, o `;` como
+    separador, e a parcela escrita entre parênteses.
+    """
+    rows = rows if rows is not None else [
+        ("20/08/2025", "MERCADOLIVRE UNICAF", "(01/02)", "R$ 150,00", ""),
+        ("14/08/2025", "CE PERU RAIL 1", "", "R$ 320,59", "U$ 58,25"),
+        ("02/07/2025", "SUPERMERCADOS ALVORA", "", "R$ 270,51", ""),
+        ("01/07/2025", "Pagamento Efetuado", "", "R$ -400,00", ""),
+    ]
+    brasil = sum(_valor(v) for _, _, _, v, dolar in rows if _valor(v) > 0 and not dolar)
+    exterior = sum(_valor(v) for _, _, _, v, dolar in rows if _valor(v) > 0 and dolar)
+    creditos = sum(_valor(v) for _, _, _, v, _ in rows if _valor(v) < 0)
+
+    def brl(v):
+        return f'"R$ {v:,.2f}"'.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+
+    linhas = [
+        " Associado ;Fulano de Tal;;;;",
+        " Cooperativa ;0230;;;;",
+        "",
+        f" Data de Vencimento ;{vencimento};;;;",
+        f" Valor Total (R$) ;{brl(brasil + exterior + creditos)};;;;",
+        " Situação ;Fechada;;;;",
+        "",
+        " Resumo de Despesas ;;;;;",
+        f" (-) Pagamentos / Creditos (R$) ;{brl(creditos)};;;;",
+        f" (+) Despesas / Debitos no Brasil (R$) ;{brl(brasil)};;;;",
+        f" (+) Despesas / Debitos no exterior (R$) ;{brl(exterior)};;;;",
+        f" (=) Total desta fatura (R$) ;{brl(brasil + exterior + creditos)};;;;",
+        "",
+        " Data ; Descrição ; Parcela ; Valor ; Valor em Dólar ; Adicional ; Nome;",
+    ]
+    for data, desc, parcela, valor, dolar in rows:
+        linhas.append(f'{data};{desc};{parcela};"{valor}";{dolar};;Fulano de Tal')
+    # O app grava com BOM; `utf-8-sig` na escrita é o que o reproduz.
+    path.write_text("\n".join(linhas) + "\n", encoding="utf-8-sig")
+    return path
+
+
+def _valor(texto: str) -> float:
+    import re as _re
+    limpo = _re.sub(r"[^\d,.\-]", "", texto).replace(".", "").replace(",", ".")
+    return float(limpo) if limpo else 0.0
+
+
+@pytest.fixture
+def sicredi_app_csv(tmp_path) -> Path:
+    return _sicredi_app_csv(tmp_path / "fatura-app.csv")
+
+
 @pytest.fixture
 def nubank_csv(tmp_path) -> Path:
     path = tmp_path / "nubank.csv"

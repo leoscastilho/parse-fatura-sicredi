@@ -148,7 +148,32 @@ def test_transacao_desconhecida_da_404(client):
 
 
 def test_extensao_errada_da_415(client, nubank_csv):
-    assert _upload(client, nubank_csv, banco="sicredi").status_code == 415
+    """`.pdf` nem chega a ser lido — o Sicredi não exporta assim."""
+    assert _upload(client, nubank_csv, nome="fatura.pdf",
+                   banco="sicredi").status_code == 415
+
+
+def test_csv_de_outro_banco_no_sicredi_explica_em_vez_de_estourar(client, nubank_csv):
+    """`.csv` deixou de ser exclusividade do Nubank, e isso muda o erro.
+
+    Antes a extensão barrava (415). Agora o arquivo é ACEITO e falha na
+    leitura, que é um erro de conteúdo — e o usuário precisa ler "não achei o
+    cabeçalho", não um 500 de servidor.
+    """
+    resposta = _upload(client, nubank_csv, banco="sicredi")
+    assert resposta.status_code == 422
+    assert "cabeçalho" in resposta.json()["detail"]
+
+
+def test_a_fatura_do_app_sobe_sem_perguntar_nada(client, sicredi_app_csv):
+    """O outro formato do MESMO banco, pelo mesmo caminho e sem vencimento.
+
+    Nenhum campo a mais na tela, nenhuma escolha de formato: a data está dentro
+    do arquivo e a extensão diz qual leitor usar.
+    """
+    corpo = _upload(client, sicredi_app_csv, banco="sicredi").json()
+    assert corpo["statements"][0]["due_date"].startswith("2025-09-10")
+    assert corpo["statements"][0]["reconciles"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -308,27 +333,27 @@ def test_import_bloqueia_zip_slip(client):
     assert "suspeito" in resposta.json()["detail"]
 
 
-def test_salvar_perfil_invalido_nao_grava(client, config_dir):
-    antes = (config_dir / "banks" / "sicredi.yml").read_text(encoding="utf-8")
-    assert client.post("/config/bank", json={"id": "sicredi",
-                                             "yaml_text": "sem id nem nome"}).status_code == 422
-    assert (config_dir / "banks" / "sicredi.yml").read_text(encoding="utf-8") == antes
+@pytest.mark.parametrize("rota,metodo", [
+    ("/config/bank/sicredi", "get"),
+    ("/config/bank", "post"),
+    ("/config/bank/test", "post"),
+])
+def test_editar_formato_de_entrada_nao_existe_mais(client, rota, metodo):
+    """A tela saiu e as rotas com ela.
+
+    O jeito de o banco exportar é fato do banco, não preferência de quem usa —
+    e um fato que muda para todo mundo ao mesmo tempo. Editável, cada instalação
+    podia ter um leitor diferente, e suportar o CSV novo do app do Sicredi teria
+    virado "edite o seu YAML" em vez de simplesmente funcionar.
+    """
+    assert getattr(client, metodo)(rota).status_code == 404
 
 
-def test_salvar_perfil_com_id_divergente_da_422(client):
-    assert client.post("/config/bank", json={
-        "id": "sicredi", "yaml_text": "id: outro\nnome: Outro\n"}).status_code == 422
-
-
-def test_testar_perfil_nao_grava_nada(client, config_dir, nubank_csv):
-    antes = (config_dir / "banks" / "nubank.yml").read_text(encoding="utf-8")
-    resposta = client.post(
-        "/config/bank/test",
-        data={"bank_id": "nubank", "vencimento": "2026-08-10"},
-        files={"file": ("nu.csv", nubank_csv.read_bytes(), "text/csv")},
-    ).json()
-    assert resposta["lancamentos"] == 4
-    assert (config_dir / "banks" / "nubank.yml").read_text(encoding="utf-8") == antes
+def test_o_pacote_de_configuracao_ainda_leva_os_bancos(client):
+    """Sair da tela não é sair do pacote: tema e leitura continuam viajando."""
+    corpo = client.get("/config/export").content
+    with zipfile.ZipFile(io.BytesIO(corpo)) as z:
+        assert any(n.startswith("banks/") for n in z.namelist())
 
 
 def test_output_schema_invalido_da_422(client):

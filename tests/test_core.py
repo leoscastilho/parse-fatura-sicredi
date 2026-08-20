@@ -6,6 +6,7 @@ planilha. Se algum quebrar, o CSV está errado — não é questão de estilo.
 
 from __future__ import annotations
 
+import io
 from datetime import date, datetime
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from core import (
     ConfigSet, LineState, Ruleset, classify_sources, classify_statement,
     lines_to_csv, merchant_key, normalize, output_name, read_statement, sort_lines,
 )
-from core.profiles import OutputSchema
+from core.profiles import OutputSchema, ProfileError
 from core.statement import Entry
 from core.text import compact, purchase_date_of
 
@@ -156,6 +157,110 @@ def test_le_extrato_sicredi(sicredi_xlsx):
     assert statement.due_date == datetime(2026, 8, 10)
     assert len(statement.entries) == 9
     assert statement.reconciles(), "a soma lida não bate com o total declarado"
+
+
+# --- o SEGUNDO formato do mesmo banco: o CSV do aplicativo -----------------
+#
+# O Sicredi exporta de dois jeitos que não se parecem — planilha em seções pelo
+# site, CSV com preâmbulo pelo app. O portal escolhe pela extensão e não
+# pergunta nada: quem baixou o arquivo já sabe de onde ele veio, e ter que
+# contar isso à tela seria transferir para o usuário uma distinção que o nome
+# do arquivo resolve sozinho.
+
+def test_le_a_fatura_exportada_pelo_app(sicredi_app_csv, config_dir):
+    cfg = ConfigSet.load(config_dir)
+    statement = read_statement(sicredi_app_csv, name="fatura-app.csv",
+                               profile=cfg.bank("sicredi"))
+    assert len(statement.entries) == 4
+
+    # Os DECLARADOS conferidos um a um, e não só `reconciles()`: quando nenhum
+    # rótulo do resumo é encontrado, os declarados ficam zerados e
+    # `reconciles()` devolve True por não ter o que comparar — passaria verde
+    # sem ter lido nada. Um teste de mutação mostrou exatamente isso.
+    assert statement.declared_debits == 741.10, "Brasil + exterior, somados"
+    assert statement.declared_credits == 400.00, "em módulo, não com o sinal do app"
+    assert statement.declared_balance == 341.10
+    assert statement.debits == 741.10
+    assert statement.credits == 400.00
+    assert statement.reconciles()
+
+
+def test_o_vencimento_do_app_vem_de_dentro_do_arquivo(sicredi_app_csv, config_dir):
+    """Nada a perguntar: o preâmbulo traz a data, como o `.xls` do site."""
+    cfg = ConfigSet.load(config_dir)
+    statement = read_statement(sicredi_app_csv, name="f.csv",
+                               profile=cfg.bank("sicredi"))
+    assert statement.due_date == datetime(2025, 9, 10)
+    assert cfg.bank("sicredi").pede_vencimento is False
+
+
+def test_basta_um_formato_pedir_para_a_tela_perguntar():
+    """A tela monta o campo antes de saber qual arquivo virá.
+
+    Nenhum banco de hoje tem formatos que discordam nisso — Sicredi não pede em
+    nenhum dos dois, Nubank pede no único que tem —, então o `any` só se
+    distingue do `all` num perfil misto. Este é o perfil misto.
+    """
+    from core.profiles import BankProfile
+    misto = BankProfile(id="x", nome="X", leitura={"formatos": [
+        {"extensoes": [".xls"], "vencimento": {"rotulo": "Vencimento"}},
+        {"extensoes": [".csv"], "vencimento": {"perguntar": True}},
+    ]})
+    assert misto.pede_vencimento is True
+
+
+def test_parcela_do_app_perde_os_parenteses(sicredi_app_csv, config_dir):
+    """`(01/02)` vira `01/02` — a forma que o resto do portal entende.
+
+    Deixá-la passar faria a mesma compra sair como "(Parcela (01/02))" num
+    arquivo e "(Parcela 01/02)" no outro, e `parcela_seguinte` pararia de
+    reconhecer a parcela antiga na hora de propor o intervalo de viagem.
+    """
+    cfg = ConfigSet.load(config_dir)
+    statement = read_statement(sicredi_app_csv, name="f.csv",
+                               profile=cfg.bank("sicredi"))
+    parcelas = [e.installment for e in statement.entries if e.installment]
+    assert parcelas == ["01/02"]
+
+
+def test_a_compra_em_dolar_do_app_e_marcada_mas_soma_em_reais(sicredi_app_csv,
+                                                              config_dir):
+    """O app já converte: o dólar fica numa coluna à parte, só para marcar."""
+    cfg = ConfigSet.load(config_dir)
+    statement = read_statement(sicredi_app_csv, name="f.csv",
+                               profile=cfg.bank("sicredi"))
+    peru = next(e for e in statement.entries if "PERU" in e.description)
+    assert peru.international is True
+    assert peru.amount == 320.59
+
+
+def test_o_mesmo_perfil_le_os_dois_formatos(sicredi_xlsx, sicredi_app_csv, config_dir):
+    """Um banco, dois formatos, zero pergunta — a escolha sai da extensão."""
+    perfil = ConfigSet.load(config_dir).bank("sicredi")
+    assert perfil.extensoes == (".xls", ".xlsx", ".csv")
+    assert perfil.formato_de("x.XLS")["estrategia"] == "excel_secoes"
+    assert perfil.formato_de("y.csv")["estrategia"] == "csv_com_preambulo"
+    assert perfil.formato_de("z.pdf") is None
+
+    do_site = read_statement(sicredi_xlsx, name="s.xlsx", profile=perfil)
+    do_app = read_statement(sicredi_app_csv, name="a.csv", profile=perfil)
+    assert do_site.entries and do_app.entries
+    assert do_site.bank_id == do_app.bank_id == "sicredi"
+
+
+def test_arquivo_de_extensao_estranha_diz_o_que_o_banco_aceita(config_dir):
+    perfil = ConfigSet.load(config_dir).bank("sicredi")
+    with pytest.raises(ProfileError, match=r"\.xls.*\.csv"):
+        read_statement(io.BytesIO(b"x"), name="fatura.pdf", profile=perfil)
+
+
+def test_csv_sem_o_cabecalho_esperado_e_recusado_com_explicacao(tmp_path, config_dir):
+    """Um CSV qualquer com `.csv` no nome não é a fatura do app."""
+    arquivo = tmp_path / "qualquer.csv"
+    arquivo.write_text("a;b;c\n1;2;3\n", encoding="utf-8")
+    perfil = ConfigSet.load(config_dir).bank("sicredi")
+    with pytest.raises(ProfileError, match="cabeçalho"):
+        read_statement(arquivo, name="qualquer.csv", profile=perfil)
 
 
 def test_secao_internacional_nao_e_perdida(sicredi_xlsx_intl):
@@ -316,10 +421,18 @@ def test_nubank_usa_as_mesmas_regras_de_categoria(config_dir, nubank_csv):
     assert por_descricao["[Cartão] Amazon Br {Em 8/Jul}"].categoria == ""
 
 
-def test_perfil_recusa_extensao_de_outro_banco(config_dir):
+def test_cada_perfil_aceita_o_que_sabe_ler(config_dir):
+    """`.csv` deixou de ser exclusividade do Nubank.
+
+    Este teste dizia `not sicredi.accepts(".csv")`, e estava certo enquanto o
+    Sicredi só exportava planilha. Com o formato do aplicativo, a extensão
+    passou a valer para os dois — o que separa os bancos é o perfil escolhido
+    na tela, não o sufixo do arquivo.
+    """
     cfg = ConfigSet.load(config_dir)
     assert cfg.bank("sicredi").accepts("sicredi_extrato_export_site.xls")
-    assert not cfg.bank("sicredi").accepts("extrato.csv")
+    assert cfg.bank("sicredi").accepts("fatura.csv")
+    assert not cfg.bank("sicredi").accepts("fatura.pdf")
     assert cfg.bank("nubank").accepts("fatura.csv")
     assert not cfg.bank("nubank").accepts("fatura.xls")
 

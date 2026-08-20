@@ -34,6 +34,7 @@ from core import (
     sort_lines,
 )
 from core.analytics import AnalyticsConfig, AnalyticsError, analisar
+from core.profiles import ProfileError
 from core.recategorize import RecategorizeError
 from core.travel import (
     TravelError, TravelRange, apply_travel, mark_travel, purchase_range,
@@ -444,7 +445,11 @@ async def upload(
     try:
         lines, dropped, statements = classify_sources(
             sources, rules, profile=profile, schema=cfg.output, due_date=due)
-    except ValueError as exc:
+    # `ProfileError` entra aqui junto com `ValueError` porque agora ele é
+    # alcançável pelo uso normal: com o Sicredi aceitando `.csv`, soltar um CSV
+    # que não é a fatura do app é um erro de CONTEÚDO, não de extensão — e o
+    # que o usuário precisa ler é "não achei o cabeçalho", não um 500.
+    except (ValueError, ProfileError) as exc:
         raise HTTPException(422, detail=str(exc))
 
     summaries = []
@@ -534,7 +539,11 @@ async def upload_periodo(
         lines, _, _ = classify_sources(
             sources, Ruleset.from_text(cfg.categories_text),
             profile=profile, schema=cfg.output, due_date=due)
-    except ValueError as exc:
+    # `ProfileError` entra aqui junto com `ValueError` porque agora ele é
+    # alcançável pelo uso normal: com o Sicredi aceitando `.csv`, soltar um CSV
+    # que não é a fatura do app é um erro de CONTEÚDO, não de extensão — e o
+    # que o usuário precisa ler é "não achei o cabeçalho", não um 500.
+    except (ValueError, ProfileError) as exc:
         raise HTTPException(422, detail=str(exc))
 
     return PurchaseRangeResponse(purchase_range=_purchase_range(lines))

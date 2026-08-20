@@ -64,17 +64,62 @@ class BankProfile:
     raw_text: str = ""
 
     @property
+    def formatos(self) -> tuple[dict[str, Any], ...]:
+        """Os formatos de arquivo que este banco exporta.
+
+        Um banco pode ter mais de um. O Sicredi tem dois — o `.xls` que o site
+        baixa e o `.csv` que o aplicativo manda —, e eles não se parecem: um é
+        planilha em seções, o outro é CSV com preâmbulo de rótulos.
+
+        Sem a lista, `leitura` inteiro é UM formato. É o que mantém o Nubank e
+        os perfis antigos funcionando sem tocar em nada.
+        """
+        lista = self.leitura.get("formatos")
+        return tuple(lista) if lista else (self.leitura,)
+
+    @property
     def estrategia(self) -> str:
-        return self.leitura.get("estrategia", "excel_secoes")
+        return self.formatos[0].get("estrategia", "excel_secoes")
 
     @property
     def extensoes(self) -> tuple[str, ...]:
-        return tuple(self.leitura.get("extensoes") or (".xls", ".xlsx"))
+        """A UNIÃO das extensões de todos os formatos, sem repetir.
+
+        É esta lista que a dropzone anuncia e que o `/upload` usa para recusar
+        arquivo. Somando os formatos, aceitar um novo é acrescentá-lo ao YAML —
+        a tela e a validação seguem sozinhas.
+        """
+        vistas: list[str] = []
+        for formato in self.formatos:
+            for ext in formato.get("extensoes") or (".xls", ".xlsx"):
+                if ext not in vistas:
+                    vistas.append(ext)
+        return tuple(vistas)
+
+    def formato_de(self, filename: str) -> dict[str, Any] | None:
+        """Qual formato lê ESTE arquivo — decidido pela extensão, nunca perguntado.
+
+        Perguntar seria transferir para o usuário uma distinção que o próprio
+        nome do arquivo já resolve: quem exportou do app tem um `.csv`, quem
+        baixou do site tem um `.xls`, e ninguém precisa saber que existem duas
+        rotinas de leitura por trás.
+        """
+        nome = filename.lower()
+        for formato in self.formatos:
+            if nome.endswith(tuple(formato.get("extensoes") or (".xls", ".xlsx"))):
+                return formato
+        return None
 
     @property
     def pede_vencimento(self) -> bool:
-        """O arquivo não traz a data de vencimento; o portal precisa perguntar."""
-        return bool((self.leitura.get("vencimento") or {}).get("perguntar"))
+        """Algum formato deste banco não traz a data e obriga a perguntar?
+
+        Basta UM: a tela de upload monta o campo antes de saber qual arquivo
+        virá. Nos dois formatos do Sicredi a data está dentro do arquivo, então
+        lá o campo não aparece; no Nubank aparece.
+        """
+        return any((f.get("vencimento") or {}).get("perguntar")
+                   for f in self.formatos)
 
     def accepts(self, filename: str) -> bool:
         return filename.lower().endswith(self.extensoes)

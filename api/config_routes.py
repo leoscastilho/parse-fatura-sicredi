@@ -25,8 +25,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from core import BankProfile, ConfigSet, OutputSchema, ProfileError, Ruleset
-from core.pipeline import build_description, classify_statement
-from core.statement import Entry, read_statement
+from core.pipeline import build_description
+from core.statement import Entry
 from core.yaml_edit import (
     YamlEditError, list_rules, rule_add, rule_move, rule_remove, rule_update,
 )
@@ -57,12 +57,6 @@ class ConfigResponse(BaseModel):
     output_yaml: str
     output_exemplo: dict[str, str]
     source_sha: str | None = None
-
-
-class BankYaml(BaseModel):
-    id: str
-    yaml_text: str
-    commit: bool = False
 
 
 class OutputYaml(BaseModel):
@@ -179,94 +173,21 @@ def get_config(settings: Settings = Depends(get_settings)) -> ConfigResponse:
     )
 
 
-@router.get("/config/bank/{bank_id}")
-def get_bank(bank_id: str, settings: Settings = Depends(get_settings)) -> dict:
-    cfg = load_config(settings)
-    if bank_id not in cfg.banks:
-        raise HTTPException(404, detail=f"banco desconhecido: {bank_id}")
-    profile = cfg.banks[bank_id]
-    return {"id": profile.id, "nome": profile.nome, "validado": profile.validado,
-            "yaml_text": profile.raw_text, "tema": profile.tema.to_dict()}
-
-
-@router.post("/config/bank")
-def save_bank(payload: BankYaml, settings: Settings = Depends(get_settings)) -> dict:
-    """Grava o perfil de um banco. Valida ANTES de tocar no disco."""
-    if not re.fullmatch(r"[a-z0-9_-]{2,32}", payload.id):
-        raise HTTPException(422, detail="id inválido (use a-z, 0-9, - e _)")
-    try:
-        profile = BankProfile.from_text(payload.yaml_text)
-    except (ProfileError, yaml.YAMLError) as exc:
-        raise HTTPException(422, detail=f"perfil inválido: {exc}")
-    if profile.id != payload.id:
-        raise HTTPException(422, detail=f"o `id` dentro do YAML é '{profile.id}'")
-
-    path = config_root(settings) / "banks" / f"{payload.id}.yml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(payload.yaml_text, encoding="utf-8")
-
-    return {"ok": True, "id": profile.id, "validado": profile.validado,
-            "tema": profile.tema.to_dict()}
-
-
-@router.post("/config/bank/test")
-async def test_bank(
-    bank_id: str = Form(...),
-    yaml_text: str = Form(""),
-    vencimento: str = Form(""),
-    file: UploadFile = File(...),
-    settings: Settings = Depends(get_settings),
-) -> dict:
-    """Roda o perfil contra um arquivo de verdade, sem gravar nada.
-
-    É a única forma honesta de saber se um perfil de banco funciona: o YAML
-    pode estar bem-formado e mesmo assim apontar para uma coluna que não existe.
-    """
-    cfg = load_config(settings)
-    if yaml_text.strip():
-        try:
-            profile = BankProfile.from_text(yaml_text)
-        except (ProfileError, yaml.YAMLError) as exc:
-            raise HTTPException(422, detail=f"perfil inválido: {exc}")
-    else:
-        if bank_id not in cfg.banks:
-            raise HTTPException(404, detail=f"banco desconhecido: {bank_id}")
-        profile = cfg.banks[bank_id]
-
-    due = None
-    if vencimento.strip():
-        try:
-            due = datetime.strptime(vencimento.strip(), "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(422, detail="vencimento deve ser AAAA-MM-DD")
-
-    blob = await file.read()
-    try:
-        statement = read_statement(io.BytesIO(blob), name=file.filename,
-                                   profile=profile, due_date=due)
-    except (ProfileError, ValueError, KeyError) as exc:
-        raise HTTPException(422, detail=f"não consegui ler o arquivo: {exc}")
-
-    rules = Ruleset.from_text(cfg.categories_text)
-    amostra = []
-    if statement.due_date:
-        lines, _ = classify_statement(statement, rules, schema=cfg.output)
-        amostra = [l.to_dict() for l in lines[:8]]
-
-    return {
-        "banco": profile.nome,
-        "validado": profile.validado,
-        "vencimento": statement.due_date.date().isoformat() if statement.due_date else None,
-        "pede_vencimento": profile.pede_vencimento,
-        "lancamentos": len(statement.entries),
-        "debitos": statement.debits,
-        "creditos": statement.credits,
-        "declarado_debitos": statement.declared_debits,
-        "declarado_creditos": statement.declared_credits,
-        "confere": statement.reconciles(),
-        "amostra": amostra,
-    }
-
+# O FORMATO DE ENTRADA não se edita mais pelo portal.
+#
+# Havia aqui três rotas para ler, gravar e testar o perfil de leitura de um
+# banco. Elas saíram junto com a tela: o jeito de o banco exportar não é
+# preferência de usuário, é fato do banco — e um fato que, quando muda, muda
+# para todo mundo ao mesmo tempo. Deixar isso editável dava a cada instalação a
+# chance de ter um leitor diferente, e o suporte ao formato novo do app do
+# Sicredi teria virado "edite o seu YAML" em vez de simplesmente funcionar.
+#
+# Os `banks/*.yml` continuam existindo — é de lá que saem tema, nome e as
+# regras de leitura — e continuam viajando no pacote de configuração. O que
+# acabou foi editá-los daqui.
+#
+# O FORMATO DE SAÍDA continua editável logo abaixo, e por um motivo simétrico:
+# ele descreve a SUA planilha, que é só sua.
 
 @router.post("/config/output")
 def save_output(payload: OutputYaml, settings: Settings = Depends(get_settings)) -> dict:
