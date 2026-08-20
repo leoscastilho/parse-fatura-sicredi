@@ -239,6 +239,144 @@ export function LineChart({ pontos, series, altura = 240, formato = brlCompacto 
 }
 
 /**
+ * Soma corrida de cada série, do começo do período até cada mês.
+ *
+ * Fora do componente e exportada porque é a única parte disto que tem conta
+ * para errar — e conta que só dá para conferir por pixel é conta que não se
+ * confere.
+ *
+ * MÊS SEM LANÇAMENTO SEGURA O TOTAL, não zera. O gráfico de linha desenha
+ * buraco nesses meses (ver `LineChart`), e está certo lá: o gasto DAQUELE mês é
+ * desconhecido. Aqui a grandeza é outra — "quanto já saiu até aqui" — e essa
+ * não volta para zero porque faltou um mês. Ela fica parada, que é o desenho
+ * honesto de "nada entrou nesta soma".
+ *
+ * O `vazio` marca justamente esses meses, para o painel poder dizer quantos
+ * platôs da linha são ausência de dado em vez de mês sem gasto. Os 23 meses
+ * sem lançamento do histórico dele (ago/15 a set/16) viram um degrau reto de
+ * quase dois anos, e sem o aviso ele se lê como economia.
+ */
+export function acumular(pontos, chaves) {
+  const total = Object.fromEntries(chaves.map((c) => [c, 0]))
+  return pontos.map((p) => {
+    const linha = { periodo: p.periodo, vazio: chaves.every((c) => p[c] == null) }
+    for (const c of chaves) {
+      if (p[c] != null) total[c] += p[c]
+      linha[c] = total[c]
+    }
+    return linha
+  })
+}
+
+/**
+ * Área empilhada do ACUMULADO por categoria.
+ *
+ * Responde uma pergunta que nenhum outro painel desta aba responde: não "quanto
+ * gastei em maio" nem "a categoria está subindo", e sim **quanto cada categoria
+ * já custou no total, e em que ritmo**. A altura da faixa no fim é o total da
+ * categoria no período; a inclinação dela em cada trecho é o gasto mensal; a
+ * linha de cima é tudo somado.
+ *
+ * DUAS COISAS QUE A FORMA IMPÕE
+ * -----------------------------
+ * 1. **A ordem do empilhamento é a do backend — maior embaixo.** A faixa de
+ *    baixo é a única com uma base reta; todas as outras herdam o solavanco das
+ *    de baixo. Pondo a maior no chão, o ruído que ela injeta nas de cima é
+ *    proporcionalmente o menor possível.
+ * 2. **A separação entre faixas é um traço da cor do FUNDO, não uma borda
+ *    escura.** É o mesmo vão de 2px das barras empilhadas: uma borda com cor
+ *    própria vira uma nona série que ninguém pediu.
+ *
+ * A cor sai de `s.cor` — a identidade da categoria —, nunca do índice na lista
+ * de visíveis. Esconder "Casa" na legenda não pode repintar "Construção".
+ */
+export function AreaEmpilhadaAcumulada({ pontos, series, altura = 280 }) {
+  const [tip, setTip] = useState(null)
+  const L = 88, R = 16, T = 16, B = 28
+  const W = 720, H = altura
+  const largura = W - L - R, alturaPlot = H - T - B
+
+  const chaves = series.map((s) => s.chave)
+  const linhas = acumular(pontos, chaves)
+  if (!linhas.length) return null
+
+  // O topo da pilha no ÚLTIMO mês é o maior valor do gráfico — a soma corrida
+  // só cresce, então não há por que varrer a série inteira procurando máximo.
+  const ultimo = linhas[linhas.length - 1]
+  const { teto, marcas } = escala(0, chaves.reduce((s, c) => s + ultimo[c], 0) || 1)
+
+  const x = (i) => L + (linhas.length === 1 ? largura / 2
+                        : (i * largura) / (linhas.length - 1))
+  const y = (v) => T + alturaPlot - (v / teto) * alturaPlot
+
+  // Base acumulada de cada faixa: o topo de tudo que está embaixo dela.
+  const bases = linhas.map((l) => {
+    let soma = 0
+    return chaves.map((c) => { const b = soma; soma += l[c]; return b })
+  })
+
+  const area = (si) => {
+    const topo = linhas.map((l, i) => `${x(i).toFixed(1)} ${y(bases[i][si] + l[chaves[si]]).toFixed(1)}`)
+    const base = linhas.map((l, i) => `${x(i).toFixed(1)} ${y(bases[i][si]).toFixed(1)}`).reverse()
+    return `M${topo.join(' L')} L${base.join(' L')} Z`
+  }
+
+  const passo = Math.max(1, Math.ceil(linhas.length / 12))
+
+  return (
+    <div className="viz-wrap">
+      <svg viewBox={`0 0 ${W} ${H}`} className="viz" role="img"
+           aria-label={`Acumulado por categoria: ${series.map((s) => s.rotulo).join(', ')}`}>
+        {marcas.map((v) => (
+          <g key={v}>
+            <line x1={L} x2={W - R} y1={y(v)} y2={y(v)} stroke={GRID} strokeWidth="1" />
+            <text x={L - 8} y={y(v) + 4} textAnchor="end" fontSize="11" fill={MUTED}>
+              {brlCompacto(v)}
+            </text>
+          </g>
+        ))}
+
+        {series.map((s, si) => (
+          <path key={s.chave} d={area(si)} fill={s.cor || SERIES[si]}
+                stroke="#FFF" strokeWidth="1.5" strokeLinejoin="round" />
+        ))}
+
+        <line x1={L} x2={W - R} y1={y(0)} y2={y(0)} stroke={AXIS} strokeWidth="1" />
+
+        {linhas.map((l, i) => i % passo === 0 && (
+          <text key={l.periodo} x={x(i)} y={H - 8} textAnchor="middle"
+                fontSize="11" fill={MUTED}>{rotuloPeriodo(l.periodo)}</text>
+        ))}
+
+        {/* Faixa de captura por mês, mais larga que qualquer marca — a regra de
+            interação vale igual aqui: mirar numa fatia de 3px seria hostil. */}
+        {linhas.map((l, i) => (
+          <rect key={l.periodo} x={x(i) - largura / (linhas.length * 2) - 1} y={T}
+                width={largura / linhas.length + 2} height={alturaPlot}
+                fill="transparent"
+                onMouseEnter={(e) => setTip({
+                  x: e.nativeEvent.offsetX + 12, y: e.nativeEvent.offsetY - 8,
+                  titulo: `até ${rotuloPeriodo(l.periodo)}`,
+                  // Maior primeiro: a dica lida de cima para baixo bate com a
+                  // pilha lida de cima para baixo só por acaso; ordenar por
+                  // valor é o que responde "quem pesa mais" sem contar pixel.
+                  linhas: [...series]
+                    .map((s) => ({ rotulo: s.rotulo, valor: l[s.chave],
+                                   cor: s.cor || SERIES[series.indexOf(s)] }))
+                    .sort((a, b) => b.valor - a.valor)
+                    .map((x2) => ({ ...x2, valor: brlExato(x2.valor) }))
+                    .concat([{ rotulo: 'Total',
+                               valor: brlExato(chaves.reduce((s, c) => s + l[c], 0)) }]),
+                })}
+                onMouseLeave={() => setTip(null)} />
+        ))}
+      </svg>
+      <Tooltip dados={tip} />
+    </div>
+  )
+}
+
+/**
  * Barras horizontais ordenadas por valor.
  *
  * UMA cor só, e isso é regra, não economia: aqui a cor codifica MAGNITUDE, e

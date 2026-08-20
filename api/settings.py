@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # Token fine-grained com Contents: Read and write NESTE repositório apenas.
     # Injetado por Docker secret ou .env fora da imagem; nunca no Dockerfile.
     github_token: SecretStr | None = None
-    github_repo: str = "leoscastilho/parse-fatura-sicredi"
+    github_repo: str = "leoscastilho/parser-de-fatura-multibancos"
     github_branch: str = "main"
     github_file_path: str = "categories.yml"
     github_author_name: str = "fatura-bot"

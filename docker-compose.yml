@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-#  parse-fatura-sicredi — stack completa
+#  parser-de-fatura-multibancos — stack completa
 #
 #  Feito para Proxmox VE + Portainer:
 #    * sem chave `version:` (obsoleta no Compose v2, e o Portainer reclama)
@@ -17,6 +17,18 @@
 #  `fatura-data`. Um container a menos para monitorar num homelab.
 # ---------------------------------------------------------------------------
 
+#  O nome do projeto é FIXO — não é o nome da pasta.
+#
+#  Sem esta linha o Compose deriva o projeto do diretório, e renomear a pasta
+#  cria um projeto NOVO que não reconhece nada do antigo. Como este arquivo dá
+#  nome explícito aos containers, à rede e ao volume, os três continuam
+#  existindo com o rótulo do projeto velho: o `up` morre em "container name is
+#  already in use" e rede e volume viram aviso de "criado por outro projeto".
+#
+#  Foi o que aconteceu ao renomear a pasta para `parser-de-fatura-multibancos`.
+#  Com o nome fixo aqui, a pasta pode se chamar o que você quiser.
+name: fatura
+
 services:
   backend:
     build:
@@ -30,7 +42,7 @@ services:
       FATURA_RULES_PATH: /app/config/categories.yml
       FATURA_DB_PATH: /data/state.db
       FATURA_TRANSACTION_TTL_HOURS: "24"
-      FATURA_GITHUB_REPO: ${FATURA_GITHUB_REPO:-leoscastilho/parse-fatura-sicredi}
+      FATURA_GITHUB_REPO: ${FATURA_GITHUB_REPO:-leoscastilho/parser-de-fatura-multibancos}
       FATURA_GITHUB_BRANCH: ${FATURA_GITHUB_BRANCH:-main}
       FATURA_GITHUB_FILE_PATH: categories.yml
       # O token NÃO tem default e não é ARG de build: se estiver ausente, a

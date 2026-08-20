@@ -275,7 +275,7 @@ export default function App() {
           <span className="mark">S</span>
           <span>
             <span className="name">Fatura</span>
-            <span className="sub">Sicredi → planilha</span>
+            <span className="sub">fatura → planilha</span>
           </span>
         </div>
 

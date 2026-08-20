@@ -318,7 +318,7 @@ def test_nubank_usa_as_mesmas_regras_de_categoria(config_dir, nubank_csv):
 
 def test_perfil_recusa_extensao_de_outro_banco(config_dir):
     cfg = ConfigSet.load(config_dir)
-    assert cfg.bank("sicredi").accepts("extrato.xls")
+    assert cfg.bank("sicredi").accepts("sicredi_extrato_export_site.xls")
     assert not cfg.bank("sicredi").accepts("extrato.csv")
     assert cfg.bank("nubank").accepts("fatura.csv")
     assert not cfg.bank("nubank").accepts("fatura.xls")

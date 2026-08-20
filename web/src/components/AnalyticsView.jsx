@@ -2,8 +2,9 @@ import { useRef, useState } from 'react'
 import * as api from '../api'
 import { gravarFiltros, lerFiltros } from '../filtrosSalvos'
 import {
-  BarrasEmpilhadas, BarrasH, DIVERGENTE, Heatmap, Legenda, LineChart, SERIES,
-  TabelaDados, brlExato, eixoContinuo, rotuloPeriodo,
+  AreaEmpilhadaAcumulada, BarrasEmpilhadas, BarrasH, DIVERGENTE, Heatmap,
+  Legenda, LineChart, SERIES, TabelaDados, acumular, brlExato, eixoContinuo,
+  rotuloPeriodo,
 } from './charts'
 import FiltrosLaterais, { contarMeses } from './FiltrosLaterais'
 import Reservas from './Reservas'
@@ -269,6 +270,13 @@ export default function AnalyticsView({ onError }) {
     }
   })()
 
+  // Meses que `eixoContinuo` inseriu por não existirem no arquivo: no gráfico
+  // de linha eles são o buraco, no acumulado são um platô. A contagem sai
+  // daqui, e não do painel de saúde, porque o que interessa é quantos caem
+  // NESTE recorte — o painel de saúde conta os do arquivo inteiro.
+  const mesesVazios = tendencia.pontos.filter(
+    (p) => categoria_por_periodo.categorias.every((_, i) => p[`c${i}`] == null)).length
+
   return (
     <>
       <FiltrosLaterais disponiveis={dados.disponiveis} busy={busy}
@@ -279,7 +287,11 @@ export default function AnalyticsView({ onError }) {
 
       {/* 1. Dá para confiar nestes números? Vem antes de qualquer gráfico —
              ler um painel sem saber o que está faltando é pior que não ler. */}
-      <SaudeDosDados saude={saude} resumo={resumo} naoDetalhadoPct={naoDetalhadoPct} />
+      {/* `comFiltros` sai do que o SERVIDOR aplicou, não do que a tela pediu:
+          o aviso descreve os números que vieram nesta resposta. */}
+      <SaudeDosDados saude={saude} resumo={resumo} naoDetalhadoPct={naoDetalhadoPct}
+                     comFiltros={(dados.filtro?.sem_categorias?.length || 0)
+                                 + (dados.filtro?.sem_linhas?.length || 0) > 0} />
 
       <section className="card">
         <div className="toolbar">
@@ -295,7 +307,7 @@ export default function AnalyticsView({ onError }) {
             <span className="muted small">
               {rotuloPeriodo(resumo.periodo_inicio)} a {rotuloPeriodo(resumo.periodo_fim)} ·{' '}
               {resumo.meses_com_dado} meses com lançamento ·{' '}
-              {saude.total_lancamentos.toLocaleString('pt-BR')} linhas
+              {(resumo.lancamentos ?? saude.total_lancamentos).toLocaleString('pt-BR')} linhas
             </span>
           </div>
           <label className="checkbox">
@@ -564,6 +576,63 @@ export default function AnalyticsView({ onError }) {
         </section>
       )}
 
+      {/* Acumulado: a terceira pergunta sobre as MESMAS categorias, e a única
+          que soma. Empilhado por mês responde "quanto foi maio"; sobreposto
+          responde "está subindo?"; este responde "quanto isso já custou até
+          hoje" — que é a pergunta de quem decide cortar alguma coisa. Um
+          patamar de R$ 300 numa faixa e R$ 40 mil noutra não aparece em nenhum
+          dos outros dois, porque lá cada mês recomeça do zero. */}
+      {/* Some inteiro quando tudo está escondido, em vez de repetir o aviso: o
+          painel de tendência, logo acima, já diz o que fazer — e a legenda que
+          traz as séries de volta é a dele. */}
+      {tendencia.pontos.length > 1 && tendencia.visiveis.length > 0 && (
+        <section className="card">
+          <h2>Acumulado por categoria</h2>
+          <p className="muted small">
+            Soma corrida desde {rotuloPeriodo(resumo.periodo_inicio)}. A
+            espessura de cada faixa no fim é o total daquela categoria no
+            período; a inclinação dela em cada trecho é o gasto do mês. A linha
+            de cima é tudo somado.
+          </p>
+
+          {tabela ? (
+            <TabelaDados
+              colunas={['Mês', ...tendencia.visiveis.map((s) => s.rotulo), 'Total']}
+              linhas={acumular(tendencia.pontos, tendencia.visiveis.map((s) => s.chave))
+                .map((l) => [
+                  rotuloPeriodo(l.periodo),
+                  ...tendencia.visiveis.map((s) => l[s.chave]),
+                  tendencia.visiveis.reduce((t, s) => t + l[s.chave], 0),
+                ])} />
+          ) : (
+            <AreaEmpilhadaAcumulada pontos={tendencia.pontos}
+                                    series={tendencia.visiveis} />
+          )}
+
+          {/* Legenda própria, e não um "veja a de cima": são oito faixas, e a
+              do painel de tendência fica fora da tela quando se está olhando
+              para esta. As duas leem e escrevem o MESMO `ocultas`, então
+              esconder aqui esconde lá — é uma decisão só sobre as mesmas
+              categorias, não duas. */}
+          <Legenda itens={tendencia.legenda} ocultas={ocultas}
+                   aoClicar={(rotulo) => setOcultas((atuais) =>
+                     atuais.includes(rotulo)
+                       ? atuais.filter((c) => c !== rotulo)
+                       : [...atuais, rotulo])} />
+
+          {/* Um degrau reto de dois anos se lê como economia; quase sempre é
+              ausência de dado. O painel de saúde já conta os meses, mas quem
+              está olhando ESTE gráfico precisa da informação AQUI. */}
+          {mesesVazios > 0 && (
+            <p className="muted small">
+              {mesesVazios} {mesesVazios === 1 ? 'mês' : 'meses'} do período
+              não {mesesVazios === 1 ? 'tem' : 'têm'} lançamento nenhum: ali a
+              soma fica parada. É ausência de dado, não mês sem gasto.
+            </p>
+          )}
+        </section>
+      )}
+
       <section className="card">
         <div className="toolbar">
           <h2 className="grow" style={{ margin: 0 }}>Sazonalidade</h2>
@@ -702,7 +771,7 @@ export default function AnalyticsView({ onError }) {
 }
 
 /** Painel de saúde — o que pode estar torto antes de você acreditar no resto. */
-function SaudeDosDados({ saude, resumo, naoDetalhadoPct }) {
+function SaudeDosDados({ saude, resumo, naoDetalhadoPct, comFiltros = false }) {
   const problemas = []
 
   if (saude.dupla_contagem?.length) {
@@ -768,12 +837,25 @@ function SaudeDosDados({ saude, resumo, naoDetalhadoPct }) {
   }
   saude.avisos.forEach((a) => problemas.push({ nivel: 'info', texto: a }))
 
+  // Este painel é o único da aba que NÃO obedece às exclusões, e precisa dizer
+  // isso: sem o aviso, ver "6.717 lançamentos" aqui e um gasto total menor logo
+  // abaixo vira a próxima suspeita de bug.
+  const nota = comFiltros && (
+    <p className="muted small">
+      Esta conferência ignora os filtros da barra lateral — ela é sobre o
+      arquivo, não sobre o recorte. A identidade do mês só fecha com o mês
+      inteiro: sem uma categoria de gasto, todo mês pareceria ter sobrado
+      dinheiro.
+    </p>
+  )
+
   if (!problemas.length) {
     return (
       <section className="card">
         <div className="alert ok">
           Nada suspeito: todo lançamento tem categoria e data, e os meses fecham.
         </div>
+        {nota}
       </section>
     )
   }
@@ -787,6 +869,7 @@ function SaudeDosDados({ saude, resumo, naoDetalhadoPct }) {
           {p.texto}
         </div>
       ))}
+      {nota}
     </section>
   )
 }

@@ -20,8 +20,8 @@ import FinalReview from '../components/FinalReview'
 import UnmappedStep from '../components/UnmappedStep'
 import AutoReviewStep from '../components/AutoReviewStep'
 import {
-  BarrasDivergentes, BarrasEmpilhadas, Heatmap, LineChart, brlCompacto,
-  eixoContinuo, escala,
+  BarrasDivergentes, BarrasEmpilhadas, Heatmap, LineChart, acumular,
+  brlCompacto, eixoContinuo, escala,
 } from '../components/charts'
 import FiltrosLaterais from '../components/FiltrosLaterais'
 import { gravarFiltros, lerFiltros } from '../filtrosSalvos'
@@ -331,10 +331,10 @@ describe('RecategorizeStep', () => {
     const { container } = render(<RecategorizeStep onUpload={vi.fn()} busy={false} />)
     await userEvent.upload(container.querySelector('input[type="file"]'), [
       new File(['x'], 'saida.csv', { type: 'text/csv' }),
-      new File(['x'], 'extrato.xls', { type: 'application/vnd.ms-excel' }),
+      new File(['x'], 'sicredi_extrato_export_site.xls', { type: 'application/vnd.ms-excel' }),
     ])
     expect(screen.getByText('saida.csv')).toBeInTheDocument()
-    expect(screen.queryByText('extrato.xls')).not.toBeInTheDocument()
+    expect(screen.queryByText('sicredi_extrato_export_site.xls')).not.toBeInTheDocument()
   })
 
   it('diz que só a coluna Categoria muda', () => {
@@ -1380,6 +1380,32 @@ describe('AnalyticsView', () => {
       resumo: { ...RESPOSTA.resumo, gasto_nao_detalhado: 0, meses_nao_detalhados: [] },
     })
     expect(screen.getByText(/Nada suspeito/)).toBeInTheDocument()
+    // Sem filtro em vigor não há o que explicar.
+    expect(screen.queryByText(/ignora os filtros/)).toBeNull()
+  })
+
+  it('avisa que a conferência ignora os filtros — quando há filtro', async () => {
+    // É o único painel da aba que não obedece à barra lateral, e precisa dizer
+    // isso: ver "6.717 lançamentos" aqui e um gasto total menor logo abaixo
+    // vira a próxima suspeita de bug.
+    await montarAnalise({
+      ...RESPOSTA,
+      filtro: { ...RESPOSTA.filtro, sem_categorias: ['Casa'], sem_linhas: [] },
+    })
+    expect(screen.getByText(/ignora os filtros da barra lateral/))
+      .toBeInTheDocument()
+  })
+
+  it('o aviso também vale para exclusão de lançamento avulso', async () => {
+    // As duas portas da barra distorciam a conferência do mesmo jeito, então as
+    // duas precisam acender o aviso — e tirar UM outlier é o uso mais comum.
+    await montarAnalise({
+      ...RESPOSTA,
+      filtro: { ...RESPOSTA.filtro, sem_categorias: [],
+                sem_linhas: ['2024-01|Casa|Pix|600000.00'] },
+    })
+    expect(screen.getByText(/ignora os filtros da barra lateral/))
+      .toBeInTheDocument()
   })
 
   it('grita quando a mesma compra pode estar contada duas vezes', async () => {
@@ -2519,6 +2545,99 @@ describe('AnalyticsView — tendência por categoria', () => {
     const cabecalhos = [...screen.getByRole('heading', { name: /Tendência/ })
       .closest('section').querySelectorAll('th')].map((th) => th.textContent)
     expect(cabecalhos).toEqual(['Mês', 'Lazer', 'Saúde'])
+  })
+
+  // ------------------------------------------------ acumulado por categoria
+
+  const areaAcumulada = () =>
+    screen.queryByRole('heading', { name: /Acumulado por categoria/ })?.closest('section')
+
+  it('desenha uma faixa por categoria visível', async () => {
+    await montar()
+    // Área é `path` com `fill`; a linha da tendência é `path` com `stroke` e
+    // `fill=none`. Contar faixas é contar os preenchidos.
+    const faixas = [...areaAcumulada().querySelectorAll('svg path[fill]')]
+      .filter((p) => p.getAttribute('fill') !== 'none')
+    expect(faixas).toHaveLength(3)
+  })
+
+  it('a tabela mostra a SOMA CORRIDA, não o valor do mês', async () => {
+    // É o ponto todo do painel. Casa: 90.000 -> 91.000 -> 92.200.
+    await montar()
+    await userEvent.click(screen.getByRole('checkbox', { name: /Ver como tabela/ }))
+    const linhas = [...areaAcumulada().querySelectorAll('tbody tr')]
+      .map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent))
+    const num = (t) => Number(t.replace(/[^\d,-]/g, '').replace(',', '.'))
+    expect(linhas[0][0]).toBe('jan/24')
+    expect(linhas.map((l) => num(l[1]))).toEqual([90000, 91000, 92200])
+    expect(linhas.map((l) => num(l[2]))).toEqual([300, 700, 1200])
+    expect(linhas.map((l) => num(l[3]))).toEqual([100, 220, 360])
+    // E a coluna Total é a soma das visíveis naquele mês.
+    expect(num(linhas[2][4])).toBe(93760)
+  })
+
+  it('esconder na legenda de CIMA tira a faixa daqui também', async () => {
+    // As duas legendas leem e escrevem o mesmo estado: é uma decisão só sobre
+    // as mesmas categorias, não duas.
+    await montar()
+    await userEvent.click([...legenda()].find((b) => b.textContent === 'Casa'))
+    const faixas = [...areaAcumulada().querySelectorAll('svg path[fill]')]
+      .filter((p) => p.getAttribute('fill') !== 'none')
+    expect(faixas).toHaveLength(2)
+  })
+
+  it('tem legenda própria — oito faixas sem legenda à vista não se leem', async () => {
+    await montar()
+    const daArea = [...areaAcumulada().querySelectorAll('.viz-legenda-item')]
+    expect(daArea.map((b) => b.textContent)).toEqual(['Casa', 'Lazer', 'Saúde'])
+
+    // E clicar NELA também esconde nos dois painéis.
+    await userEvent.click(daArea.find((b) => b.textContent === 'Lazer'))
+    expect([...legenda()].find((b) => b.textContent === 'Lazer'))
+      .toHaveAttribute('aria-pressed', 'false')
+    const faixas = [...areaAcumulada().querySelectorAll('svg path[fill]')]
+      .filter((p) => p.getAttribute('fill') !== 'none')
+    expect(faixas).toHaveLength(2)
+  })
+
+  it('com tudo escondido o painel some, em vez de repetir o aviso', async () => {
+    await montar()
+    for (const nome of ['Casa', 'Lazer', 'Saúde']) {
+      await userEvent.click([...legenda()].find((b) => b.textContent === nome))
+    }
+    expect(areaAcumulada()).toBeUndefined()
+    // O aviso continua existindo UMA vez, no painel de tendência.
+    expect(screen.getByText(/Todas escondidas/)).toBeInTheDocument()
+  })
+})
+
+
+describe('charts — soma corrida', () => {
+  it('acumula cada série separadamente', () => {
+    const saida = acumular(
+      [{ periodo: '2024-01', a: 10, b: 1 },
+       { periodo: '2024-02', a: 20, b: 2 },
+       { periodo: '2024-03', a: 5, b: 3 }], ['a', 'b'])
+    expect(saida.map((l) => l.a)).toEqual([10, 30, 35])
+    expect(saida.map((l) => l.b)).toEqual([1, 3, 6])
+  })
+
+  it('mês sem lançamento SEGURA o total, não zera', () => {
+    // O gráfico de linha desenha buraco nesses meses e está certo: o gasto
+    // daquele mês é desconhecido. Aqui a grandeza é "quanto já saiu até aqui",
+    // e ela não volta a zero porque faltou um mês — fica parada.
+    const saida = acumular(
+      [{ periodo: '2024-01', a: 10 },
+       { periodo: '2024-02' },
+       { periodo: '2024-03', a: 5 }], ['a'])
+    expect(saida.map((l) => l.a)).toEqual([10, 10, 15])
+    expect(saida.map((l) => l.vazio)).toEqual([false, true, false])
+  })
+
+  it('mês com ZERO não é mês vazio', () => {
+    // A diferença que o aviso do painel depende: zero é dado, ausência não é.
+    const saida = acumular([{ periodo: '2024-01', a: 0 }], ['a'])
+    expect(saida[0].vazio).toBe(false)
   })
 })
 

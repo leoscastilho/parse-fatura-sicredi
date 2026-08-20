@@ -104,9 +104,9 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="parse-fatura-sicredi",
+    title="parser-de-fatura-multibancos",
     version="2.0.0",
-    description="Converte extratos do cartão Sicredi no CSV da planilha de finanças.",
+    description="Converte extratos de cartão (Sicredi, Nubank) no CSV da planilha de finanças.",
     lifespan=lifespan,
 )
 

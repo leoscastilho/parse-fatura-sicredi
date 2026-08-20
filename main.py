@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-parse-fatura-sicredi — CLI
+parser-de-fatura-multibancos — CLI
 
 Mesma engine da API: tudo que classifica mora em `core/`. Este arquivo só cuida
 de argumentos, arquivos e do relatório na tela, então CLI e site nunca podem

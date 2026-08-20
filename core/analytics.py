@@ -891,6 +891,28 @@ def possivel_dupla_contagem(lancamentos: list[Lancamento]) -> list[dict]:
 
 
 def saude(lancamentos: list[Lancamento], avisos: list[str]) -> dict:
+    """Conferência dos DADOS — e por isso recebe os lançamentos SEM exclusão.
+
+    Todo painel desta aba responde "para onde vai o dinheiro" e obedece à barra
+    de filtros. Este responde outra coisa: "dá para confiar nestes números?".
+    A diferença não é de estilo, é de aritmética.
+
+    A identidade do mês zerado (`receita − gasto − investimento − poupança +
+    resgate ≈ 0`) só tem sentido sobre o lançamento COMPLETO do mês. Tire uma
+    categoria de gasto e a conta passa a acusar como buraco justamente o que
+    você mandou esconder: excluindo `Casa` e `Construção`, out/25 — o mês da
+    compra do imóvel — virava R$ 643.083,77 de "sobra sem destino", que é a
+    soma exata das duas. O painel existe para apontar lançamento FALTANDO, e
+    passou a inventar um.
+
+    Vale para os sete números daqui, não só para a identidade: esconder
+    `Cartão de crédito` esconderia a dupla contagem, esconder uma categoria
+    esvaziaria um mês e ele apareceria como "mês faltando", e `total_lancamentos`
+    contaria menos linhas do que o arquivo tem.
+
+    O RECORTE DE DATAS continua valendo: "estes meses fecham?" é pergunta por
+    mês, e olhar seis meses e ler "69 meses não fecham" seria ruído.
+    """
     sem_categoria = [l for l in lancamentos if not l.categoria.strip()]
     sem_data = [l for l in lancamentos if not l.periodo]
     # Maior resíduo primeiro: um mês com R$ 55 mil em aberto importa mais do que
@@ -1150,6 +1172,13 @@ def analisar(texto: str | list[tuple[str, str]], cfg: AnalyticsConfig,
             "periodo_inicio": todos[0] if todos else None,
             "periodo_fim": todos[-1] if todos else None,
             "meses_com_dado": len(todos),
+            # Quantas linhas os PAINÉIS estão somando — já sem as exclusões.
+            # Fica aqui e não em `saude` porque as duas contagens são
+            # diferentes de propósito: a conferência olha o arquivo, os painéis
+            # olham o recorte. Mostrar a da conferência ao lado do gasto
+            # filtrado dava "6.717 linhas" acima de um total que só cobria
+            # 5.653 delas.
+            "lancamentos": len(lancamentos),
             "total_gasto": total_gasto,
             "media_mensal": round(total_gasto / meses_com_gasto, 2),
             "total_receita": _soma(l for l in lancamentos if l.papel == RECEITA),
@@ -1187,5 +1216,7 @@ def analisar(texto: str | list[tuple[str, str]], cfg: AnalyticsConfig,
         # motivo de existir uma análise do casal.
         "sankey": sankey(lancamentos, cfg, por_fonte=len(arquivos) > 1),
         "arquivos": resumo_arquivos,
-        "saude": saude(lancamentos, avisos),
+        # `no_periodo`, não `lancamentos`: a conferência é sobre os dados, e as
+        # exclusões da barra são leitura. Ver a docstring de `saude`.
+        "saude": saude(no_periodo, avisos),
     }

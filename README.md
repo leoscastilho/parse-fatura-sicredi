@@ -1,4 +1,4 @@
-# parse-fatura-sicredi
+# parser-de-fatura-multibancos
 
 Converte os extratos mensais do cartão Sicredi (`.xls`) no CSV que a planilha
 de finanças pessoais consome:

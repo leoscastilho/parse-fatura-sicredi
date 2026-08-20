@@ -906,6 +906,70 @@ def test_excluir_um_lancamento_avulso_tira_so_ele(cfg):
     assert casa["total"] == 200.0, "a luz continua em Casa"
 
 
+def test_o_painel_de_saude_ignora_as_exclusoes(cfg):
+    """A conferência é sobre os DADOS; as exclusões são leitura.
+
+    O bug que isto trava: excluindo `Casa` no histórico dele, out/25 — o mês da
+    compra do imóvel — passou a acusar R$ 643.083,77 de "sobra sem destino",
+    que era a soma exata do que tinha sido escondido. O painel existe para
+    apontar lançamento FALTANDO, e passou a inventar um a partir do que o
+    próprio usuário mandou não mostrar.
+    """
+    texto = ledger([
+        # Um mês que FECHA: entrou 1.000 de salário, saiu 1.000 em Casa.
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 1000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Aluguel", "R$ 1000.00", "x", "1", "2024", "F"),
+    ])
+    completo = analisar(texto, cfg)
+    assert completo["saude"]["total_meses_que_nao_fecham"] == 0
+
+    sem_casa = analisar(texto, cfg, sem_categorias=["Casa"])
+    # O painel de LEITURA obedece ao filtro...
+    assert sem_casa["resumo"]["total_gasto"] == 0.0
+    # ...e o de CONFERÊNCIA não: o mês continua fechando, e continua havendo
+    # dois lançamentos no arquivo.
+    assert sem_casa["saude"]["total_meses_que_nao_fecham"] == 0
+    assert sem_casa["saude"]["total_lancamentos"] == 2
+    # As duas contagens convivem, e são diferentes de propósito: a do cabeçalho
+    # acompanha o que os painéis somam, senão ficaria "2 linhas" em cima de um
+    # gasto que só cobre uma.
+    assert sem_casa["resumo"]["lancamentos"] == 1
+    assert completo["resumo"]["lancamentos"] == 2
+
+
+def test_excluir_lancamento_avulso_tambem_nao_mexe_na_saude(cfg):
+    """Mesma regra pela outra porta da barra: exclusão por linha."""
+    texto = ledger([
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 1000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Aluguel", "R$ 1000.00", "x", "1", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    alvo = next(identidade(l) for l in lancamentos if "Aluguel" in l.descricao)
+    sem = analisar(texto, cfg, sem_linhas=[alvo])
+    assert sem["resumo"]["total_gasto"] == 0.0
+    assert sem["saude"]["total_meses_que_nao_fecham"] == 0
+    assert sem["saude"]["total_lancamentos"] == 2
+
+
+def test_a_saude_ainda_segue_o_RECORTE_de_datas(cfg):
+    """O período continua valendo — só as exclusões é que não.
+
+    "Estes meses fecham?" é pergunta por mês: olhar seis meses e ler "69 meses
+    não fecham" seria ruído, não auditoria.
+    """
+    texto = ledger([
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 1000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Aluguel", "R$ 400.00", "x", "1", "2024", "F"),
+        ("Feb-24", "Renda Fixa", "Salário", "R$ 1000.00", "x", "2", "2024", "F"),
+        ("Feb-24", "Casa", "Aluguel", "R$ 1000.00", "x", "2", "2024", "F"),
+    ])
+    # Jan sobra 600 e não fecha; fev fecha.
+    assert analisar(texto, cfg)["saude"]["total_meses_que_nao_fecham"] == 1
+    so_fev = analisar(texto, cfg, inicio="2024-02", fim="2024-02")
+    assert so_fev["saude"]["total_meses_que_nao_fecham"] == 0
+    assert so_fev["saude"]["total_lancamentos"] == 2
+
+
 def test_a_lista_oferecida_e_a_do_PERIODO_sem_as_exclusoes(cfg):
     """Duas coisas que parecem detalhe e não são.
 

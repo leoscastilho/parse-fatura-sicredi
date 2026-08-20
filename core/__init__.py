@@ -1,4 +1,4 @@
-"""Motor compartilhado do parse-fatura-sicredi (CLI + API)."""
+"""Motor compartilhado do parser-de-fatura-multibancos (CLI + API)."""
 
 from .pipeline import (
     CSV_COLUMNS,
