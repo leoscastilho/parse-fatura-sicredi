@@ -36,7 +36,8 @@ from .pipeline import ClassifiedLine
 from .planilha import ANCORAS, ler_tabela, parse_valor, tabela_da_primeira_linha
 from .profiles import OutputSchema
 from .rules import LineState, Ruleset
-from .text import merchant_key, merchant_of, purchase_date_of
+from .text import merchant_key, merchant_of, normalize, purchase_date_of
+from .travel import TRAVEL_CATEGORY
 
 
 class RecategorizeError(ValueError):
@@ -171,6 +172,36 @@ def read_output_csv(
     return linhas
 
 
+def protegida(anterior: str, rules: Ruleset) -> str:
+    """Por que esta linha não pode ser reclassificada — ou "" se ela pode.
+
+    DUAS FAMÍLIAS, pelo mesmo motivo de fundo: nas duas a categoria não responde
+    "o que foi comprado", e responder isso é a única coisa que a regra sabe
+    fazer — ela lê a DESCRIÇÃO e procura palavra de estabelecimento.
+
+    1. **As fixas** (`configuracao.categorias_fixas`): Renda Fixa, Renda
+       Variável, Resgate Poupança, Poupança, Investimento. Dizem de onde o
+       dinheiro veio ou para onde foi guardado. Na planilha as três primeiras
+       são SOMADAS e o resto é subtraído, então trocar uma delas por `Presentes`
+       não erra só o rótulo: erra o SINAL, e o estrago é o dobro do valor.
+
+    2. **Viagem**: a linha foi para lá numa decisão manual, e a categoria real
+       está guardada dentro da descrição, entre parênteses — `(Lazer) {Campo
+       Belo}`. A regra reescreveria a coluna e deixaria o parêntese órfão: a
+       linha voltaria a ser Lazer com um `(Lazer)` colado no nome, e a viagem
+       sumiria da planilha sem deixar rastro.
+    """
+    if rules.is_fixed(anterior):
+        return "categoria fixa"
+    # Mesma régua das fixas — `normalize` — e não uma comparação exata: uma
+    # proteção que exige o V maiúsculo e outra que aceita `renda variavel`
+    # seriam duas regras para a mesma ideia, e a diferença só apareceria no dia
+    # em que um arquivo antigo trouxesse `VIAGEM`.
+    if normalize(anterior) == normalize(TRAVEL_CATEGORY):
+        return "viagem"
+    return ""
+
+
 def recategorize(
     linhas: list[ClassifiedLine], rules: Ruleset
 ) -> tuple[list[ClassifiedLine], list[CategoryChange]]:
@@ -180,13 +211,29 @@ def recategorize(
     regra vence — é por isso que você está reprocessando. Mas toda troca dessas
     entra em `mudancas`, para você conferir uma a uma antes de exportar: uma
     regra nova pode desfazer um ajuste que você fez à mão na planilha.
+
+    A exceção são as linhas PROTEGIDAS (ver `protegida`), onde a regra não vence
+    nunca: ali a categoria de origem não é um chute velho esperando correção, é
+    a informação que a linha existe para carregar.
     """
     resultado: list[ClassifiedLine] = []
     mudancas: list[CategoryChange] = []
 
     for linha in linhas:
-        match = rules.classify(linha.merchant_raw)
         anterior = linha.categoria_anterior or ""
+
+        motivo = protegida(anterior, rules)
+        if motivo:
+            # `AUTO`, não o estado da regra: a linha está resolvida e não pode
+            # cair em "Novos" pedindo categoria — ela já tem a certa. São 826
+            # linhas no arquivo dele; perguntadas uma a uma, a tela vira ruído.
+            resultado.append(ClassifiedLine(**{
+                **linha.to_dict(), "categoria": anterior,
+                "state": LineState.AUTO, "matched": motivo,
+            }))
+            continue
+
+        match = rules.classify(linha.merchant_raw)
 
         if match.categoria:
             categoria, state, matched = match.categoria, match.state, match.matched

@@ -144,6 +144,12 @@ class AssignmentSet(BaseModel):
 
 class CategoriesResponse(BaseModel):
     categories: list[str]
+    # Subconjunto de `categories` que descreve o MOVIMENTO do dinheiro (Renda
+    # Fixa, Poupança, Investimento…). Vai junto, e não numa rota própria, porque
+    # quem monta um seletor precisa das duas listas ao mesmo tempo — separadas,
+    # a tela renderizaria uma vez com a lista cheia antes da segunda resposta
+    # chegar, e as fixas apareceriam por um instante.
+    fixed_categories: list[str] = Field(default_factory=list)
     keywords_by_category: dict[str, list[str]]
     ordered_rules: list[dict[str, str]]
     marketplaces: list[str]

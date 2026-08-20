@@ -42,6 +42,10 @@ class Ruleset:
     default_category: str = ""
     collapse_whitespace: bool = True
     categories: list[str] = field(default_factory=list)
+    # Categorias que dizem para ONDE o dinheiro se moveu, não o que ele comprou:
+    # Renda Fixa, Renda Variável, Resgate Poupança, Poupança, Investimento. Ver
+    # `is_fixed` para o que a lista muda.
+    fixed: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
     ordered_rules: list[tuple[re.Pattern, str]] = field(default_factory=list)
     keywords: list[tuple[str, str]] = field(default_factory=list)  # (trecho, categoria)
@@ -69,6 +73,7 @@ class Ruleset:
             default_category=(cfg.get("categoria_padrao") or ""),
             collapse_whitespace=bool(cfg.get("colapsar_espacos", True)),
             categories=list(cfg.get("categorias") or []),
+            fixed=list(cfg.get("categorias_fixas") or []),
             exclude=[normalize(x) for x in (raw.get("excluir") or [])],
             unknown=[normalize(x) for x in (raw.get("desconhecidos") or [])],
             manual=[normalize(x) for x in (raw.get("marketplaces") or [])],
@@ -114,6 +119,28 @@ class Ruleset:
     def is_manual(self, description: str) -> bool:
         norm = normalize(description)
         return any(self._hit(t, norm) for t in self.manual)
+
+    def is_fixed(self, categoria: str) -> bool:
+        """A categoria descreve o MOVIMENTO do dinheiro, não o que ele comprou?
+
+        `Renda Variável` não é um tipo de gasto, é a resposta para "de onde
+        veio". Uma palavra-chave que casa com a descrição está respondendo outra
+        pergunta — "o que foi comprado" — e trocar uma pela outra inverte o
+        sinal da linha na planilha, onde essas categorias são SOMADAS e o resto
+        é subtraído.
+
+        Não é hipótese: nos 6.712 lançamentos dele, as regras atuais querem
+        mexer em 73 linhas assim, R$ 45.179. `Presente da Vó Marta` (dinheiro
+        que ele RECEBEU, Renda Variável) vira `Presentes`, a categoria de gasto;
+        `Cashback Picpay` vira `Ajuste`. Cada uma dessas trocas tira o valor do
+        lado somado e o joga no lado subtraído — um erro de duas vezes o valor.
+
+        A comparação passa por `normalize` para `renda variavel` casar com
+        `Renda Variável`: quem digitou o nome sem acento numa exportação antiga
+        continua protegido.
+        """
+        alvo = normalize(categoria)
+        return bool(alvo) and any(normalize(c) == alvo for c in self.fixed)
 
     def classify(self, description: str) -> MatchResult:
         """Ordem: regras -> marketplaces -> palavras -> desconhecidos -> vazio."""

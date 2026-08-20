@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import * as api from './api'
+import { CategoriasFixas } from './components/CategorySelect'
 import UploadStep from './components/UploadStep'
 import UnmappedStep from './components/UnmappedStep'
 import AutoReviewStep from './components/AutoReviewStep'
@@ -52,6 +53,11 @@ export default function App() {
 
   const [step, setStep] = useState('upload')
   const [categories, setCategories] = useState([])
+  // As categorias que dizem para onde o dinheiro se MOVEU (Renda Fixa,
+  // Poupança, Investimento…). Saem dos seletores que atribuem categoria a uma
+  // compra, e só deles: os editores de regra continuam com a lista inteira,
+  // senão não haveria como consertar uma regra que já aponta para uma delas.
+  const [fixas, setFixas] = useState([])
   const [session, setSession] = useState(null)
   const [assignments, setAssignments] = useState(new Map())
   const [flaggedRules, setFlaggedRules] = useState(0)
@@ -72,7 +78,8 @@ export default function App() {
 
   useEffect(() => {
     api.getCategories()
-      .then((data) => setCategories(data.categories))
+      .then((data) => { setCategories(data.categories)
+                        setFixas(data.fixed_categories || []) })
       .catch((e) => setError(`Não consegui carregar as categorias: ${e.message}`))
     api.getRules()
       .then((data) => setFlaggedRules(data.flagged_count))
@@ -225,7 +232,10 @@ export default function App() {
     setLiberadas(['upload'])
     setStep('upload')
     setError(null)
-    api.getCategories().then((d) => setCategories(d.categories)).catch(() => {})
+    api.getCategories()
+      .then((d) => { setCategories(d.categories)
+                     setFixas(d.fixed_categories || []) })
+      .catch(() => {})
   }
 
   // A ORDEM importa: `etapas` é `const`, então lê-la antes da declaração é
@@ -254,6 +264,11 @@ export default function App() {
   }
 
   return (
+    // A lista das fixas vale para a árvore INTEIRA, e é de propósito que não
+    // haja exceção: um seletor que oferece `Poupança` para uma compra é o mesmo
+    // erro em qualquer tela. Como prop, ela precisava ser repassada em seis
+    // seletores, e apagá-la em três deles não derrubava teste nenhum.
+    <CategoriasFixas.Provider value={fixas}>
     <div className="shell">
       <aside className={`sidebar ${sidebarOpen ? '' : 'closed'}`}>
         <div className="brand">
@@ -500,5 +515,6 @@ export default function App() {
         </div>
       </div>
     </div>
+    </CategoriasFixas.Provider>
   )
 }

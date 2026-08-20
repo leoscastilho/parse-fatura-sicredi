@@ -170,6 +170,7 @@ export default function UnmappedStep({
                   <CategorySelect
                     value={categoriaDe(item)}
                     categories={categories}
+                    
                     onChange={(categoria) =>
                       setAssignment('merchant', item.merchant, {
                         categoria, mark_unknown: false,

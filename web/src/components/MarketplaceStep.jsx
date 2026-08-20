@@ -101,6 +101,7 @@ export default function MarketplaceStep({
         <CategorySelect
           value={bulkCategory}
           categories={categories}
+          
           placeholder="— escolher —"
           onChange={setBulkCategory}
         />

@@ -47,6 +47,41 @@ configuracao:
   # "DM *Nintend"). Ponha `false` para manter byte a byte como vem do Sicredi.
   colapsar_espacos: true
 
+  # ---------------------------------------------------------------------------
+  #  Categorias que o portal NÃO atribui e NÃO reescreve.
+  #
+  #  Elas não dizem o que foi comprado, dizem para onde o dinheiro se moveu. Na
+  #  planilha, `Renda Fixa`, `Renda Variável` e `Resgate Poupança` são SOMADAS e
+  #  todo o resto é subtraído; `Poupança` e `Investimento` são dinheiro guardado,
+  #  não consumido.
+  #
+  #  A regra de categorização lê a DESCRIÇÃO e procura nome de estabelecimento —
+  #  ela responde "o que foi comprado", que é a outra pergunta. Quando as duas se
+  #  cruzam, o resultado é o oposto do certo. Medido no histórico (6.712 linhas):
+  #  as regras de hoje querem trocar 73 linhas destas, R$ 45.179. Entre elas,
+  #  `Presente da Vó Marta` (dinheiro RECEBIDO, Renda Variável) virando
+  #  `Presentes`, e `Cashback Picpay` virando `Ajuste` — cada troca tira o valor
+  #  do lado somado e o joga no subtraído, um erro de duas vezes o valor.
+  #
+  #  Efeito em três lugares:
+  #    * a recategorização nunca propõe trocar a categoria de uma linha destas;
+  #    * elas não aparecem nos seletores de Novos, Marketplace, conferência e
+  #      viagem — não dá para atribuí-las a uma compra de fatura;
+  #    * a linha que JÁ está numa delas continua mostrando a sua, sempre.
+  #
+  #  Elas continuam na lista `categorias` acima de propósito: o `categorize.py`
+  #  e os editores de regra precisam do nome completo.
+  #
+  #  Estes mesmos nomes aparecem em `papeis:` no analytics.yml, que é o que a aba
+  #  de Análise usa para somar. Renomeou na planilha? Mude nos dois arquivos.
+  # ---------------------------------------------------------------------------
+  categorias_fixas:
+    - Renda Fixa
+    - Renda Variável
+    - Resgate Poupança
+    - Poupança
+    - Investimento
+
   # Lista oferecida pelo `categorize.py`. Mantenha igual à da planilha.
   categorias:
     - Ajuste
@@ -178,7 +213,6 @@ palavras:
     - DELIVERY
     - PASTELZINHO
     - RODOSNACK
-    - MARMITA
     - LANCHE
     - CASA DE SINHA
     - GARAGEM DA PIZZA
@@ -189,9 +223,6 @@ palavras:
 
   Lazer:
     - SYMPLA
-    - CLUBE
-    - COUNTRY
-    - CAMPO BELO
     - CINEMA
     - INGRESSO
     - BAR DO
@@ -218,7 +249,6 @@ palavras:
     - LATAM
     - DECOLAR
     - 123MILHAS
-    - RESERVA DE VIAGEM
     - UNITED
 
   Assinaturas:
@@ -230,6 +260,7 @@ palavras:
     - LIVELO
     - QUINDIM
     - EC MELIMAI
+    - GOOGLEBALTAPI
 
   Seguros:
     - PRUDENT                  # seguro de vida (antes estava em Saúde)
@@ -238,7 +269,6 @@ palavras:
     - SEGURO
     - APOLICE
     - ICATU
-    - SOMPO
     - ALLIANZ
     - BRADESCO SEG
     - TOKIO MARINE
@@ -259,7 +289,6 @@ palavras:
     - VALEDRIVER
     - MECANICA
     - PNEU
-    - REVISAO
     - LAVA JATO
     - CONSORSIO
     - CONSORCIO
@@ -276,14 +305,10 @@ palavras:
     - DENTISTA
     - PSICOLOGO
     - DERMATOLOGISTA
-    - FISIOTERAPIA
     - ECONOMIZE JA
     - OTICA
     - UNIMED
     - PLANO DE SAUDE
-    - SUPLEMENTO
-    - WHEY
-    - CREATINA
 
   Vestuário:
     - RENNER
@@ -312,15 +337,8 @@ palavras:
     - PLANEJADOS
     - IPTU
     - CONDOMINIO
-    - FAXINA
     - ARTEX
-    - GALAO
-    - CAMA
-    - SOFA
-    - FOGAO
-    - CADEIRAS
     - ESCRITORIO
-    - CARITAS MAT ELETRIC
 
   Construção:
     - OBRA
@@ -331,6 +349,7 @@ palavras:
     - MATERIAL DE CONSTRUCAO
     - CONSTRUMINAS
     - LC TINTAS
+    - CARITAS MAT ELETRIC
 
   Cachorro:
     - PETLOVE
@@ -341,19 +360,12 @@ palavras:
     - VETERINARI
     - ZOOCORRO
     - JOYNER
-    - ADESTRAMENTO
-    - COLEIRA
     - SHOPGA
 
   Eletrônicos:
     - SAMSUNG
     - LOGITECH
     - KABUM
-    - MOUSE
-    - TECLADO
-    - CELULAR
-    - TABLET
-    - ROTEADOR
     - PIXEL HOUSE
     - BEST BUY
 
@@ -376,7 +388,6 @@ palavras:
     - AUDIBLE
     - EBOOK
     - INGLES
-    - FIES
 
   Serviços:
     - ANUIDADE
@@ -385,7 +396,6 @@ palavras:
     - CLARO
     - RECARGA
     - CLOUDFLARE
-    - GOOGLEBALTAPI
     - CABELEIREIRO
     - CABELEREIRO
     - BARBEARIA

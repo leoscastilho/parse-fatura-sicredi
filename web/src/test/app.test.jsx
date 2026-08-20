@@ -7,17 +7,18 @@
  * extensão que evita mandar um .csv para o perfil do Sicredi.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { applyTheme } from '../theme'
 import MarketplaceStep from '../components/MarketplaceStep'
 import UploadStep from '../components/UploadStep'
-import CategorySelect from '../components/CategorySelect'
+import CategorySelect, { CategoriasFixas } from '../components/CategorySelect'
 import RecategorizeStep, { ChangesSummary } from '../components/RecategorizeStep'
 import TravelStep from '../components/TravelStep'
 import FinalReview from '../components/FinalReview'
 import UnmappedStep from '../components/UnmappedStep'
+import AutoReviewStep from '../components/AutoReviewStep'
 import {
   BarrasDivergentes, BarrasEmpilhadas, Heatmap, LineChart, brlCompacto,
   eixoContinuo, escala,
@@ -25,6 +26,7 @@ import {
 import FiltrosLaterais from '../components/FiltrosLaterais'
 import { gravarFiltros, lerFiltros } from '../filtrosSalvos'
 import Reservas from '../components/Reservas'
+import Sankey from '../components/Sankey'
 import Residuos from '../components/Residuos'
 
 // ---------------------------------------------------------------- tema
@@ -63,11 +65,12 @@ const LINHAS = [
     valor: 19.9, statement: 'agosto.xls' },
 ]
 
-function montarMarketplace({ atribuicoes = {} } = {}) {
+function montarMarketplace({ atribuicoes = {}, fixas = [] } = {}) {
   const estado = new Map(Object.entries(atribuicoes))
   const setAssignment = vi.fn()
   const setManyAssignments = vi.fn()
   render(
+    <CategoriasFixas.Provider value={fixas}>
     <MarketplaceStep
       session={{ marketplace_items: LINHAS }}
       categories={['Casa', 'Hobby', 'Outros']}
@@ -75,7 +78,8 @@ function montarMarketplace({ atribuicoes = {} } = {}) {
       setAssignment={setAssignment}
       setManyAssignments={setManyAssignments}
       onNext={() => {}}
-    />,
+    />
+    </CategoriasFixas.Provider>,
   )
   return { setAssignment, setManyAssignments }
 }
@@ -236,8 +240,89 @@ describe('CategorySelect', () => {
     await userEvent.selectOptions(screen.getByRole('combobox'), '')
     expect(onChange).toHaveBeenCalledWith('')
   })
+
+  const comFixas = (fixas, elemento) =>
+    render(<CategoriasFixas.Provider value={fixas}>{elemento}</CategoriasFixas.Provider>)
+
+  it('não oferece as categorias fixas — nenhuma compra é "Renda Fixa"', () => {
+    // Elas dizem para onde o dinheiro se MOVEU, não o que ele comprou. Uma
+    // escolhida por engano inverte o sinal da linha na planilha, onde essas
+    // categorias são somadas e o resto é subtraído.
+    comFixas(['Poupança'],
+      <CategorySelect value="" categories={['Casa', 'Poupança', 'Lazer']}
+                      onChange={() => {}} />)
+    const select = screen.getByRole('combobox')
+    expect(within(select).queryByText('Poupança')).toBeNull()
+    expect(within(select).getByText('Casa')).toBeInTheDocument()
+  })
+
+  it('a linha que JÁ está numa fixa continua mostrando a dela', () => {
+    // Um <select> controlado cujo `value` não existe entre as opções cai para
+    // vazio no primeiro render e leva a categoria junto, em silêncio. São 825
+    // linhas assim no arquivo dele.
+    comFixas(['Poupança'],
+      <CategorySelect value="Poupança" categories={['Casa', 'Poupança']}
+                      onChange={() => {}} />)
+    const select = screen.getByRole('combobox')
+    expect(select.value).toBe('Poupança')
+    expect(within(select).getByText('Poupança')).toBeInTheDocument()
+    // E não pode virar "(nova)": ela existe no YAML, só não estava nesta lista.
+    expect(within(select).queryByText('Poupança (nova)')).toBeNull()
+  })
+
+
 })
 
+
+describe('as quatro telas que atribuem categoria escondem as fixas', () => {
+  // A lista chega por CONTEXTO, não por prop, e é por isso que estes quatro
+  // testes bastam. Como prop, ela precisava ser repassada em quatro lugares, e
+  // apagá-la em três deles não derrubava teste nenhum — a tela renderizava, o
+  // seletor funcionava, e o erro só apareceria meses depois na soma da planilha.
+  const CATS = ['Casa', 'Poupança', 'Outros']
+  const FIXAS = ['Poupança']
+
+  const opcoes = () => [...document.querySelectorAll('.category-select option')]
+    .map((o) => o.textContent)
+
+  const comFixas = (elemento) =>
+    render(<CategoriasFixas.Provider value={FIXAS}>{elemento}</CategoriasFixas.Provider>)
+
+  it('Novos', () => {
+    comFixas(<UnmappedStep
+      session={{ transaction_id: 't1', unmapped_items: [
+        { merchant: 'BRASEIRO', count: 1, total: 10, samples: ['x'], statements: ['a'] }] }}
+      categories={CATS}
+      getAssignment={() => null} setAssignment={vi.fn()}
+      setManyAssignments={vi.fn()} onCategoriesChanged={vi.fn()}
+      onNext={vi.fn()} onError={vi.fn()} />)
+    expect(opcoes()).toContain('Casa')
+    expect(opcoes()).not.toContain('Poupança')
+  })
+
+  it('Revisão', () => {
+    comFixas(<AutoReviewStep
+      session={{ auto_classified_items: [
+        { merchant: 'BRASEIRO', categoria: 'Casa', count: 1, total: 10,
+          samples: ['x'], matched: 'BRASEIRO' }] }}
+      categories={CATS}
+      getAssignment={() => null} setAssignment={vi.fn()} onNext={vi.fn()} />)
+    expect(opcoes()).toContain('Casa')
+    expect(opcoes()).not.toContain('Poupança')
+  })
+
+  it('Marketplace', () => {
+    montarMarketplace({ fixas: FIXAS })
+    expect(opcoes()).toContain('Casa')
+    expect(opcoes()).not.toContain('Poupança')
+  })
+
+  it('Viagem', () => {
+    montarViagem({ fixas: FIXAS })
+    expect(opcoes()).toContain('Hobby')
+    expect(opcoes()).not.toContain('Poupança')
+  })
+})
 
 // ---------------------------------------------------------------- recategorizar
 
@@ -301,13 +386,14 @@ const VIAGEM_ITENS = [
 
 function montarViagem({
   ranges = [], items = VIAGEM_ITENS, warnings = [], rejected = new Set(),
-  atribuicoes = {}, purchase_range = { inicio: '2026-06-26', fim: '2026-07-08' },
+  atribuicoes = {}, fixas = [], purchase_range = { inicio: '2026-06-26', fim: '2026-07-08' },
 } = {}) {
   const onRangesChange = vi.fn()
   const onToggle = vi.fn()
   const setAssignment = vi.fn()
   const onNext = vi.fn()
   render(
+    <CategoriasFixas.Provider value={fixas}>
     <TravelStep
       session={{ purchase_range }}
       categories={['Alimentação', 'Hobby', 'Outros']}
@@ -327,7 +413,8 @@ function montarViagem({
       onToggle={onToggle}
       onNext={onNext}
       busy={false}
-    />,
+    />
+    </CategoriasFixas.Provider>,
   )
   return { onRangesChange, onToggle, setAssignment, onNext }
 }
@@ -953,6 +1040,98 @@ describe('App — navegação travada até confirmar', () => {
     await screen.findByRole('button', { name: /\d\s*Novos/ })
     expect(rolar).toHaveBeenCalledWith(expect.objectContaining({ top: 0 }))
   })
+
+  it('as fixas do servidor chegam até o seletor de "Novos"', async () => {
+    // O caminho inteiro num teste só: /categories -> estado do App -> etapa ->
+    // CategorySelect. Cada pedaço tem teste próprio, mas o elo que costuma
+    // faltar é a prop esquecida em UM dos quatro passos — e essa não aparece
+    // em nenhum teste de unidade.
+    vi.resetModules()
+    vi.doMock('../api', () => ({
+      getCategories: vi.fn().mockResolvedValue({
+        categories: ['Casa', 'Poupança'], fixed_categories: ['Poupança'],
+      }),
+      getRules: vi.fn().mockResolvedValue({ flagged_count: 0 }),
+      getConfig: vi.fn().mockResolvedValue({
+        banks: [{ id: 'sicredi', nome: 'Sicredi', extensoes: ['.xls'],
+                  validado: true, tema: { primaria: '#3FA110' } }],
+        banco_padrao: 'sicredi',
+      }),
+      uploadPeriodo: vi.fn().mockResolvedValue({ purchase_range: null }),
+      upload: vi.fn().mockResolvedValue({
+        transaction_id: 't1', modo: 'fatura', statements: [], dropped: [],
+        unmapped_items: [{ merchant: 'PADARIA X', count: 1, total: 42,
+                           samples: ['[Cartão] Padaria X'], statements: ['ago.xls'] }],
+        auto_classified_items: [], marketplace_items: [], ignored_items: [],
+        warnings: [],
+      }),
+      travel: vi.fn(), preview: vi.fn(), exportCsv: vi.fn(),
+    }))
+    const { default: App } = await import('../App')
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Importar fatura' })
+
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           new File(['x'], 'fatura.xls'))
+    await userEvent.click(screen.getByRole('button', { name: 'Processar' }))
+    await screen.findByText('PADARIA X')
+
+    const opcoes = [...document.querySelectorAll('.category-select option')]
+      .map((o) => o.textContent)
+    expect(opcoes).toContain('Casa')
+    expect(opcoes).not.toContain('Poupança')
+  })
+
+  it('uma regra que JÁ aponta para uma fixa continua legível e editável', async () => {
+    // O outro lado da mesma moeda. O Provider vale para a árvore INTEIRA, então
+    // o editor de regras também esconde as fixas — apontar uma palavra-chave
+    // para `Poupança` é o mesmo erro de sempre, só que para sempre em vez de
+    // uma linha. O que NÃO pode acontecer é a regra que já está lá abrir com o
+    // seletor vazio: a primeira edição da tela a apagaria sem ninguém escolher
+    // nada. É a guarda `c !== value` que segura isso, e é ela que este teste
+    // exercita pelo caminho real, da API à tela.
+    vi.resetModules()
+    vi.doMock('../api', () => ({
+      getCategories: vi.fn().mockResolvedValue({
+        categories: ['Casa', 'Poupança'], fixed_categories: ['Poupança'],
+      }),
+      getRules: vi.fn().mockResolvedValue({
+        entries: [{ block: 'palavras', categoria: 'Poupança', line: 12,
+                    value: 'APLICACAO CDB', comment: '', flagged: false,
+                    redundant_with: [], overrides: [] },
+                  { block: 'palavras', categoria: 'Casa', line: 13,
+                    value: 'LOJA XPTO', comment: '', flagged: false,
+                    redundant_with: [], overrides: [] }],
+        categories: ['Casa', 'Poupança'], ordered_rules: [], flagged_count: 0,
+      }),
+      getConfig: vi.fn().mockResolvedValue({
+        banks: [{ id: 'sicredi', nome: 'Sicredi', extensoes: ['.xls'],
+                  validado: true, tema: { primaria: '#3FA110' } }],
+        banco_padrao: 'sicredi',
+      }),
+      upload: vi.fn(), recategorize: vi.fn(), travel: vi.fn(),
+      preview: vi.fn(), exportCsv: vi.fn(),
+    }))
+    const { default: App } = await import('../App')
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Importar fatura' })
+
+    await userEvent.click(screen.getByRole('button', { name: /Regras/ }))
+    await screen.findByText('APLICACAO CDB')
+
+    const seletor = document.querySelector('.category-select')
+    expect(seletor.value).toBe('Poupança')
+    expect([...seletor.options].map((o) => o.textContent)).toContain('Poupança')
+    // E dá para tirá-la de lá: o destino continua sendo oferecido.
+    expect([...seletor.options].map((o) => o.textContent)).toContain('Casa')
+
+    // Já a regra vizinha, que aponta para Casa, NÃO pode oferecer Poupança como
+    // destino: mandar uma palavra-chave para lá erraria toda linha futura que
+    // casasse com ela, não só esta.
+    const vizinha = document.querySelectorAll('.category-select')[1]
+    expect(vizinha.value).toBe('Casa')
+    expect([...vizinha.options].map((o) => o.textContent)).not.toContain('Poupança')
+  })
 })
 
 // ------------------------------------------------- poupança, carry e reserva
@@ -1227,7 +1406,7 @@ describe('AnalyticsView', () => {
   })
 })
 
-describe('AnalyticsView — recorte de período fixo no topo', () => {
+describe('AnalyticsView — recorte de período, dentro da barra de filtros', () => {
   const RESPOSTA = {
     arquivo: 'all.csv',
     resumo: {
@@ -1262,54 +1441,133 @@ describe('AnalyticsView — recorte de período fixo no topo', () => {
     await userEvent.upload(document.querySelector('input[type=file]'),
                            new File(['a'], 'all.csv', { type: 'text/csv' }))
     await screen.findByText('all.csv')
+    // O recorte mora na barra lateral, que começa fechada.
+    await userEvent.click(screen.getByRole('button', { name: /Filtros/ }))
     return { analytics }
   }
 
-  it('conta os presets a partir do último mês COM DADO, não de hoje', async () => {
-    // Um arquivo exportado em 2024 e aberto em 2026 devolveria "último ano"
-    // vazio se a âncora fosse o relógio — e o clique num botão perfeitamente
-    // razoável viraria um erro no lugar do gráfico.
+  const escolherJanela = (id) =>
+    userEvent.selectOptions(screen.getByLabelText('Janela de tempo'), id)
+
+  it('conta as janelas a partir do último mês COM DADO, não de hoje', async () => {
+    // Um arquivo exportado em 2024 e aberto em 2026 devolveria "últimos 12
+    // meses" vazio se a âncora fosse o relógio — e escolher uma opção
+    // perfeitamente razoável viraria um erro no lugar do gráfico.
     const { analytics } = await montar()
-    await userEvent.click(screen.getByRole('button', { name: '1 ano' }))
+    await escolherJanela('12m')
     expect(analytics).toHaveBeenLastCalledWith(
-      expect.any(File), expect.objectContaining({ inicio: '2023-07', fim: '2024-06' }))
+      [expect.any(File)],
+      expect.objectContaining({ inicio: '2023-07-01', fim: '2024-06-30' }))
+  })
+
+  it('a janela preenche o dia: primeiro e último do mês, de verdade', async () => {
+    // Junho tem 30 e fevereiro bissexto tem 29. Uma tabela fixa de 31 erraria
+    // os dois, e o campo de data recusaria o valor sem dizer por quê.
+    const { analytics } = await montar({
+      ...RESPOSTA, intervalo_disponivel: { inicio: '2019-03', fim: '2024-02' },
+    })
+    await escolherJanela('1m')
+    expect(analytics).toHaveBeenLastCalledWith(
+      [expect.any(File)],
+      expect.objectContaining({ inicio: '2024-02-01', fim: '2024-02-29' }))
   })
 
   it('pedir mais período do que o arquivo tem devolve o arquivo inteiro', async () => {
-    const { analytics } = await montar()
-    await userEvent.click(screen.getByRole('button', { name: '5 anos' }))
-    // 60 meses antes de jun/24 seria jul/19, mas o arquivo começa em mar/19:
-    // pedir 5 anos de um arquivo de 3 não é erro, é pedir tudo.
+    // O arquivo aqui cobre jan/22 a jun/24. 60 meses antes de jun/24 é jul/19,
+    // que ele não tem: pedir 5 anos de um arquivo de dois e meio não é erro, é
+    // pedir o arquivo inteiro.
+    const { analytics } = await montar({
+      ...RESPOSTA, intervalo_disponivel: { inicio: '2022-01', fim: '2024-06' },
+    })
+    await escolherJanela('60m')
     expect(analytics).toHaveBeenLastCalledWith(
-      expect.any(File), expect.objectContaining({ inicio: '2019-07', fim: '2024-06' }))
-    await userEvent.click(screen.getByRole('button', { name: '2 anos' }))
+      [expect.any(File)],
+      expect.objectContaining({ inicio: '2022-01-01', fim: '2024-06-30' }))
+    // E a janela que CABE não é esticada até a borda do arquivo.
+    await escolherJanela('24m')
     expect(analytics).toHaveBeenLastCalledWith(
-      expect.any(File), expect.objectContaining({ inicio: '2022-07', fim: '2024-06' }))
+      [expect.any(File)],
+      expect.objectContaining({ inicio: '2022-07-01', fim: '2024-06-30' }))
   })
 
-  it('"1 mês" é um mês, não zero', async () => {
+  it('"Este mês" é o mês mais recente do arquivo, e é um mês, não zero', async () => {
     const { analytics } = await montar()
-    await userEvent.click(screen.getByRole('button', { name: '1 mês' }))
+    await escolherJanela('1m')
     expect(analytics).toHaveBeenLastCalledWith(
-      expect.any(File), expect.objectContaining({ inicio: '2024-06', fim: '2024-06' }))
+      [expect.any(File)],
+      expect.objectContaining({ inicio: '2024-06-01', fim: '2024-06-30' }))
   })
 
-  it('"Tudo" limpa o recorte em vez de mandar as pontas do arquivo', async () => {
+  it('"Todo o histórico" limpa o recorte em vez de mandar as pontas', async () => {
     // Mandar as datas exatas funcionaria, mas prende a análise ao que o arquivo
     // tinha na primeira leitura. Vazio é "sem recorte", que é o que se quer.
     const { analytics } = await montar()
-    await userEvent.click(screen.getByRole('button', { name: '1 ano' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Tudo' }))
+    await escolherJanela('12m')
+    await escolherJanela('tudo')
     expect(analytics).toHaveBeenLastCalledWith(
-      expect.any(File), expect.objectContaining({ inicio: '', fim: '' }))
+      [expect.any(File)], expect.objectContaining({ inicio: '', fim: '' }))
+  })
+
+  it('os campos de data são editáveis à mão e passam a mandar em tudo', async () => {
+    const { analytics } = await montar()
+    fireEvent.change(screen.getByLabelText('Início do período'),
+                     { target: { value: '2023-11-14' } })
+    expect(analytics).toHaveBeenLastCalledWith(
+      [expect.any(File)],
+      // A ponta de trás continua sendo a do arquivo, com o dia preenchido.
+      expect.objectContaining({ inicio: '2023-11-14', fim: '2024-06-30' }))
+    // E a lista de janelas passa a dizer "Personalizado" — pelas duas pontas,
+    // não só pela de trás.
+    expect(await screen.findByRole('option', { name: 'Personalizado' }))
+      .toBeInTheDocument()
+  })
+
+  it('mexer nos campos tira a janela do lugar e mostra "Personalizado"', async () => {
+    // Deixar "Últimos 12 meses" selecionado depois de empurrar uma ponta seria
+    // a lista mentindo sobre o que está na tela.
+    await montar({ ...RESPOSTA, filtro: { inicio: '2023-11-14', fim: '2024-06-30' } })
+    fireEvent.change(screen.getByLabelText('Fim do período'),
+                     { target: { value: '2024-05-20' } })
+    expect(await screen.findByRole('option', { name: 'Personalizado' }))
+      .toBeInTheDocument()
+    expect(screen.getByLabelText('Janela de tempo').value).toBe('custom')
+  })
+
+  it('o recorte conta na bolha — painel filtrado não pode parecer completo', async () => {
+    await montar({ ...RESPOSTA, filtro: { inicio: '2023-07-01', fim: '2024-06-30' } })
+    expect(screen.getByRole('button', { name: /Filtros/ }).textContent).toContain('1')
+  })
+
+  it('uma ponta só já é recorte, e a bolha conta', async () => {
+    // O servidor aceita intervalo aberto de um lado. "De jul/23 em diante" some
+    // com quatro anos de painel; se a bolha só acendesse com as duas pontas,
+    // seria exatamente a tela filtrada que se passa por completa.
+    await montar({ ...RESPOSTA, filtro: { inicio: '2023-07-01', fim: '' } })
+    expect(screen.getByRole('button', { name: /Filtros/ }).textContent).toContain('1')
+  })
+
+  it('recorte que volta sem dia ainda cabe no campo de data', async () => {
+    // O `input[type=date]` recusa "2023-07" em silêncio: o valor some e a tela
+    // mostra campo vazio, como se não houvesse recorte nenhum.
+    await montar({ ...RESPOSTA, filtro: { inicio: '2023-07', fim: '2024-06' } })
+    expect(screen.getByLabelText('Início do período').value).toBe('2023-07-01')
+    expect(screen.getByLabelText('Fim do período').value).toBe('2024-06-30')
   })
 
   it('o seletor de datas não deixa pedir mês que o arquivo não cobre', async () => {
     await montar()
-    const de = screen.getByLabelText('Início do período')
-    const ate = screen.getByLabelText('Fim do período')
-    expect(de).toHaveAttribute('min', '2019-03')
-    expect(ate).toHaveAttribute('max', '2024-06')
+    expect(screen.getByLabelText('Início do período'))
+      .toHaveAttribute('min', '2019-03-01')
+    expect(screen.getByLabelText('Fim do período'))
+      .toHaveAttribute('max', '2024-06-30')
+  })
+
+  it('avisa que o dia só aponta o mês — a planilha não tem dia', async () => {
+    // Das 6.717 linhas do histórico dele, ZERO trazem data com dia legível. Sem
+    // este aviso, escolher 14/11 e receber novembro inteiro parece bug.
+    await montar()
+    expect(screen.getByText(/o dia serve só para apontar o mês/))
+      .toBeInTheDocument()
   })
 
   it('o recorte vai para o SERVIDOR — é lá que tudo é recalculado', async () => {
@@ -1332,7 +1590,8 @@ describe('AnalyticsView — recorte de período fixo no topo', () => {
     await screen.findByText('all.csv')
     expect(screen.getByText('R$ 1.000,00')).toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: '1 ano' }))
+    await userEvent.click(screen.getByRole('button', { name: /Filtros/ }))
+    await escolherJanela('12m')
     expect(await screen.findByText('R$ 4.242,00')).toBeInTheDocument()
     expect(screen.getAllByText('R$ 99,00').length).toBeGreaterThan(0)
   })
@@ -1352,20 +1611,21 @@ describe('AnalyticsView — recorte de período fixo no topo', () => {
                            new File(['a'], 'all.csv', { type: 'text/csv' }))
     await screen.findByText('all.csv')
 
-    await userEvent.click(screen.getByRole('button', { name: '1 mês' }))
+    await userEvent.click(screen.getByRole('button', { name: /Filtros/ }))
+    await escolherJanela('1m')
     expect(onError).toHaveBeenCalledWith(expect.stringContaining('nenhum lançamento'))
     expect(screen.getByText('all.csv')).toBeInTheDocument()
-    expect(document.querySelector('.periodo-barra')).toBeInTheDocument()
+    expect(document.querySelector('.filtros-periodo')).toBeInTheDocument()
   })
 
   it('trocar de arquivo zera o recorte', async () => {
     const { analytics } = await montar()
-    await userEvent.click(screen.getByRole('button', { name: '1 ano' }))
+    await escolherJanela('12m')
     await userEvent.click(screen.getByRole('button', { name: 'Outro arquivo' }))
     await userEvent.upload(document.querySelector('input[type=file]'),
                            new File(['b'], 'outro.csv', { type: 'text/csv' }))
     expect(analytics).toHaveBeenLastCalledWith(
-      expect.any(File), { semCategorias: [], semLinhas: [] })
+      [expect.any(File)], expect.objectContaining({ semCategorias: [], semLinhas: [] }))
   })
 })
 
@@ -2022,10 +2282,14 @@ describe('FiltrosLaterais', () => {
     expect(aoAplicar).toHaveBeenCalledWith({ semCategorias: [], semLinhas: [] })
   })
 
-  it('dá para trazer tudo de volta de uma vez', async () => {
+  it('dá para trazer tudo de volta de uma vez — recorte junto', async () => {
+    // Numa chamada só. Quando o recorte morava fora daqui, "trazer tudo de
+    // volta" precisava de duas, e a segunda partia do estado que a primeira
+    // ainda não tinha devolvido.
     const { aoAplicar } = await abrir({ semCategorias: ['Casa'], semLinhas: ['z'] })
     await userEvent.click(screen.getByRole('button', { name: /trazer tudo de volta/ }))
-    expect(aoAplicar).toHaveBeenCalledWith({ semCategorias: [], semLinhas: [] })
+    expect(aoAplicar).toHaveBeenCalledWith({
+      semCategorias: [], semLinhas: [], inicio: '', fim: '', preset: 'tudo' })
   })
 })
 
@@ -2103,7 +2367,7 @@ describe('AnalyticsView — filtros que sobrevivem ao refresh', () => {
     const analytics = vi.fn().mockResolvedValue(RESPOSTA())
     await montar(analytics)
     expect(analytics).toHaveBeenCalledWith(
-      expect.any(File), expect.objectContaining({ semCategorias: ['Casa'] }))
+      [expect.any(File)], expect.objectContaining({ semCategorias: ['Casa'] }))
   })
 
   it('filtro salvo que não vale para este arquivo não trava a aba', async () => {
@@ -2125,7 +2389,7 @@ describe('AnalyticsView — filtros que sobrevivem ao refresh', () => {
     expect(await screen.findByText('all.csv')).toBeInTheDocument()
     expect(onError).toHaveBeenCalledWith(expect.stringContaining('abri sem eles'))
     expect(analytics).toHaveBeenLastCalledWith(
-      expect.any(File), expect.objectContaining({ semCategorias: [], semLinhas: [] }))
+      [expect.any(File)], expect.objectContaining({ semCategorias: [], semLinhas: [] }))
   })
 })
 
@@ -2285,5 +2549,136 @@ describe('AnalyticsView — o rótulo do excluído chega ao armazenamento', () =
 
     expect(lerFiltros()).toEqual({
       semCategorias: [], semLinhas: ['i1'], rotulos: { i1: 'Pix grande' } })
+  })
+})
+
+
+// ------------------------------------------------------------------ Sankey
+
+describe('Sankey', () => {
+  const FIGURA = {
+    origens: [{ nome: 'Renda Fixa · leo.csv', valor: 6000 },
+              { nome: 'Renda Fixa · marina.csv', valor: 4000 },
+              { nome: 'Resgate de aplicação', valor: 2000 }],
+    destinos: [{ nome: 'Casa', valor: 8000 },
+               { nome: 'Investido', valor: 3000 },
+               { nome: 'Sobra do período', valor: 1000 }],
+    total: 12000, diferenca: 1000, por_fonte: true,
+  }
+
+  it('desenha uma faixa por origem e por destino', () => {
+    const { container } = render(<Sankey dados={FIGURA} />)
+    // 3 origens + 3 destinos = 6 fitas, e o nó do meio é um <rect> a mais.
+    expect(container.querySelectorAll('svg path')).toHaveLength(6)
+    expect(container.querySelectorAll('svg rect')).toHaveLength(7)
+  })
+
+  it('cada faixa leva o nome e o valor escritos', () => {
+    render(<Sankey dados={FIGURA} />)
+    // Sem o `.csv`: dois arquivos são duas pessoas, e a extensão é ruído.
+    expect(screen.getByText('Renda Fixa · leo')).toBeInTheDocument()
+    expect(screen.getByText('Sobra do período')).toBeInTheDocument()
+    expect(screen.getByText('R$ 8 mil')).toBeInTheDocument()
+  })
+
+  it('a espessura segue o valor, com piso para a faixa fina não sumir', () => {
+    const { container } = render(<Sankey dados={{
+      origens: [{ nome: 'Grande', valor: 100000 }, { nome: 'Centavos', valor: 1 }],
+      destinos: [{ nome: 'Casa', valor: 100001 }],
+      total: 100001, diferenca: 0, por_fonte: false,
+    }} />)
+    const [grande, pequena] = [...container.querySelectorAll('rect')]
+      .map((r) => Number(r.getAttribute('height')))
+    expect(grande).toBeGreaterThan(pequena * 10)
+    expect(pequena).toBeGreaterThanOrEqual(1.5)
+  })
+
+  it('some quando não há o que desenhar', () => {
+    const { container } = render(<Sankey dados={{ origens: [], destinos: [] }} />)
+    expect(container).toBeEmptyDOMElement()
+  })
+})
+
+describe('AnalyticsView — dois arquivos', () => {
+  const DOIS = () => ({
+    ...RESPOSTA_BASE(),
+    arquivo: 'leo.csv, marina.csv',
+    arquivos: [{ nome: 'leo.csv', lancamentos: 3, receita: 6000, gasto: 2000 },
+               { nome: 'marina.csv', lancamentos: 2, receita: 4000, gasto: 2000 }],
+    sankey: { origens: [{ nome: 'Renda Fixa · leo.csv', valor: 6000 },
+                        { nome: 'Renda Fixa · marina.csv', valor: 4000 }],
+              destinos: [{ nome: 'Casa', valor: 4000 }],
+              total: 10000, diferenca: 6000, por_fonte: true },
+  })
+
+  it('manda os dois arquivos numa chamada só', async () => {
+    vi.resetModules()
+    const analytics = vi.fn().mockResolvedValue(DOIS())
+    vi.doMock('../api', () => ({ analytics }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={vi.fn()} />)
+    await userEvent.upload(document.querySelector('input[type=file]'), [
+      new File(['a'], 'leo.csv', { type: 'text/csv' }),
+      new File(['b'], 'marina.csv', { type: 'text/csv' }),
+    ])
+    await screen.findByText('leo.csv, marina.csv')
+    expect(analytics).toHaveBeenCalledWith(
+      [expect.any(File), expect.any(File)], expect.anything())
+  })
+
+  it('diz quantos lançamentos vieram de cada pessoa', async () => {
+    vi.resetModules()
+    vi.doMock('../api', () => ({ analytics: vi.fn().mockResolvedValue(DOIS()) }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={vi.fn()} />)
+    await userEvent.upload(document.querySelector('input[type=file]'),
+                           [new File(['a'], 'leo.csv', { type: 'text/csv' })])
+    expect(await screen.findByText(/leo\.csv: 3 lançamentos · marina\.csv: 2/))
+      .toBeInTheDocument()
+  })
+
+  it('a dropzone aceita mais de um arquivo', async () => {
+    vi.resetModules()
+    vi.doMock('../api', () => ({ analytics: vi.fn() }))
+    const { default: View } = await import('../components/AnalyticsView')
+    render(<View onError={vi.fn()} />)
+    expect(document.querySelector('input[type=file]')).toHaveAttribute('multiple')
+    expect(screen.getByText(/Pode soltar mais de um/)).toBeInTheDocument()
+  })
+})
+
+describe('Sankey — o rótulo cabe na calha', () => {
+  it('corta o nome comprido em vez de deixar o SVG cortar sem aviso', () => {
+    render(<Sankey dados={{
+      origens: [{ nome: 'Uma origem com um nome absurdamente comprido para caber', valor: 10 }],
+      destinos: [{ nome: 'Casa', valor: 10 }], total: 10, diferenca: 0, por_fonte: false,
+    }} />)
+    const texto = [...document.querySelectorAll('text')].map((t) => t.textContent)
+    expect(texto.some((t) => t.endsWith('…') && t.length <= 32)).toBe(true)
+  })
+
+  it('a extensão .csv some — o que interessa é a pessoa', () => {
+    render(<Sankey dados={{
+      origens: [{ nome: 'Renda Fixa · marina.csv', valor: 10 }],
+      destinos: [{ nome: 'Casa', valor: 10 }], total: 10, diferenca: 0, por_fonte: true,
+    }} />)
+    expect(screen.getByText('Renda Fixa · marina')).toBeInTheDocument()
+  })
+
+  it('rótulo que não cabe na faixa fina é afastado, com linha-guia', () => {
+    // Uma categoria de R$ 18 mil num total de R$ 2,9 mi ganha 3px de faixa e o
+    // rótulo tem 22px: sem afastar, as de baixo viram um borrão preto.
+    const { container } = render(<Sankey dados={{
+      origens: [{ nome: 'Salário', valor: 100000 }],
+      destinos: Array.from({ length: 10 }, (_, i) => (
+        { nome: `Cat ${i}`, valor: i === 0 ? 99910 : 10 })),
+      total: 100000, diferenca: 0, por_fonte: false,
+    }} />)
+    const ys = [...container.querySelectorAll('text')]
+      .filter((t) => t.textContent.startsWith('Cat '))
+      .map((t) => Number(t.getAttribute('y')))
+    const gaps = ys.slice(1).map((y, i) => y - ys[i])
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(26)
+    expect(container.querySelectorAll('line').length).toBeGreaterThan(0)
   })
 })

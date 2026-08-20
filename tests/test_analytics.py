@@ -23,7 +23,7 @@ from core.analytics import (
     analisar, anomalias, categoria_por_periodo, corrente_do_carry, custo_fixo_mensal,
     meses_faltando, meses_que_nao_fecham, pares_que_se_anulam, parse_periodo,
     parse_valor, por_categoria, possivel_dupla_contagem, read_ledger,
-    identidade, recorrentes, recortar, reservas, saude, serie_mensal,
+    identidade, recorrentes, recortar, reservas, sankey, saude, serie_mensal,
 )
 
 CONFIG = """
@@ -427,7 +427,7 @@ def test_endpoint_analisa_csv(client):
         ("Jan-24", "Casa", "Luz", "R$ 100.00", "x", "1", "2024", "F"),
         ("Feb-24", "Casa", "Luz", "R$ 120.00", "x", "2", "2024", "F"),
     ]).encode("utf-8")
-    resposta = client.post("/analytics", files={"file": ("all.csv", csv_bytes, "text/csv")})
+    resposta = client.post("/analytics", files={"files": ("all.csv", csv_bytes, "text/csv")})
     assert resposta.status_code == 200
     corpo = resposta.json()
     assert corpo["arquivo"] == "all.csv"
@@ -436,13 +436,13 @@ def test_endpoint_analisa_csv(client):
 
 def test_endpoint_recusa_nao_csv(client):
     resposta = client.post("/analytics",
-                           files={"file": ("x.xls", b"\x00\x01", "application/vnd.ms-excel")})
+                           files={"files": ("x.xls", b"\x00\x01", "application/vnd.ms-excel")})
     assert resposta.status_code == 415
 
 
 def test_endpoint_explica_csv_ilegivel(client):
     resposta = client.post("/analytics",
-                           files={"file": ("x.csv", b"a,b\n1,2\n", "text/csv")})
+                           files={"files": ("x.csv", b"a,b\n1,2\n", "text/csv")})
     assert resposta.status_code == 422
     assert "não achei as colunas" in resposta.json()["detail"]
 
@@ -451,7 +451,7 @@ def test_analise_nao_deixa_estado(client):
     """É leitura, não revisão: nada de transaction_id, nada gravado."""
     csv_bytes = ledger([("Jan-24", "Casa", "Luz", "R$ 100.00", "x", "1", "2024", "F")]).encode()
     corpo = client.post("/analytics",
-                        files={"file": ("all.csv", csv_bytes, "text/csv")}).json()
+                        files={"files": ("all.csv", csv_bytes, "text/csv")}).json()
     assert "transaction_id" not in corpo
 
 
@@ -558,6 +558,32 @@ def test_recorte_sem_limites_devolve_tudo(cfg):
     assert recortar(lancamentos, None, None) is lancamentos
 
 
+def test_recorte_aceita_data_com_dia_e_le_o_mes(cfg):
+    """O seletor da tela manda `AAAA-MM-DD`; o dado só tem mês.
+
+    Das 6.717 linhas do histórico dele, ZERO trazem data com dia legível — a
+    coluna Data é `Feb-12` ou `Aug`, e o que é confiável são as colunas
+    numéricas de Mês e Ano. O dia que chega do `input[type=date]` serve para
+    apontar o mês, e é isso que este teste prende.
+    """
+    lancamentos = _tres_anos(cfg)
+    dentro = recortar(lancamentos, "2025-01-01", "2025-12-31")
+    assert {l.periodo[:4] for l in dentro} == {"2025"}
+    assert len(dentro) == 24
+
+
+def test_recorte_com_dia_no_meio_traz_o_mes_inteiro(cfg):
+    """Pedir de 15/03 a 20/06 traz março inteiro e junho inteiro.
+
+    Excluir as pontas parciais tiraria lançamentos que o usuário espera ver, e
+    não teria como escolher QUAIS: o dia que decidiria não existe no dado.
+    """
+    lancamentos = _tres_anos(cfg)
+    dentro = recortar(lancamentos, "2025-03-15", "2025-06-20")
+    assert {l.periodo for l in dentro} == {
+        "2025-03", "2025-04", "2025-05", "2025-06"}
+
+
 def test_lancamento_sem_data_nunca_entra_no_recorte(cfg):
     """Uma compra sem data não pertence a período nenhum.
 
@@ -616,7 +642,7 @@ def test_endpoint_aceita_o_intervalo(client):
     csv_bytes = ledger([("x", "Casa", "Luz", "R$ 100.00", "x", str(m), str(a), "F")
                         for a in (2024, 2026) for m in (1, 6)]).encode()
     resposta = client.post("/analytics",
-                           files={"file": ("all.csv", csv_bytes, "text/csv")},
+                           files={"files": ("all.csv", csv_bytes, "text/csv")},
                            data={"inicio": "2026-01", "fim": "2026-12"})
     assert resposta.status_code == 200
     assert resposta.json()["resumo"]["total_gasto"] == 200.0
@@ -939,7 +965,7 @@ def test_endpoint_aceita_os_filtros(client):
         ("Jan-24", "Alimentação", "Mercado", "R$ 300.00", "x", "1", "2024", "F"),
     ]).encode()
     resposta = client.post("/analytics",
-                           files={"file": ("all.csv", csv_bytes, "text/csv")},
+                           files={"files": ("all.csv", csv_bytes, "text/csv")},
                            data={"sem_categorias": "Casa"})
     assert resposta.status_code == 200
     assert all(c["categoria"] != "Casa"
@@ -955,7 +981,200 @@ def test_as_listas_do_form_separam_por_LINHA_nao_por_virgula(client):
         ("Jan-24", "Lazer", "Cinema", "R$ 50.00", "x", "1", "2024", "F"),
     ]).encode()
     resposta = client.post("/analytics",
-                           files={"file": ("all.csv", csv_bytes, "text/csv")},
+                           files={"files": ("all.csv", csv_bytes, "text/csv")},
                            data={"sem_categorias": "Casa\nAlimentação, bar"})
     assert resposta.status_code == 200
     assert [c["categoria"] for c in resposta.json()["por_categoria"]] == ["Lazer"]
+
+
+# ---------------------------------------------------------------------------
+# Sankey: de onde veio, para onde foi
+# ---------------------------------------------------------------------------
+
+def _casal(cfg):
+    """Um mês do casal: dois arquivos, duas pessoas, gastos que se somam."""
+    leo = ledger([
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 6000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Aluguel", "R$ 2000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Poupança", "Transferido para o próximo mês", "R$ 3000.00", "x", "1", "2024", "F"),
+    ])
+    dela = ledger([
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 4000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Aluguel", "R$ 2000.00", "x", "1", "2024", "F"),
+    ])
+    return [("leo.csv", leo), ("marina.csv", dela)]
+
+
+def test_o_carry_fica_de_fora_do_sankey(cfg):
+    """R$ 757 mil em 2 anos do MESMO dinheiro circulando entre meses seria a
+    faixa mais grossa da tela sem ser nem renda nem gasto."""
+    texto = ledger([
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 5000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Luz", "R$ 200.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Poupança", "Transferido para o próximo mês", "R$ 4800.00", "x", "1", "2024", "F"),
+        ("Feb-24", "Resgate Poupança", "Resgatado do mês anterior", "R$ 4800.00", "x", "2", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    figura = sankey(lancamentos, cfg)
+
+    # O carry se apresenta pela CATEGORIA (`Poupança` / `Resgate Poupança`), não
+    # pela descrição — procurar por "Transferido" no texto não pegaria nada e o
+    # teste passaria sem provar coisa alguma.
+    origens = {o["nome"]: o["valor"] for o in figura["origens"]}
+    destinos = {d["nome"]: d["valor"] for d in figura["destinos"]}
+    assert "Resgate Poupança" not in origens
+    assert "Poupança" not in destinos
+
+    # E os R$ 4.800 que entraram e saíram não podem ter inflado nada: sobra
+    # exatamente o salário menos a luz.
+    assert origens == {"Renda Fixa": 5000.0}
+    assert destinos == {"Casa": 200.0, "Sobra do período": 4800.0}
+
+
+def test_o_resgate_de_aplicacao_entra_como_origem_com_nome_proprio(cfg):
+    """Sem ele o diagrama não fecha: saíram R$ 414 mil a mais do que a receita
+    explica, e esse buraco é patrimônio virando consumo. Chamá-lo de receita
+    seria errado; escondê-lo, pior."""
+    texto = ledger([
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 1000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Resgate Poupança", "Resgate Aplicação Sicredi", "R$ 9000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Reforma", "R$ 10000.00", "x", "1", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    figura = sankey(lancamentos, cfg)
+    origens = {o["nome"]: o["valor"] for o in figura["origens"]}
+    assert origens == {"Renda Fixa": 1000.0, "Resgate de aplicação": 9000.0}
+    assert figura["diferenca"] == 0.0, "com o resgate dentro, o desenho fecha"
+
+
+def test_o_que_sobra_vira_um_no_em_vez_de_sumir(cfg):
+    texto = ledger([
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 5000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Luz", "R$ 200.00", "x", "1", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    destinos = {d["nome"]: d["valor"] for d in sankey(lancamentos, cfg)["destinos"]}
+    assert destinos["Sobra do período"] == 4800.0
+
+
+def test_gasto_sem_origem_vira_no_em_vez_de_desequilibrar(cfg):
+    """O sinal contrário: saiu mais do que entrou. Fechar à força esconderia o
+    resíduo que o painel de meses que não fecham já aponta."""
+    texto = ledger([
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 100.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Terreno", "R$ 5000.00", "x", "1", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    figura = sankey(lancamentos, cfg)
+    assert {"nome": "Origem não identificada", "valor": 4900.0} in figura["origens"]
+
+
+def test_investimento_e_reserva_sao_destino_nao_gasto():
+    """Dinheiro que saiu do mês mas não foi consumo tem faixa própria.
+
+    `cfg` próprio porque o papel `investimento` é o que está em teste — com o
+    CONFIG compartilhado, `Investimento` cairia em gasto como qualquer outra
+    categoria desconhecida e o teste passaria sem provar nada.
+    """
+    cfg = AnalyticsConfig.from_text(
+        CONFIG.replace("  artefato: [Restante]",
+                       "  artefato: [Restante]\n  investimento: [Investimento]"))
+    texto = ledger([
+        ("Jan-24", "Renda Fixa", "Salário", "R$ 5000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Investimento", "Ações BR", "R$ 1000.00", "x", "1", "2024", "F"),
+        ("Jan-24", "Poupança", "PS5", "R$ 500.00", "x", "1", "2024", "F"),
+    ])
+    lancamentos, _ = read_ledger(texto, cfg)
+    destinos = {d["nome"]: d["valor"] for d in sankey(lancamentos, cfg)["destinos"]}
+    assert destinos["Investido"] == 1000.0
+    assert destinos["Guardado em reserva"] == 500.0
+
+
+def test_a_cauda_de_categorias_vira_Outras(cfg):
+    """A paleta tem oito posições validadas; uma nona cor inventada quebra a
+    separação para daltônicos."""
+    linhas = [("Jan-24", "Renda Fixa", "Salário", "R$ 99999.00", "x", "1", "2024", "F")]
+    linhas += [("Jan-24", f"Cat {i}", f"Gasto {i}", f"R$ {100 - i}.00", "x", "1", "2024", "F")
+               for i in range(20)]
+    lancamentos, _ = read_ledger(ledger(linhas), cfg)
+    nomes = [d["nome"] for d in sankey(lancamentos, cfg, top=5)["destinos"]]
+    assert nomes.count("Outras categorias") == 1
+    assert len([n for n in nomes if n.startswith("Cat ")]) == 5
+
+
+# ---------------------------------------------------------------------------
+# Dois arquivos: duas PESSOAS, nunca deduplicados
+# ---------------------------------------------------------------------------
+
+def test_dois_arquivos_sao_somados_sem_deduplicar(cfg):
+    """O aluguel de R$ 2.000 aparece nos dois arquivos porque cada um pagou
+    metade da conta da casa. Deduplicar apagaria metade do gasto do casal."""
+    resultado = analisar(_casal(cfg), cfg)
+    assert resultado["resumo"]["total_gasto"] == 4000.0
+    assert resultado["resumo"]["total_receita"] == 10000.0
+
+
+def test_cada_lancamento_sabe_de_qual_arquivo_veio(cfg):
+    resultado = analisar(_casal(cfg), cfg)
+    assert resultado["arquivos"] == [
+        {"nome": "leo.csv", "lancamentos": 3, "receita": 6000.0, "gasto": 2000.0},
+        {"nome": "marina.csv", "lancamentos": 2, "receita": 4000.0, "gasto": 2000.0},
+    ]
+
+
+def test_com_dois_arquivos_o_sankey_separa_as_origens_por_pessoa(cfg):
+    """"Quem traz quanto" é metade do motivo de existir uma análise do casal."""
+    figura = analisar(_casal(cfg), cfg)["sankey"]
+    assert figura["por_fonte"] is True
+    origens = {o["nome"]: o["valor"] for o in figura["origens"]}
+    assert origens["Renda Fixa · leo.csv"] == 6000.0
+    assert origens["Renda Fixa · marina.csv"] == 4000.0
+    # O destino NÃO se divide: o gasto do casal é do casal.
+    assert {d["nome"] for d in figura["destinos"]} == {"Casa", "Sobra do período"}
+
+
+def test_com_um_arquivo_so_a_origem_nao_ganha_sufixo(cfg):
+    texto = ledger([("Jan-24", "Renda Fixa", "Salário", "R$ 10.00", "x", "1", "2024", "F")])
+    figura = analisar(texto, cfg)["sankey"]
+    assert figura["por_fonte"] is False
+    assert figura["origens"][0]["nome"] == "Renda Fixa"
+
+
+def test_o_aviso_de_leitura_diz_de_qual_arquivo_veio(cfg):
+    bom = ledger([("Jan-24", "Casa", "Luz", "R$ 10.00", "x", "1", "2024", "F")])
+    torto = ledger([
+        ("Jan-24", "Casa", "Água", "sei lá", "x", "1", "2024", "F"),
+        ("Jan-24", "Casa", "Gás", "R$ 20.00", "x", "1", "2024", "F"),
+    ])
+    avisos = analisar([("leo.csv", bom), ("marina.csv", torto)], cfg)["saude"]["avisos"]
+    assert any(a.startswith("marina.csv:") for a in avisos)
+
+
+def test_endpoint_aceita_dois_arquivos(client):
+    """As duas linhas idênticas contam duas vezes — são duas pessoas.
+
+    A categoria é INVENTADA de propósito. Usar "Renda Fixa" faria o teste
+    depender de qual `analytics.yml` o endpoint acha: com papéis declarados o
+    salário é receita, sem eles é gasto, e o total muda de 4.000 para 10.000
+    sem que nada de errado tenha acontecido. Categoria que nenhuma config
+    declara é gasto em todas elas — e o que está sendo testado é a soma dos
+    dois arquivos, não a tabela de papéis.
+    """
+    leo = ledger([
+        ("Jan-24", "Rateio do Casal", "Aluguel", "R$ 2000.00", "x", "1", "2024", "F"),
+    ]).encode()
+    dela = ledger([
+        ("Jan-24", "Rateio do Casal", "Aluguel", "R$ 2000.00", "x", "1", "2024", "F"),
+    ]).encode()
+    resposta = client.post("/analytics", files=[
+        ("files", ("leo.csv", leo, "text/csv")),
+        ("files", ("marina.csv", dela, "text/csv")),
+    ])
+    assert resposta.status_code == 200, resposta.text
+    corpo = resposta.json()
+    # Deduplicando, daria 2.000 — é exatamente essa diferença que o teste
+    # protege, e ela vale sob qualquer configuração de papéis.
+    assert corpo["resumo"]["total_gasto"] == 4000.0, "as duas linhas iguais contam"
+    assert corpo["saude"]["total_lancamentos"] == 2
+    assert corpo["arquivo"] == "leo.csv, marina.csv"
+    assert corpo["sankey"]["por_fonte"] is True

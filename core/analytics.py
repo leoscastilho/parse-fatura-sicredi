@@ -189,6 +189,10 @@ class Lancamento:
     cartao: bool
     # Gasto real cuja categoria verdadeira é desconhecida (fatura não aberta).
     nao_detalhado: bool = False
+    # De qual arquivo esta linha veio. Existe porque a aba aceita mais de um
+    # CSV e eles são de PESSOAS diferentes — a análise do casal só faz sentido
+    # se der para dizer quem trouxe e quem gastou. Vazio com um arquivo só.
+    fonte: str = ""
 
     @property
     def periodo(self) -> str | None:
@@ -276,7 +280,8 @@ def _mapear_colunas(cabecalho: list[str], largura: int) -> dict[str, int]:
     return indices
 
 
-def read_ledger(texto: str, cfg: AnalyticsConfig) -> tuple[list[Lancamento], list[str]]:
+def read_ledger(texto: str, cfg: AnalyticsConfig,
+                fonte: str = "") -> tuple[list[Lancamento], list[str]]:
     """Lê o CSV histórico. Devolve os lançamentos e os avisos do que não deu."""
     # A limpeza do que o Sheets exporta é a MESMA da Recategorização (ver
     # `core/planilha.py`): título acima do cabeçalho, coluna de margem à
@@ -321,6 +326,7 @@ def read_ledger(texto: str, cfg: AnalyticsConfig) -> tuple[list[Lancamento], lis
             valor=valor, papel=cfg.papel(categoria),
             cartao=cfg.marcador_cartao.lower() in descricao.lower(),
             nao_detalhado=cfg.generica(categoria),
+            fonte=fonte,
         ))
 
     avisos: list[str] = []
@@ -922,9 +928,24 @@ def recortar(lancamentos: list[Lancamento], inicio: str | None,
     """
     if not inicio and not fim:
         return lancamentos
+    # `2024-03-15` vira `2024-03`. A planilha não tem dia: das 6.717 linhas do
+    # histórico, ZERO trazem data com dia legível — a coluna Data é `Feb-12` ou
+    # `Aug`, e o que é confiável são as colunas numéricas de Mês e Ano. Então o
+    # seletor de datas escolhe o MÊS, e o dia serve só para dizer qual.
+    #
+    # O corte é inclusivo nas duas pontas: pedir de 15/03 a 20/06 traz março
+    # inteiro e junho inteiro. Excluir as pontas parciais tiraria lançamentos
+    # que o usuário espera ver e não teria como avisar — não existe o dado que
+    # decidiria quais.
+    de = (inicio or "")[:7]
+    # O FIM não é cortado, e não é esquecimento: `"2025-06" <= "2025-06-20"` já
+    # é verdadeiro por prefixo, e `"2025-07"` já é maior. Um `[:7]` aqui ficaria
+    # simétrico e bonito sem mudar uma linha de resultado — e nenhum teste
+    # conseguiria distinguir sua ausência, que é a definição de código morto.
+    ate = fim or ""
     return [l for l in lancamentos if l.periodo
-            and (not inicio or l.periodo >= inicio)
-            and (not fim or l.periodo <= fim)]
+            and (not de or l.periodo >= de)
+            and (not ate or l.periodo <= ate)]
 
 
 def identidade(l: Lancamento) -> str:
@@ -969,10 +990,113 @@ def maiores_lancamentos(lancamentos: list[Lancamento], limite: int = 60) -> list
              "descricao": l.descricao, "valor": round(l.valor, 2)} for l in gastos]
 
 
-def analisar(texto: str, cfg: AnalyticsConfig, inicio: str | None = None,
-             fim: str | None = None, sem_categorias: Iterable[str] = (),
+def sankey(lancamentos: list[Lancamento], cfg: AnalyticsConfig,
+           por_fonte: bool = False, top: int = 12) -> dict:
+    """De onde veio e para onde foi — o período inteiro numa figura.
+
+    TRÊS DECISÕES QUE DEFINEM O DESENHO
+    -----------------------------------
+
+    1. **O resgate de aplicação entra como ORIGEM.** Sem ele o diagrama não
+       fecha: nos últimos 2 anos saíram R$ 414 mil a mais do que a receita
+       explica, e esse buraco é exatamente o dinheiro que voltou de
+       investimento. Chamá-lo de receita seria errado — não é renda nova, é
+       patrimônio virando consumo —, então ele tem faixa e nome próprios, que é
+       a informação que interessa.
+
+    2. **O carry fica de fora.** "Transferido para o próximo mês" e "resgatado
+       do mês anterior" somam R$ 757 mil em 2 anos do MESMO dinheiro circulando:
+       entra e sai pelo mesmo valor. Seria a faixa mais grossa da tela sem ser
+       renda nem gasto, e empurraria tudo que importa para uma tira fina.
+
+    3. **A sobra é um nó, não um erro de arredondamento.** O que entrou menos o
+       que saiu vira `Sobra do período` (ou `Origem não identificada`, se o
+       sinal for o outro). Fechar o diagrama à força escondendo a diferença
+       transformaria o resíduo — que tem painel próprio — num detalhe invisível.
+
+    Com mais de um arquivo, `por_fonte` separa as origens por pessoa: é a
+    resposta para "quem traz quanto", que é metade do motivo de existir uma
+    análise do casal.
+    """
+    entra: dict[str, float] = defaultdict(float)
+    sai: dict[str, float] = defaultdict(float)
+
+    for l in lancamentos:
+        quem = f" · {l.fonte}" if por_fonte and l.fonte else ""
+        tipo = cfg.movimento(l.categoria, l.descricao)
+
+        if l.papel == CARREGAMENTO:
+            # Todo carregamento é dinheiro mudando de lugar; o que difere é se
+            # ele atravessa a fronteira do PERÍODO ou fica dentro dele.
+            if tipo == "carry":
+                continue                               # ver decisão 2
+            if _e_resgate(l.categoria):
+                de_onde = "aplicação" if tipo == "aplicacao" else "reserva"
+                entra[f"Resgate de {de_onde}{quem}"] += l.valor
+            elif tipo == "aplicacao":
+                sai["Investido"] += l.valor             # aporte lançado aqui
+            else:
+                sai["Guardado em reserva"] += l.valor
+        elif l.papel == RECEITA:
+            entra[f"{l.categoria or '(sem categoria)'}{quem}"] += l.valor
+        elif l.papel == INVESTIMENTO:
+            sai["Investido"] += l.valor
+        elif l.papel == GASTO:
+            sai[l.categoria or "(sem categoria)"] += l.valor
+
+    # A cauda vira "Outras" pelo mesmo motivo de sempre: a paleta tem oito
+    # posições validadas e uma nona cor inventada quebra a separação para
+    # daltônicos. Aqui o corte é mais generoso porque a faixa carrega o rótulo.
+    maiores = sorted(sai.items(), key=lambda kv: -kv[1])
+    if len(maiores) > top:
+        resto = sum(v for _, v in maiores[top:])
+        maiores = maiores[:top] + [("Outras categorias", resto)]
+
+    total_entra = sum(entra.values())
+    total_sai = sum(v for _, v in maiores)
+    diferenca = round(total_entra - total_sai, 2)
+
+    origens = sorted(entra.items(), key=lambda kv: -kv[1])
+    destinos = list(maiores)
+    if diferenca > 0.01:
+        destinos.append(("Sobra do período", diferenca))
+    elif diferenca < -0.01:
+        origens.append(("Origem não identificada", -diferenca))
+
+    return {
+        "origens": [{"nome": n, "valor": round(v, 2)} for n, v in origens],
+        "destinos": [{"nome": n, "valor": round(v, 2)} for n, v in destinos],
+        "total": round(max(total_entra, total_sai), 2),
+        "diferenca": diferenca,
+        "por_fonte": por_fonte,
+    }
+
+
+def analisar(texto: str | list[tuple[str, str]], cfg: AnalyticsConfig,
+             inicio: str | None = None, fim: str | None = None,
+             sem_categorias: Iterable[str] = (),
              sem_linhas: Iterable[str] = ()) -> dict:
-    completos, avisos = read_ledger(texto, cfg)
+    """Analisa um ou mais CSVs juntos.
+
+    Vários arquivos NÃO são deduplicados, e isso é decisão de produto: eles são
+    de pessoas diferentes (a análise do casal), então duas linhas idênticas em
+    arquivos diferentes são dois gastos de verdade. Deduplicar apagaria metade
+    de um mercado dividido.
+    """
+    arquivos = [("", texto)] if isinstance(texto, str) else list(texto)
+    completos: list[Lancamento] = []
+    avisos: list[str] = []
+    resumo_arquivos: list[dict] = []
+    for nome, conteudo in arquivos:
+        linhas, avisos_do_arquivo = read_ledger(conteudo, cfg, fonte=nome)
+        completos.extend(linhas)
+        avisos.extend(f"{nome}: {a}" if nome and len(arquivos) > 1 else a
+                      for a in avisos_do_arquivo)
+        resumo_arquivos.append({
+            "nome": nome, "lancamentos": len(linhas),
+            "receita": _soma(l for l in linhas if l.papel == RECEITA),
+            "gasto": _soma(l for l in linhas if l.papel == GASTO),
+        })
 
     # Os limites do ARQUIVO, calculados antes do recorte: é o que o seletor de
     # datas usa para não oferecer um período que não existe.
@@ -1059,5 +1183,9 @@ def analisar(texto: str, cfg: AnalyticsConfig, inicio: str | None = None,
                              if len(anos) >= 2 else []),
         "concentracao": concentracao(lancamentos),
         "reservas": reservas(lancamentos, cfg),
+        # Com dois arquivos as origens se separam por pessoa — é metade do
+        # motivo de existir uma análise do casal.
+        "sankey": sankey(lancamentos, cfg, por_fonte=len(arquivos) > 1),
+        "arquivos": resumo_arquivos,
         "saude": saude(lancamentos, avisos),
     }

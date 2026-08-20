@@ -5,31 +5,10 @@ import {
   BarrasEmpilhadas, BarrasH, DIVERGENTE, Heatmap, Legenda, LineChart, SERIES,
   TabelaDados, brlExato, eixoContinuo, rotuloPeriodo,
 } from './charts'
-import FiltrosLaterais from './FiltrosLaterais'
+import FiltrosLaterais, { contarMeses } from './FiltrosLaterais'
 import Reservas from './Reservas'
+import Sankey from './Sankey'
 import Residuos from './Residuos'
-
-const PRESETS = [
-  { id: '5a', rotulo: '5 anos', meses: 60 },
-  { id: '2a', rotulo: '2 anos', meses: 24 },
-  { id: '1a', rotulo: '1 ano', meses: 12 },
-  { id: '6m', rotulo: '6 meses', meses: 6 },
-  { id: '1m', rotulo: '1 mês', meses: 1 },
-  { id: 'tudo', rotulo: 'Tudo', meses: null },
-]
-
-/** Recua `n` meses de um "YYYY-MM". */
-export function recuar(periodo, n) {
-  let ano = Number(periodo.slice(0, 4))
-  let mes = Number(periodo.slice(5)) - n
-  while (mes <= 0) { mes += 12; ano -= 1 }
-  return `${ano}-${String(mes).padStart(2, '0')}`
-}
-
-/** Quantos meses há entre dois "YYYY-MM", inclusive nas duas pontas. */
-export const contarMeses = (a, b) =>
-  (Number(b.slice(0, 4)) - Number(a.slice(0, 4))) * 12
-  + Number(b.slice(5)) - Number(a.slice(5)) + 1
 
 /** Mediana simples — usada para decidir se um mês é excepcional. */
 const mediana = (xs) => {
@@ -133,21 +112,26 @@ export default function AnalyticsView({ onError }) {
     semCategorias, semLinhas,
   })
 
-  function escolherPeriodo(inicio, fim, id) {
-    enviar(arquivo, { ...filtroAtual(), inicio, fim }, id)
-  }
-
-  function aplicarFiltros({ semCategorias: cats, semLinhas: linhas, rotulos: novos }) {
+  // Recorte e exclusões entram pela MESMA porta. Quando eram duas, "trazer tudo
+  // de volta" tinha que limpar as duas coisas em duas chamadas, e a segunda
+  // partia do estado que a primeira ainda não tinha devolvido.
+  function aplicarFiltros({ semCategorias: cats, semLinhas: linhas, rotulos: novos,
+                            inicio, fim, preset: novoPreset }) {
     // O rótulo é cache de exibição: sem ele, um lançamento excluído que caiu
     // fora do período em vigor não teria como aparecer na barra — e filtro que
     // não dá para ver é filtro que não dá para desfazer.
     const mesclados = novos ? { ...rotulos, ...novos } : rotulos
     if (novos) setRotulos(mesclados)
-    enviar(arquivo, { ...filtroAtual(), semCategorias: cats, semLinhas: linhas },
-           undefined, { rotulos: mesclados })
+    const base = filtroAtual()
+    enviar(arquivo,
+           { ...base,
+             inicio: inicio ?? base.inicio, fim: fim ?? base.fim,
+             semCategorias: cats, semLinhas: linhas },
+           novoPreset, { rotulos: mesclados })
   }
 
   function novoArquivo(f) {
+    if (!f || !f.length) return
     setPreset('tudo')
     setExcluidas([])
     setComposicao(null)
@@ -166,6 +150,12 @@ export default function AnalyticsView({ onError }) {
           não uma fatura. Pode ser o arquivo cru que o Google Sheets baixa, com
           as colunas de formatação e tudo: ele é limpo na leitura.
         </p>
+        <p className="muted">
+          <strong>Pode soltar mais de um.</strong> Eles são somados sem
+          deduplicação nenhuma — a análise do casal precisa que duas linhas
+          iguais em arquivos diferentes contem como dois gastos. Com dois
+          arquivos, o Sankey separa as origens por pessoa.
+        </p>
         <p className="muted small">
           Nada é gravado. O arquivo é lido, virado em números e esquecido.
         </p>
@@ -174,13 +164,16 @@ export default function AnalyticsView({ onError }) {
              onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
              onDragLeave={() => setDragging(false)}
              onDrop={(e) => { e.preventDefault(); setDragging(false)
-                              novoArquivo(e.dataTransfer.files[0]) }}
+                              novoArquivo([...e.dataTransfer.files]) }}
              onClick={() => inputRef.current?.click()}
              role="button" tabIndex={0}
              onKeyDown={(e) => e.key === 'Enter' && inputRef.current?.click()}>
-          <input ref={inputRef} type="file" accept=".csv" hidden
-                 onChange={(e) => novoArquivo(e.target.files[0])} />
-          <span>{busy ? 'Analisando…' : 'Arraste o CSV aqui ou clique para escolher'}</span>
+          <input ref={inputRef} type="file" accept=".csv" hidden multiple
+                 onChange={(e) => novoArquivo([...e.target.files])} />
+          <span>
+            {busy ? 'Analisando…'
+                  : 'Arraste o CSV aqui ou clique para escolher'}
+          </span>
         </div>
       </section>
     )
@@ -278,10 +271,9 @@ export default function AnalyticsView({ onError }) {
 
   return (
     <>
-      <BarraDePeriodo disponivel={intervalo_disponivel} filtro={dados.filtro}
-                      preset={preset} busy={busy} aoEscolher={escolherPeriodo} />
-
       <FiltrosLaterais disponiveis={dados.disponiveis} busy={busy}
+                       intervalo={intervalo_disponivel} filtro={dados.filtro}
+                       preset={preset}
                        semCategorias={semCategorias} semLinhas={semLinhas}
                        rotulos={rotulos} aoAplicar={aplicarFiltros} />
 
@@ -293,6 +285,13 @@ export default function AnalyticsView({ onError }) {
         <div className="toolbar">
           <div className="grow">
             <h2 style={{ margin: 0 }}>{dados.arquivo}</h2>
+            {dados.arquivos?.length > 1 && (
+              <span className="muted small" style={{ display: 'block' }}>
+                {dados.arquivos.map((a) => (
+                  `${a.nome}: ${a.lancamentos} lançamentos`
+                )).join(' · ')}
+              </span>
+            )}
             <span className="muted small">
               {rotuloPeriodo(resumo.periodo_inicio)} a {rotuloPeriodo(resumo.periodo_fim)} ·{' '}
               {resumo.meses_com_dado} meses com lançamento ·{' '}
@@ -376,7 +375,46 @@ export default function AnalyticsView({ onError }) {
         </p>
       </section>
 
-      {/* 3. Para onde vai? */}
+      {/* 3. Para onde vai? Primeiro a figura inteira, depois a régua. */}
+      {dados.sankey?.origens?.length > 0 && (
+        <section className="card">
+          <h2>De onde veio, para onde foi</h2>
+          <p className="muted">
+            O período inteiro numa figura. À esquerda o que financiou;
+            à direita o que consumiu. <strong>Resgate de aplicação</strong>{' '}
+            aparece com nome próprio porque não é renda nova: é patrimônio
+            virando consumo, e sem ele o desenho não fecharia.
+          </p>
+
+          {tabela ? (
+            <TabelaDados
+              colunas={['Origem', 'Valor', 'Destino', 'Valor']}
+              linhas={Array.from(
+                { length: Math.max(dados.sankey.origens.length,
+                                   dados.sankey.destinos.length) },
+                (_, i) => [
+                  dados.sankey.origens[i]?.nome || '',
+                  dados.sankey.origens[i]?.valor ?? 0,
+                  dados.sankey.destinos[i]?.nome || '',
+                  dados.sankey.destinos[i]?.valor ?? 0,
+                ])} />
+          ) : (
+            <Sankey dados={dados.sankey} />
+          )}
+
+          <p className="muted small">
+            O carry entre meses fica de fora: “transferido para o próximo mês”
+            e “resgatado do mês anterior” são o mesmo dinheiro circulando, e
+            seriam a faixa mais grossa da tela sem serem nem renda nem gasto.
+            {dados.sankey.diferenca < -0.01 && (
+              <> Saiu mais do que as origens explicam — a diferença aparece como
+                <strong> origem não identificada</strong>, e é o mesmo resíduo do
+                painel “meses que não fecham”.</>
+            )}
+          </p>
+        </section>
+      )}
+
       <section className="card">
         <h2>Para onde vai o dinheiro</h2>
         {/* Nada de citar "Casa" aqui: o texto tem que continuar verdadeiro
@@ -660,63 +698,6 @@ export default function AnalyticsView({ onError }) {
              saúde, "69 meses não fecham" não dizia nem quais nem quanto. */}
       <Residuos saude={saude} />
     </>
-  )
-}
-
-/**
- * O recorte de tempo, fixo no topo. TODO painel desta aba deriva dele.
- *
- * Os presets contam a partir do último mês COM LANÇAMENTO, não de hoje. Um
- * arquivo exportado em março e aberto em setembro devolveria "últimos 6 meses"
- * vazio se a âncora fosse o relógio — e o usuário veria um erro no lugar do
- * gráfico por ter clicado num botão perfeitamente razoável.
- */
-function BarraDePeriodo({ disponivel, filtro, preset, busy, aoEscolher }) {
-  const { inicio: primeiro, fim: ultimo } = disponivel || {}
-  if (!primeiro || !ultimo) return null
-
-  const inicioAtual = filtro?.inicio || primeiro
-  const fimAtual = filtro?.fim || ultimo
-
-  const aplicarPreset = (p) => {
-    if (!p.meses) return aoEscolher('', '', p.id)
-    // `max` com o começo do arquivo: pedir 5 anos de um arquivo de 3 não é erro,
-    // é pedir o arquivo inteiro.
-    const inicio = recuar(ultimo, p.meses - 1)
-    aoEscolher(inicio < primeiro ? primeiro : inicio, ultimo, p.id)
-  }
-
-  return (
-    <div className="periodo-barra">
-      <span className="periodo-rotulo">Período</span>
-
-      <div className="viz-janelas">
-        {PRESETS.map((p) => (
-          <button key={p.id} type="button" disabled={busy}
-                  className={`ghost ${preset === p.id ? 'ativo' : ''}`}
-                  onClick={() => aplicarPreset(p)}>{p.rotulo}</button>
-        ))}
-      </div>
-
-      <label className="periodo-de">
-        de
-        <input type="month" value={inicioAtual} min={primeiro} max={fimAtual}
-               disabled={busy} aria-label="Início do período"
-               onChange={(e) => aoEscolher(e.target.value, fimAtual, 'custom')} />
-      </label>
-      <label className="periodo-ate">
-        até
-        <input type="month" value={fimAtual} min={inicioAtual} max={ultimo}
-               disabled={busy} aria-label="Fim do período"
-               onChange={(e) => aoEscolher(inicioAtual, e.target.value, 'custom')} />
-      </label>
-
-      <span className="muted small grow">
-        {busy ? 'Recalculando…'
-              : `${contarMeses(inicioAtual, fimAtual)} meses · o arquivo cobre
-                 ${rotuloPeriodo(primeiro)} a ${rotuloPeriodo(ultimo)}`}
-      </span>
-    </div>
   )
 }
 

@@ -183,6 +183,156 @@ def test_desconhecido_mantem_a_categoria_do_arquivo(tmp_path, config_dir):
     assert not mudancas
 
 
+# ---------------------------------------------------------------------------
+# Categorias intocáveis
+#
+# A regra lê a DESCRIÇÃO e responde "o que foi comprado". Há duas famílias de
+# linha em que a coluna Categoria responde outra pergunta, e aí a regra não
+# corrige nada — ela destrói.
+# ---------------------------------------------------------------------------
+
+def _um_csv(tmp_path, cfg, categoria: str, descricao: str, valor: str = "100.00"):
+    arquivo = tmp_path / "p.csv"
+    arquivo.write_text(csv_de_saida_texto(cfg.output, [
+        {"data": "08/10/2026", "categoria": categoria,
+         "descricao": descricao, "valor": valor}]), encoding="utf-8")
+    return read_output_csv(arquivo, name="p.csv", schema=cfg.output)
+
+
+def test_categoria_fixa_nao_e_reescrita_pela_regra(tmp_path, config_dir):
+    """`Presente da Vó Marta` é dinheiro que ENTROU, e a palavra `PRESENTE`
+    aponta para a categoria de gasto `Presentes`.
+
+    Na planilha dele `Renda Variável` é somada e `Presentes` é subtraída, então
+    esta troca não erra o rótulo: erra o SINAL, e o estrago é duas vezes o
+    valor. No arquivo real são 73 linhas assim, R$ 45.179.
+    """
+    cfg = ConfigSet.load(config_dir)
+    linhas = _um_csv(tmp_path, cfg, "Renda Variável", "Presente da Vó Marta")
+    rules = Ruleset.from_text(cfg.categories_text)
+
+    # Sem a proteção a regra teria opinião — é isso que torna o teste honesto.
+    assert rules.classify("Presente da Vó Marta").categoria == "Presentes"
+
+    novas, mudancas = recategorize(linhas, rules)
+    assert novas[0].categoria == "Renda Variável"
+    assert not mudancas, "nem sequer PROPOSTA: a tela de mudanças não a mostra"
+
+
+def test_protecao_da_fixa_ignora_acento_e_caixa(tmp_path, config_dir):
+    """Exportação antiga escreveu `renda variavel`. Continua protegida."""
+    cfg = ConfigSet.load(config_dir)
+    linhas = _um_csv(tmp_path, cfg, "renda variavel", "Presente da Vó Marta")
+    novas, mudancas = recategorize(linhas, Ruleset.from_text(cfg.categories_text))
+    assert novas[0].categoria == "renda variavel", "volta como entrou, sem 'consertar'"
+    assert not mudancas
+
+
+def test_viagem_nao_e_reescrita_pela_regra(tmp_path, config_dir):
+    """A categoria real da linha de viagem mora na DESCRIÇÃO, entre parênteses.
+
+    Reescrever a coluna deixaria o parêntese órfão: a linha voltaria a ser
+    Alimentação com um `(Alimentação)` colado no nome, e a viagem sumiria da
+    planilha sem deixar rastro de que existiu.
+    """
+    cfg = ConfigSet.load(config_dir)
+    descricao = "[Cartão] Supermercados Alvora (Alimentação) {Campo Belo} {Em 2/Jul}"
+    linhas = _um_csv(tmp_path, cfg, "Viagem", descricao)
+    rules = Ruleset.from_text(cfg.categories_text)
+
+    assert rules.classify(linhas[0].merchant_raw).categoria == "Alimentação"
+
+    novas, mudancas = recategorize(linhas, rules)
+    assert novas[0].categoria == "Viagem"
+    assert novas[0].descricao == descricao
+    assert not mudancas
+
+
+def test_viagem_protege_em_qualquer_caixa(tmp_path, config_dir):
+    """`viagem` minúsculo é a mesma decisão manual que `Viagem`.
+
+    As fixas já comparam sem caixa e sem acento (passam por `normalize`); deixar
+    Viagem exigindo o V maiúsculo seria a mesma proteção com duas réguas.
+    """
+    cfg = ConfigSet.load(config_dir)
+    linhas = _um_csv(tmp_path, cfg, "viagem",
+                     "[Cartão] Supermercados Alvora (Alimentação) {Em 2/Jul}")
+    novas, mudancas = recategorize(linhas, Ruleset.from_text(cfg.categories_text))
+    assert novas[0].categoria == "viagem"
+    assert not mudancas
+
+
+def test_entrada_vazia_em_categorias_fixas_nao_protege_o_mundo(tmp_path, config_dir):
+    """Um `- ` solto no YAML não pode congelar toda linha sem categoria.
+
+    É o erro de digitação mais fácil de cometer numa lista YAML, e sem a guarda
+    ele teria o pior efeito possível: a recategorização pararia de preencher
+    categoria nenhuma — em silêncio, porque "nada mudou" é uma saída plausível.
+    """
+    cfg = ConfigSet.load(config_dir)
+    linhas = _um_csv(tmp_path, cfg, "", "Supermercados Alvora")
+    texto = cfg.categories_text.replace("  categorias_fixas:\n",
+                                        "  categorias_fixas:\n    - ''\n", 1)
+    novas, mudancas = recategorize(linhas, Ruleset.from_text(texto))
+    assert novas[0].categoria == "Alimentação"
+    assert len(mudancas) == 1
+
+
+def test_linha_protegida_nao_cai_na_tela_de_novos(tmp_path, config_dir):
+    """Ela já tem a categoria certa; perguntar seria pedir retrabalho.
+
+    São 825 linhas no arquivo dele. Se cada uma aparecesse em "Novos" pedindo
+    categoria, a etapa viraria uma lista de perguntas já respondidas — que é
+    exatamente o problema que ele relatou nas telas de Novos e Marketplace.
+    """
+    cfg = ConfigSet.load(config_dir)
+    # Descrição que NENHUMA regra reconhece: sem a proteção o estado seria
+    # UNMAPPED e a linha iria para "Novos".
+    linhas = _um_csv(tmp_path, cfg, "Poupança", "Transferido para o proximo mes")
+    rules = Ruleset.from_text(cfg.categories_text)
+    assert rules.classify(linhas[0].merchant_raw).state is LineState.UNMAPPED
+
+    novas, _ = recategorize(linhas, rules)
+    assert novas[0].state is LineState.AUTO
+    assert novas[0].matched == "categoria fixa", "o motivo fica gravado na linha"
+
+
+def test_sem_categorias_fixas_no_yaml_nada_e_protegido(tmp_path, config_dir):
+    """A proteção é config, não regra escondida no código.
+
+    Quem apagar `categorias_fixas` volta ao comportamento antigo — e é melhor
+    que isso seja um teste do que uma surpresa.
+    """
+    cfg = ConfigSet.load(config_dir)
+    linhas = _um_csv(tmp_path, cfg, "Renda Variável", "Presente da Vó Marta")
+    sem = cfg.categories_text.replace("  categorias_fixas:\n", "  categorias_fixas_off:\n", 1)
+    novas, mudancas = recategorize(linhas, Ruleset.from_text(sem))
+    assert novas[0].categoria == "Presentes"
+    assert len(mudancas) == 1
+
+
+def test_protegida_sobrevive_a_ida_e_volta_do_arquivo(tmp_path, config_dir):
+    """Proteger na memória e perder na escrita seria pior do que não proteger."""
+    cfg = ConfigSet.load(config_dir)
+    linhas = _um_csv(tmp_path, cfg, "Investimento", "Aplicacao Cdb Sicredi")
+    novas, _ = recategorize(linhas, Ruleset.from_text(cfg.categories_text))
+    blob = lines_to_csv_preserving_order(novas, schema=cfg.output)
+    tabela = _tabela(blob)
+    coluna = tabela[0].index(cfg.output.coluna("categoria"))
+    assert tabela[1][coluna] == "Investimento"
+
+
+def test_endpoint_categories_diz_quais_sao_as_fixas(client):
+    """O front precisa da lista para tirá-las dos seletores."""
+    corpo = client.get("/categories").json()
+    assert "Renda Variável" in corpo["fixed_categories"]
+    assert "Poupança" in corpo["fixed_categories"]
+    assert "Casa" not in corpo["fixed_categories"]
+    # Subconjunto de `categories`: o seletor filtra uma lista pela outra, e um
+    # nome que só existisse numa delas não esconderia nada.
+    assert set(corpo["fixed_categories"]) <= set(corpo["categories"])
+
+
 def test_reprocessar_duas_vezes_nao_muda_nada(csv_de_saida, config_dir):
     """Idempotência: a segunda passada com as mesmas regras é um no-op."""
     cfg = ConfigSet.load(config_dir)

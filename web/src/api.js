@@ -65,11 +65,13 @@ export function recategorize(files) {
 // --- análise do histórico ---------------------------------------------------
 
 // Sem transaction_id: é leitura pura, nada fica guardado do outro lado.
-export function analytics(file, {
+export function analytics(files, {
   inicio = '', fim = '', semCategorias = [], semLinhas = [],
 } = {}) {
   const form = new FormData()
-  form.append('file', file)
+  // Vários arquivos são de PESSOAS diferentes (a análise do casal): nada é
+  // deduplicado, duas linhas idênticas em arquivos diferentes são dois gastos.
+  for (const file of [].concat(files)) form.append('files', file)
   // Recorte e exclusões vão para o servidor porque TODA métrica é recalculada
   // sobre eles. Filtrar no cliente, depois de agregar, daria média mensal e
   // custo fixo do arquivo inteiro ao lado de gráficos do período — números que

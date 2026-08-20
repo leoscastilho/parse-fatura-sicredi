@@ -131,6 +131,7 @@ export default function TravelStep({
                             <CategorySelect
                               value={manual || ''}
                               categories={categories}
+                              
                               onChange={(categoria) =>
                                 setAssignment('line', item.line_id, { categoria })}
                               placeholder="— sem categoria —"

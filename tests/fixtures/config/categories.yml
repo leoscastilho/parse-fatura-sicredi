@@ -25,6 +25,17 @@ configuracao:
   # "DM *Nintend"). Ponha `false` para manter byte a byte como vem do Sicredi.
   colapsar_espacos: true
 
+  # Categorias que dizem para onde o dinheiro se MOVEU. O portal não as atribui
+  # e não as reescreve — o porquê está por extenso em `config/categories.yml`.
+  # `Renda Variável` está aqui com acento de propósito: um dos testes prende que
+  # a comparação passa por `normalize`, então `renda variavel` também protege.
+  categorias_fixas:
+    - Renda Fixa
+    - Renda Variável
+    - Resgate Poupança
+    - Poupança
+    - Investimento
+
   # Lista oferecida pelo `categorize.py`. Mantenha igual à da planilha.
   categorias:
     - Ajuste

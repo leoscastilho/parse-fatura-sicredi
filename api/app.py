@@ -393,6 +393,10 @@ def get_categories(settings: Settings = Depends(get_settings)) -> CategoriesResp
 
     return CategoriesResponse(
         categories=rules.all_categories(),
+        # Filtrado por `all_categories` de propósito: um nome digitado errado em
+        # `categorias_fixas` sumiria de uma lista onde nunca esteve, e a tela
+        # perderia uma opção sem que nada ficasse protegido em troca.
+        fixed_categories=[c for c in rules.all_categories() if rules.is_fixed(c)],
         keywords_by_category={k: sorted(v) for k, v in sorted(keywords.items())},
         ordered_rules=[{"padrao": p.pattern, "categoria": c} for p, c in rules.ordered_rules],
         marketplaces=rules.manual,
@@ -624,7 +628,7 @@ async def recategorize_csv(
 
 @app.post("/analytics")
 async def analytics(
-    file: UploadFile = File(..., description="CSV com o histórico completo"),
+    files: list[UploadFile] = File(..., description="um ou mais CSVs de histórico"),
     inicio: str = Form("", description="AAAA-MM, inclusivo"),
     fim: str = Form("", description="AAAA-MM, inclusivo"),
     sem_categorias: str = Form("", description="categorias a excluir, uma por linha"),
@@ -637,12 +641,21 @@ async def analytics(
     gravado. O arquivo é lido, virado em números e esquecido — é uma leitura,
     não uma revisão, e não faz sentido poder "voltar uma etapa" nela.
     """
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(415, detail="a análise aceita .csv")
+    if len(files) > settings.max_files_per_upload:
+        raise HTTPException(413, detail=f"máximo {settings.max_files_per_upload} arquivos")
 
-    blob = await file.read()
-    if len(blob) > settings.max_upload_bytes:
-        raise HTTPException(413, detail="arquivo grande demais")
+    # Vários arquivos NÃO são deduplicados: eles são de pessoas diferentes (a
+    # análise do casal), então duas linhas idênticas em arquivos diferentes são
+    # dois gastos de verdade. Deduplicar apagaria metade de um mercado dividido.
+    conteudos: list[tuple[str, str]] = []
+    for arquivo in files:
+        if not arquivo.filename or not arquivo.filename.lower().endswith(".csv"):
+            raise HTTPException(415, detail="a análise aceita .csv")
+        blob = await arquivo.read()
+        if len(blob) > settings.max_upload_bytes:
+            raise HTTPException(413, detail=f"{arquivo.filename}: arquivo grande demais")
+        # utf-8-sig come o BOM que o Excel adora deixar no começo.
+        conteudos.append((arquivo.filename, blob.decode("utf-8-sig", errors="replace")))
 
     caminho = config_root(settings) / "analytics.yml"
     try:
@@ -653,7 +666,6 @@ async def analytics(
         cfg = AnalyticsConfig()
 
     try:
-        # utf-8-sig come o BOM que o Excel adora deixar no começo.
         # O recorte acontece AQUI, antes de qualquer soma. Filtrar no cliente
         # depois de agregar daria totais que não batem com os gráficos: média
         # mensal, custo fixo e anomalias precisam ser recalculados sobre o
@@ -661,14 +673,14 @@ async def analytics(
         # As listas viajam separadas por quebra de linha, não por vírgula: nome
         # de categoria e descrição de lançamento têm vírgula com frequência
         # ("Alimentação, bar"), e o separador não pode aparecer no dado.
-        resultado = analisar(blob.decode("utf-8-sig", errors="replace"), cfg,
+        resultado = analisar(conteudos, cfg,
                              inicio=inicio.strip() or None, fim=fim.strip() or None,
                              sem_categorias=_linhas_do_form(sem_categorias),
                              sem_linhas=_linhas_do_form(sem_linhas))
     except AnalyticsError as exc:
         raise HTTPException(422, detail=str(exc))
 
-    resultado["arquivo"] = file.filename
+    resultado["arquivo"] = ", ".join(nome for nome, _ in conteudos)
     return resultado
 
 

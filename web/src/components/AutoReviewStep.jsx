@@ -93,6 +93,7 @@ export default function AutoReviewStep({
                   <CategorySelect
                     value={current}
                     categories={categories}
+                    
                     onChange={(categoria) => {
                       if (categoria === item.categoria) {
                         setAssignment('merchant', item.merchant, null)
