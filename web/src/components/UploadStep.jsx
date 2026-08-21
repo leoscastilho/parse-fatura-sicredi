@@ -57,13 +57,32 @@ export default function UploadStep({
   // acabado de exportar, e errar a escolha dava um erro de parsing sem relação
   // óbvia com a causa. Agora o arquivo responde por si.
   const [bancos, setBancos] = useState([])
+  // Os arquivos cifrados que ainda não abriram — o BTG manda a fatura assim.
+  // Vem do pré-voo, porque descobrir isso é ler o arquivo: pedir a senha antes
+  // de saber se alguém precisa dela seria perguntar a todo mundo por causa de
+  // um banco.
+  const [protegidos, setProtegidos] = useState([])
+  // DUAS senhas de propósito. `senha` é o que está no campo; `senhaEnviada` é o
+  // que já foi tentado. Sem a separação, o pré-voo rodaria a cada pausa da
+  // digitação e a pessoa veria "a senha não confere" antes de terminar de
+  // escrever — um erro sobre um estado que ela ainda não pediu para conferir.
+  const [senha, setSenha] = useState('')
+  const [senhaEnviada, setSenhaEnviada] = useState('')
   const inputRef = useRef(null)
 
   // A pergunta da data só aparece DEPOIS de reconhecer o banco, porque só aí
   // se sabe se ela faz falta: o Sicredi traz o vencimento dentro do arquivo, o
   // Nubank não traz em lugar nenhum.
   const precisaVencimento = bancos.some((b) => b.pede_vencimento)
-  const pronto = files.length > 0 && (!precisaVencimento || vencimento)
+  // Arquivo cifrado SEGURA o Processar. Sem isso o upload iria adiante lendo só
+  // metade do lote e a fatura fecharia com um valor a menos, sem nada na tela
+  // apontando para a causa.
+  const pronto = files.length > 0 && !protegidos.length
+    && (!precisaVencimento || vencimento)
+  // Só é erro quando o que está no campo é o que foi tentado: assim que a
+  // pessoa começa a corrigir, o aviso sai da frente.
+  const senhaNaoConfere = senha === senhaEnviada
+    && protegidos.some((p) => p.senha_incorreta)
 
   function accept(list) {
     // Filtra pela união das extensões de todos os bancos: qual deles é, quem
@@ -82,6 +101,11 @@ export default function UploadStep({
   useEffect(() => {
     if (!files.length) {
       setBancos([])
+      setProtegidos([])
+      // A senha some junto com os arquivos: ela é de um lote, não da sessão, e
+      // guardá-la depois que o lote saiu de cena é mantê-la em memória por um
+      // tempo que não serve para nada.
+      setSenha(''); setSenhaEnviada('')
       onBancosDetectados?.([])
       return setLimites(null)
     }
@@ -91,10 +115,11 @@ export default function UploadStep({
     const timer = setTimeout(async () => {
       setLendoPeriodo(true)
       try {
-        const r = await api.uploadPeriodo(files, vencimento)
+        const r = await api.uploadPeriodo(files, vencimento, senhaEnviada)
         if (cancelado) return
         setLimites(r.purchase_range || null)
         setBancos(r.bancos || [])
+        setProtegidos(r.protegidos || [])
         // Sobe para o App pintar o tema da marca reconhecida.
         onBancosDetectados?.(r.bancos || [])
         const nomes = r.titulares || []
@@ -112,7 +137,7 @@ export default function UploadStep({
         // Conveniência, não pré-requisito: falhou, o editor volta a ficar solto
         // e a validação real continua acontecendo no processamento.
         if (!cancelado) {
-          setLimites(null); setTitulares([]); setBancos([])
+          setLimites(null); setTitulares([]); setBancos([]); setProtegidos([])
           onBancosDetectados?.([])
         }
       } finally {
@@ -120,7 +145,7 @@ export default function UploadStep({
       }
     }, 300)
     return () => { cancelado = true; clearTimeout(timer) }
-  }, [files, vencimento])
+  }, [files, vencimento, senhaEnviada])
 
   return (
     <section className="card">
@@ -180,6 +205,48 @@ export default function UploadStep({
             </li>
           ))}
         </ul>
+      )}
+
+      {/* SENHA DO ARQUIVO. Só aparece quando algum arquivo do lote está
+          cifrado — hoje o BTG, que manda a fatura assim. É a senha que o banco
+          definiu para o arquivo, não uma senha do portal, e por isso a tela diz
+          isso com todas as letras: perguntar "senha" e mais nada faria a pessoa
+          procurar uma que ela nunca cadastrou. */}
+      {protegidos.length > 0 && (
+        <div className="toolbar">
+          <label className="small">
+            Senha do arquivo{' '}
+            <input
+              type="password"
+              value={senha}
+              autoComplete="off"
+              disabled={busy || lendoPeriodo}
+              aria-label="Senha do arquivo"
+              onChange={(e) => setSenha(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && senha.trim()
+                && setSenhaEnviada(senha)}
+            />
+          </label>
+          <button
+            disabled={!senha.trim() || busy || lendoPeriodo}
+            onClick={() => setSenhaEnviada(senha)}
+          >
+            {lendoPeriodo ? 'Abrindo…' : 'Abrir'}
+          </button>
+          {senhaNaoConfere ? (
+            <span className="inline-note error small">
+              A senha não abre {protegidos.map((p) => p.nome).join(', ')}.
+            </span>
+          ) : (
+            <span className="muted small">
+              {protegidos.map((p) => p.nome).join(', ')}{' '}
+              {protegidos.length > 1 ? 'estão protegidos' : 'está protegido'} por
+              senha. É a senha <strong>do arquivo</strong>, a que o banco pede
+              para abri-lo — serve só para ler a fatura aqui e não fica guardada
+              em lugar nenhum.
+            </span>
+          )}
+        </div>
       )}
 
       {precisaVencimento && (
@@ -269,7 +336,8 @@ export default function UploadStep({
               // leva. Quem quer o nome é o filtro das telas seguintes, para
               // dizer "Leonardo" em vez de "Sem marca".
               onClick={() => onUpload(files, vencimento,
-                                      formTitulares(titulares, eu, apelidos), eu)}>
+                                      formTitulares(titulares, eu, apelidos), eu,
+                                      senhaEnviada)}>
         {busy ? 'Processando…' : 'Processar'}
       </button>
     </section>

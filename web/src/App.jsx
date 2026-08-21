@@ -163,9 +163,12 @@ export default function App() {
     [assignments],
   )
 
-  async function handleUpload(files, vencimento, titulares = '', eu = '') {
+  // `senha` é a senha DO ARQUIVO — o BTG manda a fatura cifrada. Passa direto
+  // para a chamada e não vira estado do App: guardá-la aqui a manteria viva
+  // depois do upload, sem que nada mais precise dela.
+  async function handleUpload(files, vencimento, titulares = '', eu = '', senha = '') {
     setEuNome(eu)
-    await processar(() => api.upload(files, vencimento, titulares), 'unmapped')
+    await processar(() => api.upload(files, vencimento, titulares, senha), 'unmapped')
   }
 
   async function handleRecategorize(files) {

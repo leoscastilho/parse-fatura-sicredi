@@ -400,7 +400,7 @@ def test_regex_add_invalido_da_422(client):
 # Pacote de configuração
 # ---------------------------------------------------------------------------
 
-def test_export_import_roundtrip(client):
+def test_export_import_roundtrip(client, config_dir):
     pacote = client.get("/config/export")
     assert pacote.status_code == 200
 
@@ -413,7 +413,13 @@ def test_export_import_roundtrip(client):
     assert conferido.status_code == 200
     corpo = conferido.json()
     assert corpo["gravado"] is False, "dry-run não pode gravar"
-    assert set(corpo["conteudo"]["banks"]) == {"sicredi", "nubank"}
+    # A lista sai do DISCO, não de um conjunto escrito à mão: o que este teste
+    # prova é que o pacote leva todos os bancos configurados e traz todos de
+    # volta. Fixado à mão, ele passava a falhar a cada banco novo — e a correção
+    # era editar o teste, que é o oposto de uma prova.
+    esperados = {p.stem for p in (config_dir / "banks").glob("*.yml")}
+    assert esperados, "a config de teste precisa ter ao menos um banco"
+    assert set(corpo["conteudo"]["banks"]) == esperados
 
 
 def test_import_recusa_arquivo_que_nao_e_zip(client):
@@ -884,3 +890,147 @@ def test_pagamento_da_fatura_do_nubank_e_excluido(client, tmp_path):
              for g in dados[balde]]
     assert "PAGAMENTO RECEBIDO" not in todos
     assert any("PAGAMENTO RECEBIDO" in d["descricao"].upper() for d in dados["dropped"])
+
+
+# ---------------------------------------------------------------------------
+# BTG — a fatura vem cifrada e a senha é DO ARQUIVO
+# ---------------------------------------------------------------------------
+
+def _upload_btg(client, path, senha="", vencimento=""):
+    return client.post("/upload", data={"vencimento": vencimento, "senha": senha},
+                       files=[("files", (path.name, path.read_bytes(),
+                                         "application/octet-stream"))])
+
+
+def _preflight(client, path, senha=""):
+    return client.post("/upload/periodo", data={"senha": senha},
+                       files=[("files", (path.name, path.read_bytes(),
+                                         "application/octet-stream"))]).json()
+
+
+def test_upload_btg_com_a_senha_certa(client, btg_xlsx_cifrado):
+    from tests.conftest import SENHA_BTG
+    resposta = _upload_btg(client, btg_xlsx_cifrado, senha=SENHA_BTG)
+    assert resposta.status_code == 200
+
+    dados = resposta.json()
+    assert [s["banco"] for s in dados["statements"]] == ["BTG Pactual"]
+    assert dados["statements"][0]["due_date"] == "2026-06-01"
+    assert dados["statements"][0]["reconciles"] is True
+
+
+def test_upload_btg_sem_senha_diz_que_falta_a_senha(client, btg_xlsx_cifrado):
+    """Não é 415 nem 500: o arquivo é bom, falta a chave dele."""
+    resposta = _upload_btg(client, btg_xlsx_cifrado)
+    assert resposta.status_code == 422
+    assert "protegido por senha" in resposta.json()["detail"]
+
+
+def test_upload_btg_com_senha_errada_diz_que_a_senha_nao_confere(client, btg_xlsx_cifrado):
+    """Texto DIFERENTE do "falta a senha" — senão quem errou não sabe se chegou."""
+    resposta = _upload_btg(client, btg_xlsx_cifrado, senha="nao-e-essa")
+    assert resposta.status_code == 422
+    detalhe = resposta.json()["detail"]
+    assert "não abre" in detalhe
+    assert "protegido por senha" not in detalhe
+
+
+def test_preflight_conta_que_o_arquivo_pede_senha(client, btg_xlsx_cifrado):
+    """A tela só sabe montar o campo porque o pré-voo conta.
+
+    Sem isto, ou o portal pediria senha a todo mundo por causa de um banco, ou
+    a pessoa descobriria o problema depois de clicar em Processar.
+    """
+    dados = _preflight(client, btg_xlsx_cifrado)
+    assert [p["nome"] for p in dados["protegidos"]] == [btg_xlsx_cifrado.name]
+    assert dados["protegidos"][0]["senha_incorreta"] is False
+    assert dados["bancos"] == [], "cifrado, ainda não dá para saber de quem é"
+
+
+def test_preflight_marca_a_senha_errada(client, btg_xlsx_cifrado):
+    dados = _preflight(client, btg_xlsx_cifrado, senha="nao-e-essa")
+    assert dados["protegidos"][0]["senha_incorreta"] is True
+
+
+def test_preflight_com_a_senha_certa_reconhece_o_btg(client, btg_xlsx_cifrado):
+    from tests.conftest import SENHA_BTG
+    dados = _preflight(client, btg_xlsx_cifrado, senha=SENHA_BTG)
+
+    assert dados["protegidos"] == []
+    assert [b["id"] for b in dados["bancos"]] == ["btg"]
+    assert dados["bancos"][0]["tema"]["primaria"] == "#195AB4"
+    assert dados["bancos"][0]["pede_vencimento"] is False, "o arquivo traz a data"
+    # O BTG não imprime nome: quem separa as compras é o final do cartão, e é
+    # ele que alimenta o filtro de "mostrar de quem".
+    assert dados["titulares"] == ["4108", "8134"]
+
+
+def test_a_senha_do_arquivo_nunca_e_devolvida_nem_gravada(client, btg_xlsx_cifrado,
+                                                          tmp_path):
+    """A senha entra, decifra e morre. Não volta e não fica em disco.
+
+    É a mesma classe de segredo do token do GitHub: só que este não é nem
+    configuração — é digitado uma vez por lote. Guardá-lo no SQLite da
+    transação o deixaria em disco por horas, legível por quem abrisse o arquivo.
+    """
+    from tests.conftest import SENHA_BTG
+
+    corpo = _upload_btg(client, btg_xlsx_cifrado, senha=SENHA_BTG)
+    assert corpo.status_code == 200
+    assert SENHA_BTG not in corpo.text
+
+    preflight = client.post("/upload/periodo", data={"senha": SENHA_BTG},
+                            files=[("files", (btg_xlsx_cifrado.name,
+                                              btg_xlsx_cifrado.read_bytes(),
+                                              "application/octet-stream"))])
+    assert SENHA_BTG not in preflight.text
+
+    banco = tmp_path / "state.db"
+    assert banco.exists(), "a transação foi mesmo gravada"
+    assert SENHA_BTG.encode() not in banco.read_bytes()
+
+
+def test_lote_misto_com_um_cifrado_e_um_aberto(client, btg_xlsx_cifrado, sicredi_xlsx):
+    """Uma senha só, e ela vale para o arquivo que precisa dela.
+
+    O que está aberto não é tocado — passar todo blob pelo msoffcrypto por
+    precaução transformaria um lote de dez CSVs numa espera sem motivo.
+    """
+    from tests.conftest import SENHA_BTG
+    resposta = client.post(
+        "/upload", data={"senha": SENHA_BTG},
+        files=[("files", ("btg.xlsx", btg_xlsx_cifrado.read_bytes(),
+                          "application/octet-stream")),
+               ("files", ("sic.xlsx", sicredi_xlsx.read_bytes(),
+                          "application/octet-stream"))])
+    assert resposta.status_code == 200
+    bancos = {s["banco"] for s in resposta.json()["statements"]}
+    assert bancos == {"BTG Pactual", "Sicredi"}
+
+
+def test_upload_btg_aberto_tambem_e_reconhecido(client, btg_xlsx):
+    """Sem cifra, o `.xlsx` do BTG ainda tem de se distinguir do do Sicredi.
+
+    Os dois declaram a mesma extensão; quem desempata é a assinatura DENTRO do
+    zip, e este é o teste de que ela é lida de lá.
+    """
+    resposta = _upload_btg(client, btg_xlsx)
+    assert resposta.status_code == 200
+    assert resposta.json()["statements"][0]["banco"] == "BTG Pactual"
+
+
+def test_pagamento_da_fatura_do_btg_e_excluido(client, btg_xlsx):
+    """Cada banco escreve o pagamento da fatura de um jeito, e todos têm que sair.
+
+    O Sicredi chama de "Pag Fat Deb Cc", o Nubank de "Pagamento recebido", o BTG
+    de "Pagamento de fatura". Faltando um, ele aparece todo mês na aba Novos
+    pedindo categoria — e o crédito de milhares de reais entra no CSV e conta
+    duas vezes na planilha.
+    """
+    dados = _upload_btg(client, btg_xlsx).json()
+
+    todos = [g["merchant"] for balde in ("unmapped_items", "auto_classified_items",
+                                         "ignored_items")
+             for g in dados[balde]]
+    assert "PAGAMENTO DE FATURA" not in todos
+    assert any("PAGAMENTO DE FATURA" in d["descricao"].upper() for d in dados["dropped"])

@@ -10,10 +10,12 @@ teste obrigatório depende disso.
 
 from __future__ import annotations
 
+import io
 import shutil
 from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from openpyxl import Workbook
 
@@ -88,9 +90,41 @@ def _sicredi_workbook(path: Path, *, vencimento="10/08/2026", rows=None,
     return path
 
 
+def _sicredi_xls(path: Path, **kwargs) -> Path:
+    """O MESMO extrato, gravado como `.xls` de verdade — BIFF, não zip.
+
+    Existe por causa do CONTAINER, não do conteúdo: o `.xls` antigo mora no
+    mesmo OLE2 de um `.xlsx` cifrado, e é o único arquivo do projeto capaz de
+    provar que o portal não confunde os dois. Com `.xlsx` em toda fixture, "isto
+    está protegido por senha?" nunca era perguntado a um OLE2 aberto — e a
+    resposta errada faria o portal pedir senha para uma fatura do Sicredi.
+
+    De quebra é o único teste que exercita o caminho do `xlrd`, que está nos
+    requisitos justamente para este formato.
+    """
+    import xlwt
+
+    aberto = _sicredi_workbook(path.with_suffix(".xlsx"), **kwargs)
+    quadro = pd.read_excel(aberto, sheet_name=0, header=None, dtype=object)
+
+    wb = xlwt.Workbook()
+    ws = wb.add_sheet("Relatorio")
+    for r, linha in enumerate(quadro.itertuples(index=False)):
+        for c, valor in enumerate(linha):
+            if valor is not None and not (isinstance(valor, float) and pd.isna(valor)):
+                ws.write(r, c, str(valor))
+    wb.save(str(path))
+    return path
+
+
 @pytest.fixture
 def sicredi_xlsx(tmp_path) -> Path:
     return _sicredi_workbook(tmp_path / "extrato-sicredi.xlsx")
+
+
+@pytest.fixture
+def sicredi_xls(tmp_path) -> Path:
+    return _sicredi_xls(tmp_path / "extrato-sicredi.xls")
 
 
 @pytest.fixture
@@ -159,6 +193,124 @@ def _valor(texto: str) -> float:
 @pytest.fixture
 def sicredi_app_csv(tmp_path) -> Path:
     return _sicredi_app_csv(tmp_path / "fatura-app.csv")
+
+
+# ---------------------------------------------------------------------------
+# BTG Pactual — planilha em tabelas empilhadas, e cifrada
+# ---------------------------------------------------------------------------
+
+SENHA_BTG = "41589855876"
+
+
+def _btg_workbook(path: Path, *, referencia="Junho/2026", vencimento="01/06",
+                  compras=None, pagamentos=None, outros=20.0,
+                  abas_extras=0) -> Path:
+    """Monta uma planilha com o mesmo formato do extrato do BTG.
+
+    Reproduz o que separa este arquivo dos outros e que a leitura precisa
+    vencer: a coluna A vazia, as duas tabelas empilhadas em colunas diferentes,
+    as células já tipadas (datetime e float, não texto pt-BR), a parcela dentro
+    do nome do estabelecimento, o vencimento sem ano — e, de propósito, um
+    "Outros valores" que entra no Total da Fatura sem virar lançamento nenhum.
+    """
+    compras = compras if compras is not None else [
+        (datetime(2026, 3, 8), "Petz (3/3)", 132.00, "Parcela sem juros", "8134"),
+        (datetime(2026, 4, 26), "Supermercado Confianca", 348.78, "Compra à vista", "8134"),
+        (datetime(2026, 4, 29), "Steamgames", 40.02, "Compra internacional", "4108"),
+        (datetime(2026, 5, 3), "Netflix", 44.90, "Compra à vista", "8134"),
+    ]
+    pagamentos = pagamentos if pagamentos is not None else [
+        (datetime(2026, 5, 4), "Pagamento de fatura", -5104.93),
+    ]
+
+    internacionais = round(sum(v for _, _, v, tipo, _ in compras
+                               if tipo == "Compra internacional"), 2)
+    nacionais = round(sum(v for _, _, v, tipo, _ in compras
+                          if tipo != "Compra internacional"), 2)
+    pago = round(sum(v for _, _, v in pagamentos), 2)
+    total = round(nacionais + internacionais + outros, 2)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Titular"
+    grid: list[list] = [
+        [None] * 8,
+        [None] * 8,
+        [None, "Fatura Cartão de Crédito", None, None, None, None, referencia, None],
+        [None] * 8,
+        [None] * 8,
+        [None, "Fatura Atual", None, None, None, "Resumo", None, None],
+        [None, "Período de Compras", None, "27/04 até 28/05", None,
+         "Lançamentos Nacionais", None, nacionais],
+        [None, "Vencimento", None, vencimento, None,
+         "Lançamentos Internacionais", None, internacionais],
+        [None, "Pagamento mínimo", None, 997.75, None, "Saque no crédito", None, 0.0],
+        [None, "Pagamento parcial", None, 0.0, None, "Outros valores", None, outros],
+        [None, None, None, None, None, "Total de créditos recebidos", None, 0.0],
+        [None, None, None, None, None, "Juros e encargos", None, 0.0],
+        [None, None, None, None, None, "Parcelamento de faturas", None, 0.0],
+        [None, None, None, None, None, "Saldo fatura anterior e pagamentos", None, 0.0],
+        [None, None, None, None, None, "Total da Fatura", None, total],
+        [None] * 8,
+        [None] * 8,
+        [None, "Pagamentos feitos pelo cliente", None, None, pago, None, None, None],
+        [None] * 8,
+        [None, "Data", "Descrição", None, "Valor", None, None, None],
+    ]
+    grid += [[None, data, desc, None, valor, None, None, None]
+             for data, desc, valor in pagamentos]
+    grid += [
+        [None] * 8,
+        [None, "Total de compras e despesas", None, None, total, None, None, None],
+        [None] * 8,
+        [None, "Data", "Descrição", None, "Valor", "Tipo de compra",
+         "Código de autorização", "Final Cartão"],
+    ]
+    grid += [[None, data, desc, None, valor, tipo, "OWJ4F1", cartao]
+             for data, desc, valor, tipo, cartao in compras]
+
+    for row in grid:
+        ws.append(row)
+
+    # Uma aba a mais COM tabela é o caso que o perfil recusa de propósito, em
+    # vez de somar só a primeira e esconder as outras em silêncio.
+    for i in range(abas_extras):
+        extra = wb.create_sheet(f"Adicional {i + 1}")
+        for row in [[None, "Data", "Descrição", None, "Valor", "Tipo de compra",
+                     "Código de autorização", "Final Cartão"],
+                    [None, datetime(2026, 5, 5), "Loja Do Outro", None, 10.0,
+                     "Compra à vista", "ZZZZZZ", "9999"]]:
+            extra.append(row)
+
+    wb.save(path)
+    return path
+
+
+def _cifrar(origem: Path, destino: Path, senha: str) -> Path:
+    """Grava `origem` cifrado com `senha` — é assim que o BTG manda a fatura.
+
+    Cifrar DENTRO do teste, em vez de versionar um arquivo pronto, é o que
+    mantém a suíte hermética e o repositório sem binário: não entra fatura de
+    verdade num diretório de fixtures, e o arquivo é sempre reconstruído.
+    """
+    import msoffcrypto
+
+    saida = io.BytesIO()
+    with origem.open("rb") as fh:
+        msoffcrypto.OfficeFile(fh).encrypt(senha, saida)
+    destino.write_bytes(saida.getvalue())
+    return destino
+
+
+@pytest.fixture
+def btg_xlsx(tmp_path) -> Path:
+    return _btg_workbook(tmp_path / "btg-aberto.xlsx")
+
+
+@pytest.fixture
+def btg_xlsx_cifrado(tmp_path) -> Path:
+    aberto = _btg_workbook(tmp_path / "btg-claro.xlsx")
+    return _cifrar(aberto, tmp_path / "btg_extrato.xlsx", SENHA_BTG)
 
 
 @pytest.fixture

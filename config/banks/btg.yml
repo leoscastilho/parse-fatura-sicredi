@@ -1,0 +1,124 @@
+# =============================================================================
+#  BTG Pactual
+# =============================================================================
+#  Validado contra a fatura real do app
+#  (`documents/btg_extrato_com_senha_*.xlsx`, Junho/2026).
+#
+#  O QUE ESTE ARQUIVO TEM DE DIFERENTE dos outros dois bancos:
+#
+#  * VEM CIFRADO. É um `.xlsx` dentro de um invólucro protegido por senha, e a
+#    senha é do arquivo, não do portal: a tela pede na hora do upload, usa para
+#    decifrar em memória e esquece. Não vai para o banco de dados, não aparece
+#    em resposta nenhuma e não é registrada em log.
+#
+#  * A PARCELA MORA NO NOME. Não existe coluna de parcela: o BTG escreve
+#    "Petz (3/3)" e põe a natureza da compra ("Parcela sem juros", "Compra à
+#    vista", "Compra internacional") numa coluna à parte. A leitura desgruda as
+#    duas e zera à esquerda — "3/3" vira "03/03", como no Sicredi.
+#
+#  * NÃO HÁ NOME DE TITULAR, só o final do cartão. Numa conta com mais de um
+#    cartão o que separa as compras é "8134" contra "4108". Serve igual para o
+#    filtro de quem passou o cartão, e o apelido ("8134=Eu") se dá no upload,
+#    no mesmo campo que dá apelido a um nome completo.
+#
+#  * O VENCIMENTO NÃO TEM ANO. A planilha traz "01/06" e deixa o ano no título,
+#    "Junho/2026" — daí o bloco `referencia`. Ler um sem o outro daria uma
+#    fatura no ano 1900.
+#
+#  LIMITAÇÃO CONHECIDA, e é do arquivo: o "Total da Fatura" inclui anuidade,
+#  saque e encargos ("Outros valores"), que o BTG NÃO lista como lançamento.
+#  Na fatura de referência são R$ 20,00 que existem no total e não existem em
+#  linha nenhuma — não há como exportá-los, porque não há o que exportar. Por
+#  isso a conferência compara a soma lida com "Lançamentos Nacionais +
+#  Internacionais", que é o que de fato virou linha; o total da fatura fica
+#  guardado à parte. Se a sua planilha espera o total do banco, some a
+#  anuidade à mão.
+#
+#  Cores: identidade da marca em btgpactual.com — Fun Blue #195AB4 sobre Black
+#  Pearl #05132A. Os tons claros são derivados desses dois; o `destaque` é
+#  âmbar porque o papel dele na interface é contrastar com a cor da marca, e um
+#  segundo azul não contrastaria (o Nubank resolve igual, com amarelo).
+# =============================================================================
+
+id: btg
+nome: BTG Pactual
+validado: true
+
+tema:
+  primaria: "#195AB4"        # Fun Blue
+  escura: "#05132A"          # Black Pearl
+  clara: "#C3D5EE"
+  suave: "#EEF4FC"
+  destaque: "#FFB81C"
+  neutra: "#5B6B80"
+  aviso: "#7A4B00"
+  erro: "#E60050"
+  fundo: "#F4F7FB"
+  texto: "#05132A"
+  inicial: B
+
+leitura:
+  # `excel_tabelas`: tabelas empilhadas, cada uma achada pelo próprio
+  # cabeçalho, e o fim de cada uma é a primeira linha sem data. Duas aqui: os
+  # pagamentos feitos pelo cliente e as compras. As duas viram lançamento — o
+  # pagamento com valor negativo, como no Sicredi.
+  estrategia: excel_tabelas
+  extensoes: [".xlsx"]
+
+  # O arquivo chega cifrado. É o que faz a tela pedir a senha ANTES de tentar
+  # ler, em vez de estourar um erro de planilha corrompida.
+  protegido: true
+
+  # Como o portal reconhece este arquivo sem perguntar de qual banco ele é. O
+  # `.xlsx` é disputado com o extrato do site do Sicredi, e a assinatura é
+  # procurada no texto de DENTRO do zip, já decifrado. "Final Cartão" e
+  # "Período de Compras" não existem no arquivo do Sicredi, e o
+  # "Data de Vencimento" dele não existe aqui — o BTG escreve só "Vencimento".
+  deteccao:
+    contem: ["Final Cartão", "Período de Compras"]
+
+  # O nome da coluna no arquivo -> papel no nosso modelo. `tipo` e `titular`
+  # existem só na tabela de compras; a de pagamentos é mais estreita, e as
+  # linhas dela são lidas sem eles.
+  cabecalho:
+    data: Data
+    descricao: Descrição
+    valor: Valor
+    tipo: "Tipo de compra"
+    titular: "Final Cartão"
+
+  # De onde sai o ANO do vencimento.
+  referencia:
+    rotulo: "Fatura Cartão de Crédito"
+
+  vencimento:
+    rotulo: "Vencimento"
+    formato: "%d/%m"
+
+  # A compra no exterior é marcada pela COLUNA `Tipo de compra`, não por uma
+  # seção separada como no Sicredi. O BTG já converte para reais.
+  internacional:
+    marcador: "Compra internacional"
+
+  # "Petz (3/3)" -> descrição "Petz", parcela "03/03".
+  parcela_na_descricao: true
+
+  # Os débitos declarados são os LANÇAMENTOS, não o "Total da Fatura" — ver a
+  # limitação no cabeçalho. `total` continua sendo lido, para ficar registrado
+  # o que a fatura declara.
+  resumo:
+    debitos:
+      - "Lançamentos Nacionais"
+      - "Lançamentos Internacionais"
+    creditos: "Pagamentos feitos pelo cliente"
+    total: "Total da Fatura"
+
+  # As células já são numéricas na planilha e são usadas como estão; isto vale
+  # para o dia em que alguma vier como texto.
+  numeros:
+    milhar: "."
+    decimal: ","
+
+  data_lancamento: "%Y-%m-%d"
+
+  fim_secao: null

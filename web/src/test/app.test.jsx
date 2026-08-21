@@ -259,7 +259,7 @@ describe('UploadStep', () => {
     expect(processar).toBeEnabled()
 
     await userEvent.click(processar)
-    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '2026-08-10', '', '')
+    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '2026-08-10', '', '', '')
   })
 
   it('não pede data nenhuma quando o banco a traz no arquivo', async () => {
@@ -268,7 +268,123 @@ describe('UploadStep', () => {
     await screen.findByText(/Reconheci/)
     expect(container.querySelector('input[type="date"]')).toBeNull()
     await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
-    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '', '', '')
+    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '', '', '', '')
+  })
+})
+
+// ------------------------------------------------ senha do arquivo (BTG)
+
+describe('UploadStep — arquivo protegido por senha', () => {
+  const BTG = { id: 'btg', nome: 'BTG Pactual', pede_vencimento: false,
+                validado: true, tema: { primaria: '#195AB4' } }
+  const SENHA = '41589855876'
+
+  // O pré-voo responde conforme a senha que RECEBE — é assim que o servidor se
+  // comporta, e é isso que faz o teste exercitar o ciclo inteiro em vez de uma
+  // resposta congelada.
+  async function montar() {
+    vi.resetModules()
+    const uploadPeriodo = vi.fn(async (_arquivos, _venc, senha) => {
+      if (senha === SENHA) {
+        return { purchase_range: { inicio: '2026-04-27', fim: '2026-05-28' },
+                 titulares: [], eu_sugerido: null,
+                 bancos: [BTG], protegidos: [] }
+      }
+      return { purchase_range: null, titulares: [], eu_sugerido: null,
+               bancos: [], protegidos: [
+                 { nome: 'btg.xlsx', senha_incorreta: Boolean(senha) }] }
+    })
+    vi.doMock('../api', () => ({ upload: vi.fn(), uploadPeriodo }))
+    const { default: Step } = await import('../components/UploadStep')
+    const onUpload = vi.fn()
+    const { container } = render(<Step onUpload={onUpload} busy={false} />)
+    await userEvent.upload(container.querySelector('input[type="file"]'),
+                           new File(['x'], 'btg.xlsx'))
+    return { onUpload, container, uploadPeriodo }
+  }
+
+  it('só pede a senha quando algum arquivo do lote está cifrado', async () => {
+    // A pergunta não pode ser fixa: pedir senha a todo upload por causa de um
+    // banco faria toda importação de Sicredi e Nubank carregar um campo que
+    // não tem resposta.
+    vi.resetModules()
+    vi.doMock('../api', () => ({
+      upload: vi.fn(),
+      uploadPeriodo: vi.fn().mockResolvedValue({
+        purchase_range: { inicio: '2026-07-01', fim: '2026-07-31' },
+        titulares: [], eu_sugerido: null, protegidos: [],
+        bancos: [{ id: 'sicredi', nome: 'Sicredi', pede_vencimento: false,
+                   validado: true }] }),
+    }))
+    const { default: Step } = await import('../components/UploadStep')
+    const { container } = render(<Step onUpload={vi.fn()} busy={false} />)
+    await userEvent.upload(container.querySelector('input[type="file"]'),
+                           new File(['x'], 'sic.xlsx'))
+    await screen.findByText(/Reconheci/)
+    expect(screen.queryByLabelText('Senha do arquivo')).toBeNull()
+  })
+
+  it('pede a senha, e diz que é a senha DO ARQUIVO', async () => {
+    await montar()
+    expect(await screen.findByLabelText('Senha do arquivo')).toBeInTheDocument()
+    // A explicação nomeia o arquivo: num lote de vários, saber QUAL deles pede
+    // senha é a diferença entre digitar a certa e tentar as três que você tem.
+    // E diz que a senha é DO ARQUIVO — quem lê só "senha" vai procurar uma que
+    // nunca cadastrou no portal.
+    expect(screen.getByText(/btg\.xlsx está protegido por senha/))
+      .toBeInTheDocument()
+    expect(screen.getByText('do arquivo')).toBeInTheDocument()
+  })
+
+  it('segura o Processar enquanto o arquivo não abrir', async () => {
+    // Sem isso o upload iria adiante lendo só metade do lote, e a fatura
+    // fecharia com um valor a menos sem nada na tela apontando a causa.
+    await montar()
+    await screen.findByLabelText('Senha do arquivo')
+    expect(screen.getByRole('button', { name: /Processar/ })).toBeDisabled()
+  })
+
+  it('não tenta a senha a cada tecla — só quando você manda abrir', async () => {
+    const { uploadPeriodo } = await montar()
+    const campo = await screen.findByLabelText('Senha do arquivo')
+    await waitFor(() => expect(uploadPeriodo).toHaveBeenCalledTimes(1))
+
+    await userEvent.type(campo, SENHA)
+    // Nada de "a senha não confere" durante a digitação: o aviso seria sobre
+    // um estado que ninguém pediu para conferir.
+    expect(screen.queryByText(/não abre/)).toBeNull()
+    expect(uploadPeriodo).toHaveBeenCalledTimes(1)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Abrir' }))
+    await waitFor(() => expect(uploadPeriodo).toHaveBeenCalledTimes(2))
+    expect(uploadPeriodo.mock.calls[1][2]).toBe(SENHA)
+  })
+
+  it('a senha errada é dita com outras palavras', async () => {
+    await montar()
+    const campo = await screen.findByLabelText('Senha do arquivo')
+    await userEvent.type(campo, 'nao-e-essa{Enter}')
+    expect(await screen.findByText(/não abre btg\.xlsx/)).toBeInTheDocument()
+
+    // E some assim que a correção começa, para não ficar acusando o que já
+    // está sendo consertado.
+    await userEvent.type(campo, '1')
+    expect(screen.queryByText(/não abre/)).toBeNull()
+  })
+
+  it('com a senha certa, reconhece o banco e libera o Processar', async () => {
+    const { onUpload } = await montar()
+    const campo = await screen.findByLabelText('Senha do arquivo')
+    await userEvent.type(campo, `${SENHA}{Enter}`)
+
+    expect(await screen.findByText('BTG Pactual')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Senha do arquivo')).toBeNull()
+
+    const processar = screen.getByRole('button', { name: /Processar/ })
+    await waitFor(() => expect(processar).toBeEnabled())
+    await userEvent.click(processar)
+    // A senha segue no 5º argumento, para o /upload poder decifrar de novo.
+    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '', '', '', SENHA)
   })
 })
 
@@ -312,7 +428,7 @@ describe('UploadStep — quem é você nesta fatura', () => {
     const { onUpload } = await montar({ titulares: ['Leonardo S Castilho'],
                                         eu_sugerido: null })
     await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
-    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '', '', '')
+    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '', '', '', '')
     expect(screen.queryByText(/Quem é você nesta fatura/)).toBeNull()
   })
 
@@ -340,7 +456,7 @@ describe('UploadStep — quem é você nesta fatura', () => {
     // Castilho" em vez de "Sem marca".
     expect(onUpload).toHaveBeenCalledWith(
       expect.any(Array), '',
-      'Rhyesla Siqueira=Rhyesla', 'Leonardo S Castilho')
+      'Rhyesla Siqueira=Rhyesla', 'Leonardo S Castilho', '')
   })
 
   it('editar o rótulo muda o que vai para o arquivo', async () => {
@@ -350,7 +466,7 @@ describe('UploadStep — quem é você nesta fatura', () => {
     await userEvent.type(campo, 'Rhy')
     await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
     expect(onUpload).toHaveBeenCalledWith(
-      expect.any(Array), '', 'Rhyesla Siqueira=Rhy', 'Leonardo S Castilho')
+      expect.any(Array), '', 'Rhyesla Siqueira=Rhy', 'Leonardo S Castilho', '')
   })
 
   it('trocar quem sou eu inverte quem leva a marca', async () => {
@@ -359,7 +475,7 @@ describe('UploadStep — quem é você nesta fatura', () => {
     await userEvent.click(radios[1])
     await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
     expect(onUpload).toHaveBeenCalledWith(
-      expect.any(Array), '', 'Leonardo S Castilho=Leonardo', 'Rhyesla Siqueira')
+      expect.any(Array), '', 'Leonardo S Castilho=Leonardo', 'Rhyesla Siqueira', '')
   })
 
   it('sem sugestão do banco, ninguém vem marcado e todos levam nome', async () => {
@@ -369,7 +485,7 @@ describe('UploadStep — quem é você nesta fatura', () => {
     await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
     expect(onUpload).toHaveBeenCalledWith(
       expect.any(Array), '',
-      'Leonardo S Castilho=Leonardo\nRhyesla Siqueira=Rhyesla', '')
+      'Leonardo S Castilho=Leonardo\nRhyesla Siqueira=Rhyesla', '', '')
   })
 })
 
@@ -1180,7 +1296,7 @@ describe('TravelRanges na tela de upload', () => {
     expect(await screen.findByText(/Viajou entre 02\/07\/2026 e 15\/07\/2026/))
       .toBeInTheDocument()
     // Sem id de banco: o pré-voo recebe os arquivos e devolve de quem são.
-    expect(uploadPeriodo).toHaveBeenCalledWith([expect.any(File)], '')
+    expect(uploadPeriodo).toHaveBeenCalledWith([expect.any(File)], '', '')
   })
 
   it('os seletores só oferecem datas dentro do lote', async () => {

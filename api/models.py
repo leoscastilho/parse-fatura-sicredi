@@ -257,6 +257,26 @@ class BancoDetectado(BaseModel):
     tema: dict[str, str] = Field(default_factory=dict)
 
 
+class ArquivoProtegido(BaseModel):
+    """Um arquivo cifrado que ainda não abriu — o BTG manda a fatura assim.
+
+    NÃO carrega a senha em direção nenhuma: ela sobe no formulário, decifra em
+    memória e morre ali. O que volta é o nome do arquivo e o motivo de não ter
+    aberto, que é o suficiente para a tela pedir de novo.
+
+    `senha_incorreta` separa os dois estados que a tela precisa dizer com
+    palavras diferentes: "digite a senha deste arquivo" e "a senha não confere".
+    Sem a distinção, quem errou a senha veria o mesmo texto de quem ainda não
+    digitou nada e não saberia se o portal chegou a receber o que ele escreveu.
+
+    Acima de `PurchaseRangeResponse` pelo mesmo motivo de `BancoDetectado`:
+    referência adiante em Pydantic funciona por acidente.
+    """
+
+    nome: str
+    senha_incorreta: bool = False
+
+
 class PurchaseRangeResponse(BaseModel):
     """Resposta do pré-voo: só o intervalo, sem transação e sem estado.
 
@@ -275,6 +295,10 @@ class PurchaseRangeResponse(BaseModel):
     # que antes dependiam da dropdown: dizer o que reconheceu, pintar o tema, e
     # decidir se pergunta a data de vencimento.
     bancos: list[BancoDetectado] = Field(default_factory=list)
+    # Os arquivos que estão cifrados e ainda não abriram. Lista vazia é o caso
+    # normal; com algo dentro, a tela pede a senha e SEGURA o "Processar" — sem
+    # isso o upload iria adiante lendo só metade do lote.
+    protegidos: list[ArquivoProtegido] = Field(default_factory=list)
 
 
 class TravelRequest(BaseModel):

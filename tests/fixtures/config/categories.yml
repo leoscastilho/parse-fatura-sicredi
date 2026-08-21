@@ -81,6 +81,9 @@ excluir:
   # vira um "estabelecimento" para categorizar todo mês — e, pior, o crédito de
   # R$ 5.664 entraria no CSV e contaria duas vezes na planilha.
   - PAGAMENTO RECEBIDO
+  # E o nome que o BTG dá à mesma coisa. Cada banco escreve de um jeito, então
+  # a lista cresce um item por banco — mas o efeito de esquecer é sempre este.
+  - PAGAMENTO DE FATURA
 
 
 # -----------------------------------------------------------------------------

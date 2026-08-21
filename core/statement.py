@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import io
 import re
+import warnings
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -416,8 +417,264 @@ def _ler_csv_simples(source, name: str, profile: BankProfile,
     )
 
 
+# ---------------------------------------------------------------------------
+# Estratégia: excel_tabelas  (BTG Pactual)
+# ---------------------------------------------------------------------------
+
+# "Petz (3/3)", "Amazon Prime (1/12)" — o BTG não tem coluna de parcela: ele
+# escreve a parcela dentro do nome do estabelecimento. Sai daqui zerada à
+# esquerda porque os dois formatos do Sicredi já saem assim ("08/10", "01/02"),
+# e a coluna Descrição da planilha é lida por uma pessoa: `(Parcela 3/3)` no
+# meio de `(Parcela 03/05)` parece outra coisa.
+PARCELA_NO_NOME = re.compile(r"\s*\((\d+)\s*/\s*(\d+)\)\s*$")
+
+MESES_PT = ("janeiro", "fevereiro", "março", "abril", "maio", "junho",
+            "julho", "agosto", "setembro", "outubro", "novembro", "dezembro")
+
+
+def _mes_de_referencia(texto: str) -> tuple[int, int] | None:
+    """"Junho/2026" -> (6, 2026). O mês por extenso, como o banco escreve."""
+    nome, _, ano = str(texto).partition("/")
+    alvo = normalize(nome)
+    for i, mes in enumerate(MESES_PT, start=1):
+        if normalize(mes) == alvo:
+            try:
+                return i, int(ano.strip())
+            except ValueError:
+                return None
+    return None
+
+
+def _como_data(valor: Any, fmt: str) -> datetime | None:
+    """A célula é uma data? Aceita o tipo nativo da planilha e o texto."""
+    if isinstance(valor, datetime):
+        return datetime(valor.year, valor.month, valor.day)
+    texto = _cell(valor)
+    if not texto:
+        return None
+    try:
+        return datetime.strptime(texto, fmt)
+    except ValueError:
+        return None
+
+
+def _como_numero(valor: Any, amount_of) -> float | None:
+    """O valor da célula, respeitando o tipo que a planilha já tem.
+
+    Uma célula numérica de `.xlsx` chega como `132.0`, e passá-la pelo parser
+    de texto pt-BR apagaria o ponto: viraria 1320. O parser continua valendo
+    para quem grava o número como string.
+    """
+    if isinstance(valor, bool):
+        return None
+    if isinstance(valor, (int, float)) and not pd.isna(valor):
+        return float(valor)
+    return amount_of(_cell(valor))
+
+
+def _na_coluna(linha: list[Any], colunas: dict[str, int], papel: str) -> Any:
+    """A célula que cumpre `papel` nesta linha, ou None quando a coluna não existe.
+
+    Coluna ausente é normal aqui: a tabela de pagamentos do BTG não tem "Tipo
+    de compra" nem "Final Cartão", e as linhas dela precisam ser lidas assim
+    mesmo — sem elas o pagamento da fatura sumiria da conferência.
+    """
+    i = colunas.get(papel)
+    return linha[i] if i is not None and i < len(linha) else None
+
+
+def _ler_excel_tabelas(source, name: str, profile: BankProfile,
+                       due_date: datetime | None) -> Statement:
+    """Planilha com TABELAS empilhadas, cada uma achada pelo próprio cabeçalho.
+
+    É como o BTG exporta a fatura, e são três diferenças em relação ao
+    `excel_secoes` do Sicredi — nenhuma delas cabia num parâmetro a mais:
+
+      * as tabelas não começam na coluna A nem terminam num "Valor Total": a
+        de baixo simplesmente acaba quando a coluna de data deixa de ter data;
+      * as células já são dos tipos certos (datetime e float), então tratá-las
+        como texto pt-BR estragaria o número — `132.0` viraria 1320;
+      * não existe coluna de parcela: ela vem grudada no nome do
+        estabelecimento, e a natureza da compra (à vista, parcelada,
+        internacional) mora numa coluna à parte.
+
+    O ANO do vencimento não está no campo de vencimento — o BTG escreve
+    "01/06" e deixa o ano no título, "Junho/2026". Ler um sem o outro daria uma
+    fatura no ano 1900.
+    """
+    cfg = profile.leitura
+    amount_of = make_amount_parser(cfg.get("numeros"))
+    header = cfg.get("cabecalho") or {}
+    fmt = cfg.get("data_lancamento", "%Y-%m-%d")
+
+    with warnings.catch_warnings():
+        # O arquivo do BTG não declara estilo padrão e o openpyxl avisa em toda
+        # leitura. É verdade e não muda nada — nós lemos valores, não formatação
+        # —, e deixar passar encheria o log do servidor de um aviso por upload.
+        warnings.filterwarnings(
+            "ignore", message="Workbook contains no default style")
+        livro = pd.read_excel(source, sheet_name=None, header=None, dtype=object)
+
+    def linhas_de(grid) -> list[list[Any]]:
+        return [list(row) for row in grid.itertuples(index=False)]
+
+    def cabecalho_em(linha: list[Any]) -> dict[str, int] | None:
+        """Os índices das colunas, se ESTA linha for um cabeçalho de tabela.
+
+        Uma linha é cabeçalho quando traz, em qualquer posição, os nomes das
+        três colunas obrigatórias. "Em qualquer posição" importa: a planilha
+        do BTG começa numa coluna vazia, e as duas tabelas nem sequer têm a
+        mesma largura — a de pagamentos não tem "Tipo de compra".
+        """
+        nomes = {normalize(_cell(c)): i for i, c in enumerate(linha) if _cell(c)}
+        achados: dict[str, int] = {}
+        for papel, padrao in (("data", "Data"), ("descricao", "Descrição"),
+                              ("valor", "Valor")):
+            i = nomes.get(normalize(str(header.get(papel, padrao))))
+            if i is None:
+                return None
+            achados[papel] = i
+        for papel in ("tipo", "titular"):
+            alvo = header.get(papel)
+            if alvo and normalize(str(alvo)) in nomes:
+                achados[papel] = nomes[normalize(str(alvo))]
+        return achados
+
+    # Uma planilha só. O arquivo real do BTG traz a aba `Titular` e mais nada,
+    # e ler apenas a primeira quando houver outras seria descartar lançamentos
+    # em silêncio — o pior dos erros possíveis aqui. Se um dia a conta conjunta
+    # vier com uma aba por cartão, o portal RECLAMA em vez de somar errado.
+    com_tabela = [aba for aba, grid in livro.items()
+                  if any(cabecalho_em(l) for l in linhas_de(grid))]
+    if not com_tabela:
+        raise ProfileError(
+            f"{name}: não achei nenhuma tabela de lançamentos "
+            f"(procurei um cabeçalho com {header.get('data', 'Data')}, "
+            f"{header.get('descricao', 'Descrição')} e {header.get('valor', 'Valor')}). "
+            "Este é o extrato que o banco exporta?")
+    if len(com_tabela) > 1:
+        raise ProfileError(
+            f"{name}: a planilha tem lançamentos em mais de uma aba "
+            f"({', '.join(com_tabela)}) e o perfil só sabe ler uma. "
+            "Mande o arquivo para o perfil ser ajustado — somar só a primeira "
+            "esconderia as outras.")
+
+    linhas = linhas_de(livro[com_tabela[0]])
+
+    def rotulado(rotulo: str | None) -> Any:
+        """O primeiro valor à direita do rótulo, esteja ele em que coluna for.
+
+        No BTG o resumo mora nas colunas F e H, e o `Total de compras e
+        despesas` na B e na E — procurar só na primeira coluna, como o
+        `excel_secoes` faz, não acharia nenhum dos dois.
+        """
+        if not rotulo:
+            return None
+        alvo = normalize(rotulo)
+        for linha in linhas:
+            for i, celula in enumerate(linha):
+                if _cell(celula) and normalize(_cell(celula)) == alvo:
+                    for adiante in linha[i + 1:]:
+                        if _cell(adiante):
+                            return adiante
+        return None
+
+    def somar(rotulos) -> float | None:
+        if not rotulos:
+            return None
+        if isinstance(rotulos, str):
+            rotulos = [rotulos]
+        valores = [_como_numero(rotulado(r), amount_of) for r in rotulos]
+        valores = [v for v in valores if v is not None]
+        return round(sum(valores), 2) if valores else None
+
+    if due_date is None:
+        venc = cfg.get("vencimento") or {}
+        bruto = _cell(rotulado(venc.get("rotulo")))
+        referencia = cfg.get("referencia") or {}
+        ref = _mes_de_referencia(_cell(rotulado(referencia.get("rotulo"))))
+        if bruto and ref:
+            mes_ref, ano_ref = ref
+            try:
+                dia_mes = datetime.strptime(bruto, venc.get("formato", "%d/%m"))
+            except ValueError:
+                dia_mes = None
+            if dia_mes:
+                # O vencimento cai no mês de referência; a diferença só aparece
+                # na virada do ano, quando "01/01" convive com "Janeiro/2027"
+                # ou o contrário. Doze meses de distância nunca são o mesmo
+                # ciclo, então meio ano decide de que lado fica.
+                ano = ano_ref
+                if dia_mes.month - mes_ref > 6:
+                    ano -= 1
+                elif mes_ref - dia_mes.month > 6:
+                    ano += 1
+                due_date = datetime(ano, dia_mes.month, dia_mes.day)
+
+    intl_marker = (cfg.get("internacional") or {}).get("marcador")
+    parcela_no_nome = bool(cfg.get("parcela_na_descricao"))
+
+    entries: list[Entry] = []
+    i = 0
+    while i < len(linhas):
+        colunas = cabecalho_em(linhas[i])
+        if not colunas:
+            i += 1
+            continue
+        # A tabela vai até a primeira linha sem data na coluna de data. Não há
+        # linha de fechamento como o "Valor Total" do Sicredi: o que separa as
+        # duas tabelas é uma linha em branco e um rótulo de resumo.
+        i += 1
+        while i < len(linhas):
+            linha = linhas[i]
+            data = _como_data(_na_coluna(linha, colunas, "data"), fmt)
+            if data is None:
+                break
+            valor = _como_numero(_na_coluna(linha, colunas, "valor"), amount_of)
+            i += 1
+            if valor is None:
+                continue
+
+            descricao = _cell(_na_coluna(linha, colunas, "descricao"))
+            parcela = None
+            if parcela_no_nome:
+                achado = PARCELA_NO_NOME.search(descricao)
+                if achado:
+                    parcela = f"{int(achado.group(1)):02d}/{int(achado.group(2)):02d}"
+                    descricao = descricao[:achado.start()].strip()
+
+            tipo = _cell(_na_coluna(linha, colunas, "tipo"))
+            entries.append(Entry(
+                purchase_date=data,
+                description=descricao,
+                installment=parcela,
+                amount=valor,
+                international=bool(intl_marker) and normalize(tipo) == normalize(intl_marker),
+                cardholder=_cell(_na_coluna(linha, colunas, "titular")),
+            ))
+
+    resumo = cfg.get("resumo") or {}
+    creditos = somar(resumo.get("creditos"))
+    return Statement(
+        name=name,
+        due_date=due_date,
+        entries=entries,
+        # Os débitos declarados são os LANÇAMENTOS, não o "Total da Fatura": o
+        # BTG soma anuidade, saque e encargos ao total sem dar linha a nenhum
+        # deles, e comparar a soma lida com o total acusaria uma diferença que
+        # não é erro de leitura. O total continua guardado, em `declared_balance`.
+        declared_debits=somar(resumo.get("debitos")) or 0.0,
+        # Vem negativo na planilha ("-5.104,93"), como quem subtrai; `credits`
+        # conta o mesmo em módulo.
+        declared_credits=None if creditos is None else abs(creditos),
+        declared_balance=somar(resumo.get("total")),
+        bank_id=profile.id,
+    )
+
+
 STRATEGIES = {
     "excel_secoes": _ler_excel_secoes,
+    "excel_tabelas": _ler_excel_tabelas,
     "csv_com_preambulo": _ler_csv_com_preambulo,
     "csv_simples": _ler_csv_simples,
 }

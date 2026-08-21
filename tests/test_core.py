@@ -601,3 +601,230 @@ def test_config_real_classifica_sem_estourar():
                     "AMAZON BR 0123", "a" * 300]:
         resultado = rules.classify(amostra)
         assert resultado.categoria == "" or isinstance(resultado.categoria, str)
+
+
+# ---------------------------------------------------------------------------
+# BTG Pactual — container cifrado e planilha em tabelas empilhadas
+# ---------------------------------------------------------------------------
+
+def _perfil_btg():
+    from tests.conftest import CONFIG
+    return ConfigSet.load(CONFIG).bank("btg")
+
+
+def test_btg_le_as_duas_tabelas(btg_xlsx):
+    """As compras E o pagamento da fatura, que moram em tabelas separadas.
+
+    A de pagamentos é mais estreita — não tem "Tipo de compra" nem "Final
+    Cartão" —, e ler só a de compras faria o crédito sumir da conferência.
+    """
+    from core.statement import read_statement
+    extrato = read_statement(btg_xlsx, profile=_perfil_btg())
+
+    assert len(extrato.entries) == 5, "4 compras + 1 pagamento"
+    pagamento = [e for e in extrato.entries if e.amount < 0]
+    assert len(pagamento) == 1
+    assert pagamento[0].amount == -5104.93
+    assert pagamento[0].cardholder == "", "a tabela de pagamentos não tem cartão"
+
+
+def test_btg_nao_estraga_o_numero_da_celula(btg_xlsx):
+    """`132.0` é um float na planilha, não "132,00" em pt-BR.
+
+    Passar a célula pelo parser de texto apagaria o ponto de milhar e 132.0
+    viraria 1320 — cem vezes mais caro, e sem nenhum erro visível.
+    """
+    from core.statement import read_statement
+    extrato = read_statement(btg_xlsx, profile=_perfil_btg())
+    valores = {e.description: e.amount for e in extrato.entries}
+    assert valores["Petz"] == 132.00
+    assert valores["Supermercado Confianca"] == 348.78
+
+
+def test_btg_desgruda_a_parcela_do_nome(btg_xlsx):
+    """"Petz (3/3)" -> estabelecimento "Petz", parcela "03/03".
+
+    Zerada à esquerda porque os dois formatos do Sicredi já saem assim, e a
+    coluna Descrição da planilha é lida por uma pessoa. Deixar a parcela no
+    nome faria "Petz (3/3)" e "Petz (1/2)" virarem dois estabelecimentos
+    diferentes, e nenhuma regra casaria com os dois.
+    """
+    from core.statement import read_statement
+    extrato = read_statement(btg_xlsx, profile=_perfil_btg())
+    petz = next(e for e in extrato.entries if e.description == "Petz")
+    assert petz.installment == "03/03"
+    assert "(" not in petz.description
+
+
+def test_btg_marca_internacional_pela_coluna_de_tipo(btg_xlsx):
+    """No Sicredi a compra no exterior está numa SEÇÃO; aqui, numa COLUNA."""
+    from core.statement import read_statement
+    extrato = read_statement(btg_xlsx, profile=_perfil_btg())
+    fora = [e.description for e in extrato.entries if e.international]
+    assert fora == ["Steamgames"]
+
+
+def test_btg_usa_o_final_do_cartao_como_titular(btg_xlsx):
+    """O BTG não imprime nome: quem separa as compras é o final do cartão."""
+    from core.statement import read_statement
+    extrato = read_statement(btg_xlsx, profile=_perfil_btg())
+    assert extrato.cardholders == ["4108", "8134"]
+
+
+def test_btg_tira_o_ano_do_mes_de_referencia(btg_xlsx):
+    """O vencimento é "01/06" e o ano só existe no título, "Junho/2026"."""
+    from core.statement import read_statement
+    extrato = read_statement(btg_xlsx, profile=_perfil_btg())
+    assert extrato.due_date == datetime(2026, 6, 1)
+
+
+@pytest.mark.parametrize("referencia,vencimento,esperado", [
+    ("Junho/2026", "01/06", datetime(2026, 6, 1)),
+    ("Janeiro/2027", "01/01", datetime(2027, 1, 1)),
+    # A virada do ano: a fatura é de Janeiro/2027 e vence ainda em dezembro.
+    # Colar o ano da referência daria 30/12/2027 — onze meses no futuro.
+    ("Janeiro/2027", "30/12", datetime(2026, 12, 30)),
+    # E o contrário: fatura de Dezembro/2026 que vence já em janeiro.
+    ("Dezembro/2026", "02/01", datetime(2027, 1, 2)),
+])
+def test_btg_vencimento_na_virada_do_ano(tmp_path, referencia, vencimento, esperado):
+    from tests.conftest import _btg_workbook
+    from core.statement import read_statement
+    caminho = _btg_workbook(tmp_path / "virada.xlsx",
+                            referencia=referencia, vencimento=vencimento)
+    assert read_statement(caminho, profile=_perfil_btg()).due_date == esperado
+
+
+def test_btg_confere_contra_os_lancamentos_e_nao_contra_o_total(btg_xlsx):
+    """O "Total da Fatura" do BTG inclui o que não virou linha nenhuma.
+
+    Na fatura real são R$ 20,00 de "Outros valores" — anuidade, encargos — que
+    entram no total sem aparecer na lista. Comparar a soma lida com o total
+    acusaria uma diferença que não é erro de leitura, e o aviso apareceria todo
+    mês dizendo à pessoa para conferir uma coisa que está certa.
+    """
+    from core.statement import read_statement
+    extrato = read_statement(btg_xlsx, profile=_perfil_btg())
+
+    assert extrato.reconciles(), "os lançamentos fecham com o que foi declarado"
+    assert extrato.declared_debits == extrato.debits
+    assert extrato.declared_balance == round(extrato.debits + 20.0, 2), (
+        "o total da fatura continua guardado, e é 20 maior que os lançamentos")
+
+
+def test_btg_recusa_planilha_com_lancamentos_em_varias_abas(tmp_path):
+    """Ler só a primeira aba descartaria compras SEM DIZER NADA.
+
+    É o pior erro possível aqui — a fatura fecharia com um valor a menos e nada
+    na tela apontaria para a causa. Reclamar deixa o problema visível.
+    """
+    from tests.conftest import _btg_workbook
+    from core.statement import read_statement
+    caminho = _btg_workbook(tmp_path / "duas-abas.xlsx", abas_extras=1)
+    with pytest.raises(ProfileError, match="mais de uma aba"):
+        read_statement(caminho, profile=_perfil_btg())
+
+
+# ---------------------------------------------------------------------------
+# core.arquivo — o invólucro, antes de qualquer banco
+# ---------------------------------------------------------------------------
+
+def test_esta_protegido_separa_cifrado_de_ole2_comum(btg_xlsx, btg_xlsx_cifrado,
+                                                     sicredi_xls, sicredi_xlsx,
+                                                     nubank_csv):
+    """O `.xls` do Sicredi mora no MESMO container de um `.xlsx` cifrado.
+
+    Os dois começam com `D0CF11E0`, então a mágica de 8 bytes não decide nada —
+    e decidir por ela faria o portal pedir senha para toda fatura do Sicredi
+    baixada do site. `sicredi_xls` é o único arquivo do projeto que faz esta
+    pergunta valer: um `.xlsx` começa com `PK` e nem chega perto do impasse.
+    """
+    from core.arquivo import esta_protegido
+    bruto = sicredi_xls.read_bytes()
+    assert bruto.startswith(b"\xd0\xcf\x11\xe0"), "tem que ser OLE2 de verdade"
+
+    assert esta_protegido(btg_xlsx_cifrado.read_bytes()) is True
+    assert esta_protegido(bruto) is False
+    assert esta_protegido(btg_xlsx.read_bytes()) is False
+    assert esta_protegido(sicredi_xlsx.read_bytes()) is False
+    assert esta_protegido(nubank_csv.read_bytes()) is False
+
+
+def test_le_o_xls_antigo_do_site_do_sicredi(sicredi_xls):
+    """O formato BIFF continua sendo lido — é o que o site do banco entrega.
+
+    O `xlrd` está nos requisitos por causa dele, e até aqui nenhum teste passava
+    por esse caminho: todas as fixtures de planilha eram `.xlsx`.
+    """
+    from tests.conftest import CONFIG
+    from core.statement import read_statement
+    perfil = ConfigSet.load(CONFIG).bank("sicredi")
+    extrato = read_statement(sicredi_xls, profile=perfil)
+    assert extrato.due_date == datetime(2026, 8, 10)
+    assert extrato.reconciles()
+    assert any(e.description == "SUPERMERCADOS ALVORA" for e in extrato.entries)
+
+
+def test_amostra_le_o_texto_do_sharedstrings(tmp_path):
+    """O Excel guarda cada string UMA vez, num arquivo à parte do zip.
+
+    O openpyxl não faz isso — grava tudo inline na planilha —, então as
+    fixtures sozinhas nunca exercitam esse caminho. Sem ele a detecção
+    funcionaria nos testes e falharia na fatura de verdade, que veio do Excel.
+    """
+    import zipfile
+    from core.arquivo import amostra_de_texto
+
+    caminho = tmp_path / "so-sharedstrings.xlsx"
+    with zipfile.ZipFile(caminho, "w") as z:
+        z.writestr("xl/sharedStrings.xml",
+                   '<?xml version="1.0" encoding="UTF-8"?><sst><si><t>Final '
+                   'Cart\u00e3o</t></si><si><t>Per\u00edodo de Compras</t></si></sst>')
+        z.writestr("xl/worksheets/sheet1.xml", "<worksheet><sheetData/></worksheet>")
+
+    texto = amostra_de_texto(caminho.read_bytes())
+    assert "Final Cartão" in texto
+    assert "Período de Compras" in texto
+
+
+def test_abrir_protegido_distingue_falta_de_senha_de_senha_errada(btg_xlsx_cifrado):
+    """São dois estados, e a tela precisa dizer coisas diferentes em cada um."""
+    from core.arquivo import PrecisaDeSenha, SenhaIncorreta, abrir_protegido
+    from tests.conftest import SENHA_BTG
+    bruto = btg_xlsx_cifrado.read_bytes()
+
+    with pytest.raises(PrecisaDeSenha):
+        abrir_protegido(bruto, "")
+    with pytest.raises(SenhaIncorreta):
+        abrir_protegido(bruto, "nao-e-essa")
+    assert abrir_protegido(bruto, SENHA_BTG).startswith(b"PK\x03\x04")
+
+
+def test_amostra_de_texto_enxerga_dentro_do_xlsx(btg_xlsx, nubank_csv):
+    """Um `.xlsx` é um ZIP: os 8 KB crus não têm uma letra legível.
+
+    Enquanto só o Sicredi lia planilha isso nunca apareceu — a extensão
+    decidia sozinha. Com o BTG são dois `.xlsx`, e sem abrir o zip a detecção
+    empataria para sempre.
+    """
+    from core.arquivo import amostra_de_texto
+    bruto = btg_xlsx.read_bytes()
+    assert b"Final Cart" not in bruto[:8192], "o zip não entrega texto de graça"
+
+    texto = amostra_de_texto(bruto)
+    assert "Final Cartão" in texto
+    assert "Período de Compras" in texto
+    # Arquivo que não é zip continua saindo como sempre saiu.
+    assert "date,title,amount" in amostra_de_texto(nubank_csv.read_bytes())
+
+
+def test_deteccao_separa_os_dois_xlsx(btg_xlsx, sicredi_xlsx):
+    """Sicredi e BTG disputam o `.xlsx`; quem desempata é o conteúdo."""
+    from tests.conftest import CONFIG
+    from core.arquivo import amostra_de_texto
+    cfg = ConfigSet.load(CONFIG)
+
+    achado = cfg.detectar("extrato.xlsx", amostra_de_texto(btg_xlsx.read_bytes()))
+    assert achado.id == "btg"
+    achado = cfg.detectar("extrato.xlsx", amostra_de_texto(sicredi_xlsx.read_bytes()))
+    assert achado.id == "sicredi"

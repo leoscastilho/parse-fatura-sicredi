@@ -47,11 +47,39 @@ Estratégias de leitura disponíveis:
 | `estrategia`        | Para que serve                                            |
 |---------------------|-----------------------------------------------------------|
 | `excel_secoes`      | Planilha com blocos, cada um com cabeçalho e "Valor Total" |
+| `excel_tabelas`     | Planilha com tabelas empilhadas: cada uma é achada pelo próprio cabeçalho e acaba na primeira linha sem data |
 | `csv_com_preambulo` | CSV com um bloco de `rótulo;valor` antes da tabela         |
 | `csv_simples`       | Uma tabela, cabeçalho na primeira linha                    |
 
 Um formato novo é uma função nova em `core/statement.py` e um `estrategia:`
 novo no YAML — nada mais no sistema precisa saber que ela existe.
+
+### Como o portal sabe de qual banco é o arquivo
+
+Ele lê o arquivo. Primeiro a extensão, que já decide na maioria dos casos;
+quando dois bancos disputam a mesma (os dois `.csv`, os dois `.xlsx`), o
+desempate é a `deteccao.contem` de cada perfil, procurada no texto do arquivo
+já normalizado (maiúsculas, sem acento). **Todo formato precisa declarar a
+sua** — um perfil sem assinatura funciona enquanto for o único da extensão dele
+e vira indetectável no dia em que aparecer um concorrente.
+
+Para planilha, "o texto do arquivo" não são os primeiros bytes: um `.xlsx` é um
+ZIP, e o começo dele não tem uma letra legível. `core/arquivo.py` abre o zip e
+lê as partes que guardam texto — e desfaz as entidades XML, porque o mesmo
+acento é gravado como `ã` pelo Excel e como `&#227;` pelo openpyxl.
+
+### Arquivo protegido por senha
+
+Alguns bancos mandam a fatura cifrada; o BTG manda. Isso não é característica
+do perfil e sim do invólucro, então nenhum YAML precisa descrever criptografia:
+o portal reconhece sozinho e a tela de importação pede a senha, nomeando o
+arquivo que a pediu.
+
+**A senha é DO ARQUIVO, nunca do portal**, e não fica guardada em lugar nenhum:
+sobe no formulário, decifra em memória e sai de escopo. Não vai para o SQLite
+da transação, não volta em resposta nenhuma e não entra em log. O
+`protegido: true` no YAML é documentação para quem lê o perfil, não um
+interruptor.
 
 ### Mais de um formato no mesmo banco
 

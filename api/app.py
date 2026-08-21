@@ -34,6 +34,10 @@ from core import (
     sort_lines,
 )
 from core.analytics import AnalyticsConfig, AnalyticsError, analisar
+from core.arquivo import (
+    PrecisaDeSenha, SenhaIncorreta, abrir_protegido, amostra_de_texto,
+    esta_protegido,
+)
 from core.profiles import ProfileError
 from core.recategorize import RecategorizeError
 from core.travel import (
@@ -49,6 +53,7 @@ from core.yaml_edit import (
 
 from .github_sync import GitHubConflict, GitHubDisabled, GitHubSync, commit_message
 from .models import (
+    ArquivoProtegido,
     Assignment,
     CategoryChangeItem,
     SourceFile,
@@ -442,8 +447,9 @@ def _vencimento(bruto: str, perfis) -> datetime | None:
     return None
 
 
-async def _fontes(files: list[UploadFile], cfg,
-                  settings: Settings) -> list[tuple[str, io.BytesIO, object]]:
+async def _fontes(files: list[UploadFile], cfg, settings: Settings,
+                  senha: str = "") -> tuple[list[tuple[str, io.BytesIO, object]],
+                                            list[ArquivoProtegido]]:
     """Lê os arquivos para memória e descobre de que banco é cada um.
 
     Extraído porque `/upload` e `/upload/periodo` precisam ler o MESMO lote com
@@ -454,21 +460,63 @@ async def _fontes(files: list[UploadFile], cfg,
     O banco é DETECTADO por arquivo, e é por isso que cada fonte sai daqui com
     o próprio perfil colado: um lote pode ter a fatura do Sicredi e a do
     Nubank, e as duas viram um CSV só.
+
+    A SENHA, quando existe, é do ARQUIVO — o BTG manda a fatura cifrada. Ela
+    entra por aqui, decifra em memória e some com a chamada: o que segue adiante
+    é o `.xlsx` de dentro, e nada além dele. Arquivo protegido sem senha (ou com
+    a senha errada) NÃO derruba a leitura — sai na segunda lista, para o pré-voo
+    poder pedir a senha em vez de acusar erro num arquivo que a pessoa ainda nem
+    terminou de informar.
     """
     if len(files) > settings.max_files_per_upload:
         raise HTTPException(413, detail=f"máximo {settings.max_files_per_upload} arquivos")
 
     fontes = []
+    protegidos: list[ArquivoProtegido] = []
     for upload_file in files:
         blob = await upload_file.read()
         if len(blob) > settings.max_upload_bytes:
             raise HTTPException(413, detail=f"{upload_file.filename} excede o limite")
+
+        if esta_protegido(blob):
+            try:
+                blob = abrir_protegido(blob, senha)
+            except PrecisaDeSenha:
+                protegidos.append(ArquivoProtegido(nome=upload_file.filename))
+                continue
+            except SenhaIncorreta:
+                protegidos.append(ArquivoProtegido(
+                    nome=upload_file.filename, senha_incorreta=True))
+                continue
+
         try:
-            perfil = cfg.detectar(upload_file.filename, blob[:8192])
+            # A amostra é o TEXTO do arquivo, não os bytes crus: um `.xlsx` é um
+            # zip, e os primeiros 8 KB dele não têm uma letra legível. Enquanto
+            # só o Sicredi lia planilha isso não aparecia — a extensão decidia
+            # sozinha. Ver `core.arquivo.amostra_de_texto`.
+            perfil = cfg.detectar(upload_file.filename, amostra_de_texto(blob))
         except ProfileError as exc:
             raise HTTPException(415, detail=str(exc))
         fontes.append((upload_file.filename, io.BytesIO(blob), perfil))
-    return fontes
+    return fontes, protegidos
+
+
+def _exigir_abertos(protegidos: list[ArquivoProtegido]) -> None:
+    """No processamento, arquivo que não abriu é erro — não há o que classificar.
+
+    Só o pré-voo tolera, porque lá a senha ainda está sendo digitada.
+    """
+    if not protegidos:
+        return
+    erradas = [p.nome for p in protegidos if p.senha_incorreta]
+    if erradas:
+        raise HTTPException(
+            422,
+            detail=f"a senha não abre {', '.join(erradas)} — confira e tente de novo")
+    raise HTTPException(
+        422,
+        detail=f"{', '.join(p.nome for p in protegidos)} está protegido por "
+               "senha — informe a senha do arquivo no upload")
 
 
 def _period_of(record: dict) -> str:
@@ -525,6 +573,7 @@ async def upload(
     files: list[UploadFile] = File(..., description="extrato de qualquer banco configurado"),
     vencimento: str = Form("", description="AAAA-MM-DD, para bancos que não trazem a data"),
     titulares: str = Form("", description="`Nome Completo=Rótulo` por linha; vazio = sou eu"),
+    senha: str = Form("", description="senha DO ARQUIVO, para extratos cifrados; usada em memória e descartada"),
     settings: Settings = Depends(get_settings),
     store: Store = Depends(get_store),
 ) -> UploadResponse:
@@ -534,7 +583,8 @@ async def upload(
     yaml_sha = GitHubSync(settings).current_sha() if settings.github_enabled else None
     rules = Ruleset.from_text(text)
 
-    sources = await _fontes(files, cfg, settings)
+    sources, protegidos = await _fontes(files, cfg, settings, senha)
+    _exigir_abertos(protegidos)
     perfis = [perfil for _, _, perfil in sources]
     due = _vencimento(vencimento, perfis)
 
@@ -613,6 +663,7 @@ async def upload(
 async def upload_periodo(
     files: list[UploadFile] = File(..., description="extrato de qualquer banco configurado"),
     vencimento: str = Form(""),
+    senha: str = Form("", description="senha DO ARQUIVO, para extratos cifrados; usada em memória e descartada"),
     settings: Settings = Depends(get_settings),
 ) -> PurchaseRangeResponse:
     """De quando a quando vão as COMPRAS deste lote — e nada além disso.
@@ -629,7 +680,11 @@ async def upload_periodo(
     data nenhuma.
     """
     cfg = load_config(settings)
-    sources = await _fontes(files, cfg, settings)
+    # Aqui os protegidos NÃO são erro: são a resposta. A tela só descobre que o
+    # arquivo pede senha porque este endpoint conta, e é com isto que ela monta
+    # o campo — pedir a senha antes de saber se algum arquivo precisa dela seria
+    # perguntar a todo mundo por causa de um banco.
+    sources, protegidos = await _fontes(files, cfg, settings, senha)
 
     # O vencimento pode não ter sido preenchido ainda: aqui ele não faz falta,
     # porque a data comparada é a da COMPRA, não a do vencimento da fatura.
@@ -672,6 +727,7 @@ async def upload_periodo(
 
     return PurchaseRangeResponse(
         bancos=bancos,
+        protegidos=protegidos,
         purchase_range=_purchase_range(lines),
         titulares=sorted(vistos),
         # Só sugere o que existe: com dois arquivos de bancos diferentes, o

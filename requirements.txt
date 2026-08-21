@@ -13,6 +13,9 @@ pandas==3.0.5
 numpy==2.5.2
 xlrd==2.0.2            # .xls antigo (BIFF) — é o que o Sicredi exporta
 openpyxl==3.1.5        # .xlsx, e é o que os testes usam para gerar extratos
+# O `.xlsx` do BTG vem cifrado, e a senha é DO ARQUIVO. Puxa `cryptography`
+# junto, que também tem wheel manylinux — a imagem continua sem toolchain.
+msoffcrypto-tool==6.0.0
 PyYAML==6.0.3
 
 # --- API ---

@@ -36,23 +36,29 @@ export const getRules = () => json('/rules')
 export const editRules = (operations, commit = false) =>
   json('/rules/edit', asJson({ operations, commit }))
 
-export function upload(files, vencimento = '', titulares = '') {
+// `senha` é a senha DO ARQUIVO, não do portal — o BTG manda a fatura cifrada.
+// Ela sobe no formulário, decifra no servidor e morre ali: não fica guardada
+// aqui, não volta em resposta nenhuma e não entra no banco da transação.
+export function upload(files, vencimento = '', titulares = '', senha = '') {
   const form = new FormData()
   for (const file of files) form.append('files', file)
   form.append('vencimento', vencimento)
   // `Nome Completo=Rótulo`, uma linha por pessoa. Lado direito vazio = sou eu,
   // e a linha não recebe marca nenhuma.
   form.append('titulares', titulares)
+  form.append('senha', senha)
   return json('/upload', { method: 'POST', body: form })
 }
 
 // Pré-voo: de quando a quando vão as COMPRAS deste lote, e nada além disso.
 // Não abre transação e não grava nada — serve para a pergunta "viajou neste
-// período?" poder nomear as datas antes do processamento.
-export function uploadPeriodo(files, vencimento = '') {
+// período?" poder nomear as datas antes do processamento, e para descobrir que
+// um arquivo do lote está cifrado antes de tentar processá-lo.
+export function uploadPeriodo(files, vencimento = '', senha = '') {
   const form = new FormData()
   for (const file of files) form.append('files', file)
   form.append('vencimento', vencimento)
+  form.append('senha', senha)
   return json('/upload/periodo', { method: 'POST', body: form })
 }
 

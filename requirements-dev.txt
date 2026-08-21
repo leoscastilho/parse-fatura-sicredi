@@ -9,3 +9,10 @@ pytest==9.1.1
 # — mas só na máquina onde ele não estivesse instalado por acaso, que foi
 # exatamente como esse bug passou despercebido.
 httpx2==2.12.0
+
+# Escreve `.xls` (BIFF), que o openpyxl não escreve. Só a suíte usa, e para uma
+# coisa que nenhum `.xlsx` consegue provar: um `.xls` é um container OLE2, o
+# mesmo de um `.xlsx` protegido por senha. Sem um arquivo desses, "isto está
+# cifrado?" nunca era perguntado a um OLE2 aberto — e a resposta errada faria o
+# portal pedir senha para toda fatura do Sicredi baixada do site.
+xlwt==1.3.0
