@@ -185,48 +185,90 @@ describe('MarketplaceStep', () => {
 // ---------------------------------------------------------------- upload
 
 describe('UploadStep', () => {
-  const sicredi = { nome: 'Sicredi', extensoes: ['.xls', '.xlsx'], validado: true }
-  const nubank = { nome: 'Nubank', extensoes: ['.csv'], validado: false,
-                   pede_vencimento: true }
+  const NUBANK = { id: 'nubank', nome: 'Nubank', pede_vencimento: true, validado: true }
+  const SICREDI = { id: 'sicredi', nome: 'Sicredi', pede_vencimento: false, validado: true }
 
-  it('descarta arquivos que o perfil do banco não aceita', async () => {
+  // O banco não é mais escolhido: ele volta do PRÉ-VOO, que lê o arquivo. Por
+  // isso todo teste daqui monta com a resposta do pré-voo mockada.
+  async function montar({ bancos = [SICREDI], extensoes } = {}) {
+    vi.resetModules()
+    const uploadPeriodo = vi.fn().mockResolvedValue({
+      purchase_range: { inicio: '2026-07-01', fim: '2026-07-31' },
+      titulares: [], eu_sugerido: null, bancos,
+    })
+    vi.doMock('../api', () => ({ upload: vi.fn(), uploadPeriodo }))
+    const { default: Step } = await import('../components/UploadStep')
     const onUpload = vi.fn()
+    const onBancosDetectados = vi.fn()
     const { container } = render(
-      <UploadStep onUpload={onUpload} busy={false} banco={sicredi} />)
+      <Step onUpload={onUpload} busy={false} onBancosDetectados={onBancosDetectados}
+            {...(extensoes ? { extensoes } : {})} />)
+    return { onUpload, container, uploadPeriodo, onBancosDetectados }
+  }
 
-    const input = container.querySelector('input[type="file"]')
-    await userEvent.upload(input, [
-      new File(['x'], 'fatura.csv', { type: 'text/csv' }),
-      new File(['x'], 'fatura.xls', { type: 'application/vnd.ms-excel' }),
-    ])
+  const soltar = async (container, ...nomes) =>
+    userEvent.upload(container.querySelector('input[type="file"]'),
+                     nomes.map((n) => new File(['x'], n, { type: 'text/csv' })))
 
-    expect(screen.getByText('fatura.xls')).toBeInTheDocument()
-    expect(screen.queryByText('fatura.csv')).not.toBeInTheDocument()
+  it('descarta o que não é fatura de banco nenhum, e aceita o resto', async () => {
+    // A dropzone filtra pela UNIÃO das extensões: qual banco é, quem decide é
+    // o conteúdo. Filtrar por um banco escolhido era o que fazia soltar um
+    // `.csv` do Nubank na tela do Sicredi sumir sem explicação.
+    const { container } = await montar({ extensoes: ['.xls', '.xlsx', '.csv'] })
+    await soltar(container, 'fatura.pdf', 'nubank.csv', 'sicredi.xls')
+    expect(screen.getByText('nubank.csv')).toBeInTheDocument()
+    expect(screen.getByText('sicredi.xls')).toBeInTheDocument()
+    expect(screen.queryByText('fatura.pdf')).not.toBeInTheDocument()
   })
 
-  it('avisa quando o perfil do banco não foi validado', () => {
-    render(<UploadStep onUpload={vi.fn()} busy={false} banco={nubank} />)
-    expect(screen.getByText(/não foi validado/i)).toBeInTheDocument()
+  it('diz qual banco reconheceu, em vez de perguntar', async () => {
+    const { container, onBancosDetectados } = await montar({ bancos: [NUBANK] })
+    await soltar(container, 'nu.csv')
+    expect(await screen.findByText(/Reconheci/)).toBeInTheDocument()
+    expect(screen.getByText('Nubank')).toBeInTheDocument()
+    // E sobe para o App, que é quem pinta o tema da marca.
+    await waitFor(() => expect(onBancosDetectados).toHaveBeenCalledWith([NUBANK]))
   })
 
-  it('exige a data de vencimento nos bancos que não a trazem no arquivo', async () => {
-    const onUpload = vi.fn()
-    const { container } = render(
-      <UploadStep onUpload={onUpload} busy={false} banco={nubank} />)
+  it('nomeia os dois quando o lote tem bancos diferentes', async () => {
+    const { container } = await montar({ bancos: [NUBANK, SICREDI] })
+    await soltar(container, 'nu.csv', 'sic.csv')
+    expect(await screen.findByText('Nubank e Sicredi')).toBeInTheDocument()
+  })
 
-    await userEvent.upload(container.querySelector('input[type="file"]'),
-                           new File(['x'], 'nu.csv', { type: 'text/csv' }))
+  it('avisa quando o perfil reconhecido não foi validado', async () => {
+    const { container } = await montar({
+      bancos: [{ ...NUBANK, validado: false }] })
+    await soltar(container, 'nu.csv')
+    expect(await screen.findByText(/não foi validado/i)).toBeInTheDocument()
+  })
+
+  it('só pede a data depois de saber que o banco não a traz', async () => {
+    // A pergunta não pode aparecer antes: com a dropdown ela dependia da
+    // escolha, e sem dropdown ela depende do arquivo — que só é lido no
+    // pré-voo. Perguntar antes seria pedir uma data que talvez não faça falta.
+    const { container, onUpload } = await montar({ bancos: [NUBANK] })
+    expect(container.querySelector('input[type="date"]')).toBeNull()
+
+    await soltar(container, 'nu.csv')
+    await screen.findByText(/Reconheci/)
 
     const processar = screen.getByRole('button', { name: /Processar/ })
     expect(processar).toBeDisabled()
-
-    const data = container.querySelector('input[type="date"]')
-    await userEvent.type(data, '2026-08-10')
+    await userEvent.type(container.querySelector('input[type="date"]'), '2026-08-10')
     expect(processar).toBeEnabled()
 
     await userEvent.click(processar)
-    // O terceiro argumento é o mapa de titulares, vazio num banco sem a coluna.
     expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '2026-08-10', '', '')
+  })
+
+  it('não pede data nenhuma quando o banco a traz no arquivo', async () => {
+    const { container, onUpload } = await montar({ bancos: [SICREDI] })
+    await soltar(container, 'sic.csv')
+    await screen.findByText(/Reconheci/)
+    expect(container.querySelector('input[type="date"]')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
+    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '', '', '')
   })
 })
 
@@ -248,12 +290,13 @@ describe('UploadStep — quem é você nesta fatura', () => {
         // clique em "Processar" logo depois do upload roda com `titulares`
         // ainda vazio e passa sem exercitar nada — foi o que a mutação achou.
         purchase_range: { inicio: '2025-07-01', fim: '2025-08-20' },
+        bancos: [sicredi],
         titulares, eu_sugerido }),
     }))
     const { default: Step } = await import('../components/UploadStep')
     const onUpload = vi.fn()
     const { container } = render(
-      <Step busy={false} onUpload={onUpload} banco={sicredi}
+      <Step busy={false} onUpload={onUpload}
             travelRanges={[]} onTravelRangesChange={vi.fn()} />)
     await userEvent.upload(container.querySelector('input[type="file"]'),
                            new File(['x'], 'fatura.csv', { type: 'text/csv' }))
@@ -729,7 +772,6 @@ describe('App', () => {
       getConfig: vi.fn().mockResolvedValue({
         banks: [{ id: 'sicredi', nome: 'Sicredi', extensoes: ['.xls'], validado: true,
                   tema: { primaria: '#3FA110' } }],
-        banco_padrao: 'sicredi',
       }),
       upload: vi.fn(), recategorize: vi.fn(), travel: vi.fn(),
       preview: vi.fn(), exportCsv: vi.fn(),
@@ -1121,11 +1163,11 @@ describe('TravelRanges na tela de upload', () => {
     vi.resetModules()
     const uploadPeriodo = erro
       ? vi.fn().mockRejectedValue(new Error('415'))
-      : vi.fn().mockResolvedValue({ purchase_range: range })
+      : vi.fn().mockResolvedValue({ purchase_range: range, bancos: [sicredi] })
     vi.doMock('../api', () => ({ uploadPeriodo }))
     const { default: Step } = await import('../components/UploadStep')
     const onTravelRangesChange = vi.fn()
-    render(<Step onUpload={vi.fn()} busy={false} banco={sicredi} travelRanges={[]}
+    render(<Step onUpload={vi.fn()} busy={false} travelRanges={[]}
                  onTravelRangesChange={onTravelRangesChange} {...props} />)
     return { uploadPeriodo, onTravelRangesChange }
   }
@@ -1137,7 +1179,8 @@ describe('TravelRanges na tela de upload', () => {
     await userEvent.upload(document.querySelector('input[type=file]'), fatura())
     expect(await screen.findByText(/Viajou entre 02\/07\/2026 e 15\/07\/2026/))
       .toBeInTheDocument()
-    expect(uploadPeriodo).toHaveBeenCalledWith([expect.any(File)], 'sicredi', '')
+    // Sem id de banco: o pré-voo recebe os arquivos e devolve de quem são.
+    expect(uploadPeriodo).toHaveBeenCalledWith([expect.any(File)], '')
   })
 
   it('os seletores só oferecem datas dentro do lote', async () => {
@@ -1227,7 +1270,6 @@ describe('App — navegação travada até confirmar', () => {
       getConfig: vi.fn().mockResolvedValue({
         banks: [{ id: 'sicredi', nome: 'Sicredi', extensoes: ['.xls'],
                   validado: true, tema: { primaria: '#3FA110' } }],
-        banco_padrao: 'sicredi',
       }),
       upload: vi.fn(), recategorize: vi.fn(), travel: vi.fn(),
       preview: vi.fn(), exportCsv: vi.fn(),
@@ -1268,7 +1310,6 @@ describe('App — navegação travada até confirmar', () => {
       getConfig: vi.fn().mockResolvedValue({
         banks: [{ id: 'sicredi', nome: 'Sicredi', extensoes: ['.xls'],
                   validado: true, tema: { primaria: '#3FA110' } }],
-        banco_padrao: 'sicredi',
       }),
       uploadPeriodo: vi.fn().mockResolvedValue({ purchase_range: null }),
       upload: vi.fn().mockResolvedValue({
@@ -1304,7 +1345,6 @@ describe('App — navegação travada até confirmar', () => {
       getConfig: vi.fn().mockResolvedValue({
         banks: [{ id: 'sicredi', nome: 'Sicredi', extensoes: ['.xls'],
                   validado: true, tema: { primaria: '#3FA110' } }],
-        banco_padrao: 'sicredi',
       }),
       uploadPeriodo: vi.fn().mockResolvedValue({ purchase_range: null }),
       upload: vi.fn().mockResolvedValue({
@@ -1356,7 +1396,6 @@ describe('App — navegação travada até confirmar', () => {
       getConfig: vi.fn().mockResolvedValue({
         banks: [{ id: 'sicredi', nome: 'Sicredi', extensoes: ['.xls'],
                   validado: true, tema: { primaria: '#3FA110' } }],
-        banco_padrao: 'sicredi',
       }),
       upload: vi.fn(), recategorize: vi.fn(), travel: vi.fn(),
       preview: vi.fn(), exportCsv: vi.fn(),
@@ -4004,5 +4043,63 @@ describe('"Só o nome" não engole data digitada', () => {
 
     await userEvent.clear(ida)
     expect(soNome).toBeEnabled()
+  })
+})
+
+describe('o banco sai do arquivo, não de uma dropdown', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.doMock('../api', () => ({
+      getCategories: vi.fn().mockResolvedValue({ categories: ['Casa'] }),
+      getRules: vi.fn().mockResolvedValue({ flagged_count: 0 }),
+      getConfig: vi.fn().mockResolvedValue({
+        banks: [
+          { id: 'sicredi', nome: 'Sicredi', extensoes: ['.xls', '.xlsx', '.csv'],
+            validado: true, tema: { primaria: '#3FA110' } },
+          { id: 'nubank', nome: 'Nubank', extensoes: ['.csv'],
+            validado: true, tema: { primaria: '#820AD1' } },
+        ],
+      }),
+      upload: vi.fn(), recategorize: vi.fn(), travel: vi.fn(),
+      uploadPeriodo: vi.fn().mockResolvedValue({
+        purchase_range: { inicio: '2026-07-01', fim: '2026-07-31' },
+        titulares: [], eu_sugerido: null,
+        bancos: [{ id: 'nubank', nome: 'Nubank', pede_vencimento: true,
+                   validado: true, tema: { primaria: '#820AD1' } }],
+      }),
+      preview: vi.fn(), exportCsv: vi.fn(),
+    }))
+  })
+
+  const montarApp = async () => {
+    const { default: App } = await import('../App')
+    return render(<App />)
+  }
+
+  it('não existe mais seletor de banco no topo', async () => {
+    await montarApp()
+    await screen.findByRole('heading', { name: 'Importar fatura' })
+    expect(screen.queryByLabelText(/Banco/i)).toBeNull()
+  })
+
+  it('a dropzone anuncia a união das extensões de todos os bancos', async () => {
+    // Com a dropdown, ela anunciava as do banco escolhido. Agora `.csv` vale
+    // para os dois e `.xls` para um, e quem separa é o conteúdo.
+    await montarApp()
+    const aceita = await screen.findByText(/Aceita/)
+    expect(aceita.textContent).toMatch(/\.csv/)
+    expect(aceita.textContent).toMatch(/\.xls/)
+  })
+
+  it('o tema segue o banco detectado no arquivo', async () => {
+    // O roxo do Nubank aparece porque o arquivo é do Nubank, não porque
+    // alguém escolheu Nubank numa lista.
+    document.documentElement.style.removeProperty('--verde')
+    const { container } = await montarApp()
+    await screen.findByRole('heading', { name: 'Importar fatura' })
+    await userEvent.upload(container.querySelector('input[type=file]'),
+                           new File(['x'], 'nu.csv', { type: 'text/csv' }))
+    await waitFor(() => expect(
+      document.documentElement.style.getPropertyValue('--verde')).toBe('#820AD1'))
   })
 })

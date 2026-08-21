@@ -7,13 +7,12 @@ import AutoReviewStep from './components/AutoReviewStep'
 import MarketplaceStep from './components/MarketplaceStep'
 import FinalReview from './components/FinalReview'
 import RulesView from './components/RulesView'
-import BankPicker from './components/BankPicker'
 import OutputFormatView from './components/OutputFormatView'
 import ConfigBundle from './components/ConfigBundle'
 import RecategorizeStep, { ChangesSummary } from './components/RecategorizeStep'
 import TravelStep from './components/TravelStep'
 import AnalyticsView from './components/AnalyticsView'
-import { applyTheme } from './theme'
+import { applyTheme, resetTheme } from './theme'
 import { viagensPorLinha } from './viagens'
 import { TODOS, TitularFiltro, opcoesDeTitular } from './titulares'
 
@@ -85,7 +84,9 @@ export default function App() {
   // lugar de "Sem marca" — não vai para o backend nem para o arquivo.
   const [euNome, setEuNome] = useState('')
   const [banks, setBanks] = useState([])
-  const [bankId, setBankId] = useState('')
+  // Os bancos que o PRÉ-VOO reconheceu nos arquivos escolhidos. Vazio = nada
+  // escolhido ainda, ou a leitura falhou — e aí a tela não afirma banco nenhum.
+  const [bancosDoLote, setBancosDoLote] = useState([])
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
 
@@ -104,21 +105,33 @@ export default function App() {
     try {
       const cfg = await api.getConfig()
       setBanks(cfg.banks)
-      setBankId((current) => current || cfg.banco_padrao)
     } catch (e) {
       setError(`Não consegui carregar os bancos: ${e.message}`)
     }
   }
 
-  // Trocar de banco repinta a interface inteira: as CSS custom properties são
-  // reescritas no :root, então nenhum componente precisa saber que existe mais
-  // de um banco.
+  // O tema segue o banco DETECTADO no arquivo. Repintar é reescrever as CSS
+  // custom properties no `:root`, então nenhum componente precisa saber que
+  // existe mais de um banco — e sem lote nenhum a folha volta a mandar.
   useEffect(() => {
-    const banco = banks.find((b) => b.id === bankId)
+    const banco = banks.find((b) => b.id === bancosDoLote[0]?.id)
     if (banco) applyTheme(banco.tema)
-  }, [banks, bankId])
+    else if (!bancosDoLote.length) resetTheme()
+  }, [banks, bancosDoLote])
 
-  const bancoAtual = banks.find((b) => b.id === bankId) || null
+  // O banco deixou de ser escolha e virou leitura: quem responde é o arquivo.
+  // A tela mostra o que foi reconhecido em vez de perguntar — ver `detectar`
+  // em `core/profiles.py`. Com um lote de dois bancos, o tema segue o primeiro
+  // e a lista inteira aparece no texto.
+  const bancoAtual = bancosDoLote[0] || null
+
+  // A união do que TODOS os bancos exportam. A dropzone filtra por isto e o
+  // conteúdo decide o resto: um `.pdf` não é fatura de banco nenhum, mas um
+  // `.csv` pode ser de qualquer um dos dois.
+  const extensoesAceitas = useMemo(
+    () => [...new Set(banks.flatMap((b) => b.extensoes || []))].sort(),
+    [banks],
+  )
 
   const assignmentList = useMemo(() => [...assignments.values()], [assignments])
 
@@ -152,7 +165,7 @@ export default function App() {
 
   async function handleUpload(files, vencimento, titulares = '', eu = '') {
     setEuNome(eu)
-    await processar(() => api.upload(files, bankId, vencimento, titulares), 'unmapped')
+    await processar(() => api.upload(files, vencimento, titulares), 'unmapped')
   }
 
   async function handleRecategorize(files) {
@@ -298,6 +311,9 @@ export default function App() {
     setAssignments(new Map())
     setTitularFiltro(TODOS)
     setEuNome('')
+    // O lote novo pode ser de outro banco: manter a lista faria a tela seguir
+    // roxa de Nubank enquanto espera um arquivo que talvez seja do Sicredi.
+    setBancosDoLote([])
     limparViagem()
     setLiberadas(['upload'])
     setStep('upload')
@@ -342,7 +358,11 @@ export default function App() {
     <div className="shell">
       <aside className={`sidebar ${sidebarOpen ? '' : 'closed'}`}>
         <div className="brand">
-          <span className="mark">S</span>
+          {/* A inicial do banco reconhecido no lote. Era um "S" fixo de
+              Sicredi — que ficava mentindo assim que a tela virava roxa de
+              Nubank. Sem lote, volta ao "$": o portal não é de banco nenhum
+              até alguém soltar um arquivo. */}
+          <span className="mark">{bancoAtual?.tema?.inicial || '$'}</span>
           <span>
             <span className="name">Fatura</span>
             <span className="sub">fatura → planilha</span>
@@ -408,12 +428,6 @@ export default function App() {
           </button>
           <h1>{TITULOS[section]}</h1>
           <div className="spacer" />
-          <BankPicker
-            banks={banks}
-            value={bankId}
-            onChange={setBankId}
-            disabled={Boolean(session) && section === 'importar'}
-          />
         </header>
 
         <div className="page">
@@ -449,7 +463,8 @@ export default function App() {
                       ? `${session.source_files.reduce((s, f) => s + f.rows, 0)} linha(s) de
                          ${session.source_files.length} arquivo(s) · ${session.changes.length}
                          mudança(s)`
-                      : `${session.statements.length} fatura(s) de ${bancoAtual?.nome || '—'} carregada(s)`}
+                      : `${session.statements.length} fatura(s) carregada(s)`
+                        + ` de ${bancosDoLote.map((b) => b.nome).join(' e ') || '—'}`}
                   </span>
                   {/* O filtro mora AQUI, e não dentro de cada etapa: ele vale
                       para todas elas e sobrevive à navegação entre elas.
@@ -507,7 +522,8 @@ export default function App() {
                 <UploadStep
                   onUpload={handleUpload}
                   busy={busy}
-                  banco={bancoAtual}
+                  extensoes={extensoesAceitas}
+                  onBancosDetectados={setBancosDoLote}
                   travelRanges={travelRanges}
                   onTravelRangesChange={handleTravelRanges}
                 />

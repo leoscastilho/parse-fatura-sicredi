@@ -28,3 +28,19 @@ export function applyTheme(tema) {
   // A borda acompanha o tom claro da marca para o contorno não destoar.
   if (tema.clara) root.style.setProperty('--border', tema.clara)
 }
+
+/**
+ * Volta ao tema do próprio CSS, o que estiver escrito no `:root` da folha.
+ *
+ * Existe porque o banco deixou de ser uma escolha permanente e passou a ser
+ * detectado por arquivo: entre um lote e o seguinte a tela precisa esquecer o
+ * roxo do Nubank, senão "Começar de novo" mantém a cara do banco anterior até
+ * alguém soltar outro arquivo — e a cor passa a mentir sobre o que está
+ * carregado. Remover a propriedade inline é o que devolve a palavra à folha;
+ * sobrescrever com um valor fixo criaria um terceiro tema para manter.
+ */
+export function resetTheme() {
+  const root = document.documentElement
+  for (const variavel of Object.values(MAP)) root.style.removeProperty(variavel)
+  root.style.removeProperty('--border')
+}

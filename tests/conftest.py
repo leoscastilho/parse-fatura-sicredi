@@ -163,13 +163,19 @@ def sicredi_app_csv(tmp_path) -> Path:
 
 @pytest.fixture
 def nubank_csv(tmp_path) -> Path:
+    # O formato REAL do export do app, conferido contra
+    # `documents/nubank_extrato_app.csv`: vírgula decimal entre aspas, e o sinal
+    # de menos separado do número por um espaço. A versão anterior desta fixture
+    # usava `270.51` — inventado, e o perfil tinha sido escrito para casar com a
+    # invenção em vez de com o arquivo.
     path = tmp_path / "nubank.csv"
     path.write_text(
         "date,title,amount\n"
-        "2026-07-03,Supermercados Alvorada,270.51\n"
-        "2026-07-05,Uber *Trip,26.74\n"
-        "2026-07-08,Amazon BR,59.13\n"
-        "2026-07-11,Renner,79.96\n",
+        '2026-07-03,Supermercados Alvorada,"270,51"\n'
+        "2026-07-05,Uber *Trip,\"26,74\"\n"
+        "2026-07-08,Amazon BR,\"59,13\"\n"
+        "2026-07-11,Renner,\"79,96\"\n"
+        '2026-07-12,Pagamento recebido,"- 1.000,00"\n',
         encoding="utf-8",
     )
     return path

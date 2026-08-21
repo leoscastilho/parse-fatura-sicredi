@@ -186,14 +186,29 @@ def classify_sources(
     profile: BankProfile | None = None, schema: OutputSchema | None = None,
     due_date=None, apelidos: dict[str, str] | None = None,
 ) -> tuple[list[ClassifiedLine], list[DroppedLine], list[Statement]]:
-    """Processa vários extratos de uma vez, mantendo `line_id` único."""
+    """Processa vários extratos de uma vez, mantendo `line_id` único.
+
+    Cada fonte pode trazer o PRÓPRIO perfil como terceiro item — é o que
+    permite subir a fatura do Sicredi e a do Nubank no mesmo lote e sair um CSV
+    só. Sem o terceiro item vale o `profile` do argumento, que é como a CLI e
+    os testes antigos chamam.
+
+    A data de vencimento digitada só chega a quem PEDE. O Nubank não traz a
+    data no arquivo e pergunta; o Sicredi traz, e `read_statement` deixa o
+    argumento vencer o que está no arquivo — então passar a data para os dois
+    faria a fatura do Sicredi adotar o vencimento do Nubank, silenciosamente e
+    com o mês errado na planilha.
+    """
     schema = schema or OutputSchema()
     all_lines: list[ClassifiedLine] = []
     all_dropped: list[DroppedLine] = []
     statements: list[Statement] = []
 
-    for index, (name, source) in enumerate(sources):
-        statement = read_statement(source, name=name, profile=profile, due_date=due_date)
+    for index, fonte in enumerate(sources):
+        name, source, *resto = fonte
+        perfil = resto[0] if resto else profile
+        venc = due_date if (perfil is None or perfil.pede_vencimento) else None
+        statement = read_statement(source, name=name, profile=perfil, due_date=venc)
         lines, dropped = classify_statement(statement, rules, index=index,
                                             schema=schema, apelidos=apelidos)
         all_lines += lines

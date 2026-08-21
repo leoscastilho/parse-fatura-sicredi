@@ -36,10 +36,9 @@ export const getRules = () => json('/rules')
 export const editRules = (operations, commit = false) =>
   json('/rules/edit', asJson({ operations, commit }))
 
-export function upload(files, banco = '', vencimento = '', titulares = '') {
+export function upload(files, vencimento = '', titulares = '') {
   const form = new FormData()
   for (const file of files) form.append('files', file)
-  form.append('banco', banco)
   form.append('vencimento', vencimento)
   // `Nome Completo=Rótulo`, uma linha por pessoa. Lado direito vazio = sou eu,
   // e a linha não recebe marca nenhuma.
@@ -50,10 +49,9 @@ export function upload(files, banco = '', vencimento = '', titulares = '') {
 // Pré-voo: de quando a quando vão as COMPRAS deste lote, e nada além disso.
 // Não abre transação e não grava nada — serve para a pergunta "viajou neste
 // período?" poder nomear as datas antes do processamento.
-export function uploadPeriodo(files, banco = '', vencimento = '') {
+export function uploadPeriodo(files, vencimento = '') {
   const form = new FormData()
   for (const file of files) form.append('files', file)
-  form.append('banco', banco)
   form.append('vencimento', vencimento)
   return json('/upload/periodo', { method: 'POST', body: form })
 }

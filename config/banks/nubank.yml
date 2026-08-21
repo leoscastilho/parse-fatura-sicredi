@@ -1,19 +1,25 @@
 # =============================================================================
-#  Nubank — PLACEHOLDER
+#  Nubank
 # =============================================================================
-#  `validado: false` porque este perfil foi escrito sem uma fatura real na mão.
-#  O portal mostra um aviso enquanto essa flag estiver falsa: o parsing roda,
-#  mas a conferência de totais é a única coisa em que confiar.
+#  Validado contra um export real do app (`documents/nubank_extrato_app.csv`).
 #
-#  Para validar: exporte uma fatura do app, suba na aba "Formato de entrada",
-#  confira as colunas detectadas e vire a flag.
+#  DUAS LIMITAÇÕES do arquivo, e as duas são do Nubank, não do portal:
+#
+#  * Não traz data de vencimento em lugar nenhum — por isso `perguntar: true`,
+#    e a tela de upload pede a data antes de processar. É dela que sai a coluna
+#    `Data` da planilha, que agrega por mês de pagamento.
+#  * Não traz total declarado nem resumo, então não há o que conferir: a
+#    checagem de fechamento fica calada em vez de acusar um erro que não existe.
+#
+#  Também não há coluna de parcela, de titular nem de moeda estrangeira: o
+#  Nubank já converte para reais e escreve a parcela dentro do próprio título.
 #
 #  Cores: #820AD1 (Electric Violet) e #1B0C24, da identidade da marca.
 # =============================================================================
 
 id: nubank
 nome: Nubank
-validado: false
+validado: true
 
 tema:
   primaria: "#820AD1"
@@ -33,6 +39,14 @@ leitura:
   # por linha. É o formato que o Nubank exporta para fatura de cartão.
   estrategia: csv_simples
   extensoes: [".csv"]
+
+  # Como o portal reconhece este arquivo sem perguntar de qual banco ele é. O
+  # `.csv` é disputado com o export do app do Sicredi, e o cabeçalho
+  # `date,title,amount` — em inglês, sem preâmbulo nenhum — é o que separa os
+  # dois. Procurado no texto NORMALIZADO, então não depende de acento nem de o
+  # palpite de encoding ter acertado.
+  deteccao:
+    contem: ["date,title,amount"]
   delimitador: ","
   encoding: utf-8
 
@@ -50,9 +64,13 @@ leitura:
     perguntar: true
     formato: "%d/%m/%Y"
 
+  # `"65,33"` e `"- 5.664,61"`: o Nubank exporta em português, com vírgula
+  # decimal e ponto de milhar — igual ao Sicredi, e ao contrário do que este
+  # perfil supunha quando foi escrito sem um arquivo real na mão. Era o único
+  # erro dele: colunas, delimitador e formato de data já estavam certos.
   numeros:
-    milhar: ""
-    decimal: "."
+    milhar: "."
+    decimal: ","
 
   data_lancamento: "%Y-%m-%d"
 

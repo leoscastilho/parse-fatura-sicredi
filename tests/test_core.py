@@ -462,7 +462,7 @@ def test_config_carrega_os_dois_bancos(config_dir):
     cfg = ConfigSet.load(config_dir)
     assert {"sicredi", "nubank"} <= set(cfg.banks)
     assert cfg.banks["sicredi"].validado is True
-    assert cfg.banks["nubank"].validado is False, "placeholder não pode se dizer validado"
+    assert cfg.banks["nubank"].validado is True, "validado contra um export real"
 
 
 def test_nubank_usa_as_mesmas_regras_de_categoria(config_dir, nubank_csv):
@@ -562,7 +562,9 @@ def test_config_real_carrega():
     cfg = ConfigSet.load(CONFIG_REAL)
     assert cfg.output.colunas, "o formato de saída precisa ter colunas"
     assert cfg.banks, "precisa existir ao menos um banco"
-    assert cfg.default_bank
+    # Cada banco declara o que reconhece: sem isso, dois perfis com a mesma
+    # extensão empatariam e o upload viraria erro.
+    assert all(b.reconhece_algo for b in cfg.banks.values())
 
 
 def test_config_real_tem_papeis_coerentes():

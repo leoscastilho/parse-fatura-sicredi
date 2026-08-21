@@ -38,6 +38,11 @@ leitura:
     - id: site
       estrategia: excel_secoes
       extensoes: [".xls", ".xlsx"]
+      # Nenhum outro banco lê planilha, então a extensão já resolve. `deteccao`
+      # existe aqui só para o dia em que houver um segundo — sem ela, um
+      # empate de extensão viraria erro em vez de escolha.
+      deteccao:
+        contem: ["Data de Vencimento"]
       planilha: 0
 
       vencimento:
@@ -76,6 +81,12 @@ leitura:
     - id: app
       estrategia: csv_com_preambulo
       extensoes: [".csv"]
+      # O `.csv` é disputado com o Nubank, e é isto que desempata: o export do
+      # app do Sicredi abre com o preâmbulo do associado e usa `;`. Procurado
+      # no texto NORMALIZADO (maiúsculas, sem acento), então não depende de o
+      # palpite de encoding ter acertado o "Descrição".
+      deteccao:
+        contem: ["Associado", "Data de Vencimento"]
       delimitador: ";"
       # utf-8-sig come o BOM que o app deixa no começo; sem ele o primeiro
       # rótulo vira "\ufeff Associado" e nenhuma busca por prefixo o acha.

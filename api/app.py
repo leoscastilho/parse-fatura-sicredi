@@ -64,6 +64,7 @@ from .models import (
     PreviewResponse,
     PurchaseRange,
     PurchaseRangeResponse,
+    BancoDetectado,
     StatementSummary,
     TravelRangeItem,
     TravelRequest,
@@ -420,43 +421,53 @@ def _apelidos_do_form(bruto: str) -> dict[str, str]:
     return saida
 
 
-def _vencimento(bruto: str, profile) -> datetime | None:
+def _vencimento(bruto: str, perfis) -> datetime | None:
+    """A data digitada, exigida quando ALGUM dos bancos do lote não a traz.
+
+    Recebe os perfis já DETECTADOS, não o banco escolhido numa dropdown: agora
+    quem decide se a pergunta é obrigatória é o arquivo que a pessoa soltou na
+    tela.
+    """
     if bruto.strip():
         try:
             return datetime.strptime(bruto.strip(), "%Y-%m-%d")
         except ValueError:
             raise HTTPException(422, detail="vencimento deve ser AAAA-MM-DD")
-    if profile.pede_vencimento:
+    faltando = [p.nome for p in perfis if p.pede_vencimento]
+    if faltando:
         raise HTTPException(
             422,
-            detail=f"{profile.nome} não traz a data de vencimento no arquivo — "
-                   "informe a data no upload")
+            detail=f"{', '.join(sorted(set(faltando)))} não traz a data de "
+                   "vencimento no arquivo — informe a data no upload")
     return None
 
 
-async def _fontes(files: list[UploadFile], profile,
-                  settings: Settings) -> list[tuple[str, io.BytesIO]]:
-    """Lê os arquivos para memória, validando extensão e tamanho.
+async def _fontes(files: list[UploadFile], cfg,
+                  settings: Settings) -> list[tuple[str, io.BytesIO, object]]:
+    """Lê os arquivos para memória e descobre de que banco é cada um.
 
     Extraído porque `/upload` e `/upload/periodo` precisam ler o MESMO lote com
     as mesmas regras. Duas cópias divergiriam no dia em que uma ganhasse um
     limite novo, e o portal passaria a aceitar no pré-voo o que rejeita no
     processamento — ou pior, o contrário.
+
+    O banco é DETECTADO por arquivo, e é por isso que cada fonte sai daqui com
+    o próprio perfil colado: um lote pode ter a fatura do Sicredi e a do
+    Nubank, e as duas viram um CSV só.
     """
     if len(files) > settings.max_files_per_upload:
         raise HTTPException(413, detail=f"máximo {settings.max_files_per_upload} arquivos")
 
     fontes = []
     for upload_file in files:
-        if not profile.accepts(upload_file.filename):
-            raise HTTPException(
-                415,
-                detail=f"{upload_file.filename}: {profile.nome} espera "
-                       f"{', '.join(profile.extensoes)}")
         blob = await upload_file.read()
         if len(blob) > settings.max_upload_bytes:
             raise HTTPException(413, detail=f"{upload_file.filename} excede o limite")
-        fontes.append((upload_file.filename, io.BytesIO(blob)))
+        try:
+            perfil = cfg.detectar(upload_file.filename, blob[:8192])
+        except ProfileError as exc:
+            raise HTTPException(415, detail=str(exc))
+        fontes.append((upload_file.filename, io.BytesIO(blob), perfil))
     return fontes
 
 
@@ -511,37 +522,31 @@ def get_categories(settings: Settings = Depends(get_settings)) -> CategoriesResp
 
 @app.post("/upload", response_model=UploadResponse)
 async def upload(
-    files: list[UploadFile] = File(..., description="extrato do banco escolhido"),
-    banco: str = Form("", description="id do perfil; vazio = o primeiro validado"),
+    files: list[UploadFile] = File(..., description="extrato de qualquer banco configurado"),
     vencimento: str = Form("", description="AAAA-MM-DD, para bancos que não trazem a data"),
     titulares: str = Form("", description="`Nome Completo=Rótulo` por linha; vazio = sou eu"),
     settings: Settings = Depends(get_settings),
     store: Store = Depends(get_store),
 ) -> UploadResponse:
-    """Lê os extratos com o perfil do banco e abre a transação."""
+    """Lê os extratos, descobre de que banco é cada um, e abre a transação."""
     cfg = load_config(settings)
-    try:
-        profile = cfg.bank(banco or None)
-    except Exception as exc:
-        raise HTTPException(422, detail=str(exc))
-
     text = cfg.categories_text
     yaml_sha = GitHubSync(settings).current_sha() if settings.github_enabled else None
     rules = Ruleset.from_text(text)
 
-    due = _vencimento(vencimento, profile)
+    sources = await _fontes(files, cfg, settings)
+    perfis = [perfil for _, _, perfil in sources]
+    due = _vencimento(vencimento, perfis)
 
     warnings = []
-    if not profile.validado:
+    for nome in sorted({p.nome for p in perfis if not p.validado}):
         warnings.append(
-            f"O perfil de {profile.nome} ainda não foi validado contra uma fatura real. "
+            f"O perfil de {nome} ainda não foi validado contra uma fatura real. "
             "Confira os totais antes de colar na planilha.")
-
-    sources = await _fontes(files, profile, settings)
 
     try:
         lines, dropped, statements = classify_sources(
-            sources, rules, profile=profile, schema=cfg.output, due_date=due,
+            sources, rules, schema=cfg.output, due_date=due,
             apelidos=_apelidos_do_form(titulares))
     # `ProfileError` entra aqui junto com `ValueError` porque agora ele é
     # alcançável pelo uso normal: com o Sicredi aceitando `.csv`, soltar um CSV
@@ -550,11 +555,13 @@ async def upload(
     except (ValueError, ProfileError) as exc:
         raise HTTPException(422, detail=str(exc))
 
+    bancos_por_arquivo = {nome: perfil.nome for nome, _, perfil in sources}
     summaries = []
     for statement in statements:
         dropped_here = sum(1 for d in dropped if d.statement == statement.name)
         summary = StatementSummary(
             name=statement.name,
+            banco=bancos_por_arquivo.get(statement.name, ""),
             due_date=statement.due_date.date().isoformat(),
             data_column=statement.due_date.strftime("%m/%d/%Y"),
             entries=len(statement.entries),
@@ -604,8 +611,7 @@ async def upload(
 
 @app.post("/upload/periodo", response_model=PurchaseRangeResponse)
 async def upload_periodo(
-    files: list[UploadFile] = File(..., description="extrato do banco escolhido"),
-    banco: str = Form(""),
+    files: list[UploadFile] = File(..., description="extrato de qualquer banco configurado"),
     vencimento: str = Form(""),
     settings: Settings = Depends(get_settings),
 ) -> PurchaseRangeResponse:
@@ -623,26 +629,27 @@ async def upload_periodo(
     data nenhuma.
     """
     cfg = load_config(settings)
-    try:
-        profile = cfg.bank(banco or None)
-    except Exception as exc:
-        raise HTTPException(422, detail=str(exc))
+    sources = await _fontes(files, cfg, settings)
 
     # O vencimento pode não ter sido preenchido ainda: aqui ele não faz falta,
     # porque a data comparada é a da COMPRA, não a do vencimento da fatura.
-    due = _vencimento(vencimento, profile) if vencimento.strip() else None
-    sources = await _fontes(files, profile, settings)
+    due = _vencimento(vencimento, []) if vencimento.strip() else None
 
+    # A LEITURA aqui é BEST-EFFORT, ao contrário do /upload. O caso normal é o
+    # arquivo ainda estar incompleto para processar: o Nubank não traz a data
+    # de vencimento, e a tela só sabe que precisa pedi-la depois que ESTA
+    # resposta disser que o arquivo é do Nubank. Devolver 422 seria pedir a
+    # data e ao mesmo tempo esconder de quem ela é.
+    #
+    # O que NÃO é best-effort é a detecção, lá em cima: arquivo irreconhecível
+    # continua sendo 415, porque aí não há o que fazer com ele.
+    lines, statements = [], []
     try:
         lines, _, statements = classify_sources(
             sources, Ruleset.from_text(cfg.categories_text),
-            profile=profile, schema=cfg.output, due_date=due)
-    # `ProfileError` entra aqui junto com `ValueError` porque agora ele é
-    # alcançável pelo uso normal: com o Sicredi aceitando `.csv`, soltar um CSV
-    # que não é a fatura do app é um erro de CONTEÚDO, não de extensão — e o
-    # que o usuário precisa ler é "não achei o cabeçalho", não um 500.
-    except (ValueError, ProfileError) as exc:
-        raise HTTPException(422, detail=str(exc))
+            schema=cfg.output, due_date=due)
+    except (ValueError, ProfileError):
+        pass
 
     # Os titulares saem dos EXTRATOS, não das linhas: `ClassifiedLine` já é a
     # descrição pronta, e a essa altura o nome ou virou marca ou foi descartado.
@@ -653,7 +660,18 @@ async def upload_periodo(
                 vistos.append(nome)
     sugerido = next((s.titular for s in statements if s.titular), None)
 
+    # Sem repetir e na ordem em que apareceram: dois arquivos do mesmo banco
+    # não são dois bancos, e a tela mostra esta lista como "reconheci X".
+    bancos: list[BancoDetectado] = []
+    for _, _, perfil in sources:
+        if any(b.id == perfil.id for b in bancos):
+            continue
+        bancos.append(BancoDetectado(
+            id=perfil.id, nome=perfil.nome, validado=perfil.validado,
+            pede_vencimento=perfil.pede_vencimento, tema=perfil.tema.to_dict()))
+
     return PurchaseRangeResponse(
+        bancos=bancos,
         purchase_range=_purchase_range(lines),
         titulares=sorted(vistos),
         # Só sugere o que existe: com dois arquivos de bancos diferentes, o

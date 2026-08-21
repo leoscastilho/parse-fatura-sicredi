@@ -37,7 +37,8 @@ export const formTitulares = (titulares, eu, apelidos) => (
     .join('\n'))
 
 export default function UploadStep({
-  onUpload, busy, banco, travelRanges = [], onTravelRangesChange,
+  onUpload, busy, extensoes = ['.xls', '.xlsx', '.csv'],
+  onBancosDetectados, travelRanges = [], onTravelRangesChange,
 }) {
   const [files, setFiles] = useState([])
   const [dragging, setDragging] = useState(false)
@@ -51,15 +52,22 @@ export default function UploadStep({
   const [titulares, setTitulares] = useState([])
   const [eu, setEu] = useState('')
   const [apelidos, setApelidos] = useState({})
+  // Os bancos que o pré-voo reconheceu NESTES arquivos. Antes isto era uma
+  // dropdown: a pessoa dizia de qual banco era o arquivo que ela mesma tinha
+  // acabado de exportar, e errar a escolha dava um erro de parsing sem relação
+  // óbvia com a causa. Agora o arquivo responde por si.
+  const [bancos, setBancos] = useState([])
   const inputRef = useRef(null)
 
-  const extensoes = banco?.extensoes || ['.xls', '.xlsx']
-  const precisaVencimento = Boolean(banco?.pede_vencimento)
+  // A pergunta da data só aparece DEPOIS de reconhecer o banco, porque só aí
+  // se sabe se ela faz falta: o Sicredi traz o vencimento dentro do arquivo, o
+  // Nubank não traz em lugar nenhum.
+  const precisaVencimento = bancos.some((b) => b.pede_vencimento)
   const pronto = files.length > 0 && (!precisaVencimento || vencimento)
 
   function accept(list) {
-    // Filtra pelas extensões do banco escolhido: soltar um .csv na tela do
-    // Sicredi só produziria um 415 do servidor.
+    // Filtra pela união das extensões de todos os bancos: qual deles é, quem
+    // decide é o conteúdo, mas um `.pdf` não é fatura de nenhum.
     setFiles([...list].filter((f) =>
       extensoes.some((ext) => f.name.toLowerCase().endsWith(ext))))
   }
@@ -72,16 +80,23 @@ export default function UploadStep({
   // Depende do vencimento além dos arquivos porque em banco que não traz a data
   // no arquivo é ela que ancora o ano da compra: "{Em 15/Jul}" não diz o ano.
   useEffect(() => {
-    if (!files.length) return setLimites(null)
+    if (!files.length) {
+      setBancos([])
+      onBancosDetectados?.([])
+      return setLimites(null)
+    }
     let cancelado = false
     // Espera a digitação parar: `input[type=date]` dispara onChange a cada
     // pedaço da data em alguns navegadores, e cada disparo reenvia os arquivos.
     const timer = setTimeout(async () => {
       setLendoPeriodo(true)
       try {
-        const r = await api.uploadPeriodo(files, banco?.id || '', vencimento)
+        const r = await api.uploadPeriodo(files, vencimento)
         if (cancelado) return
         setLimites(r.purchase_range || null)
+        setBancos(r.bancos || [])
+        // Sobe para o App pintar o tema da marca reconhecida.
+        onBancosDetectados?.(r.bancos || [])
         const nomes = r.titulares || []
         setTitulares(nomes)
         // A sugestão vem do "Associado" impresso na fatura — o banco já diz de
@@ -96,28 +111,42 @@ export default function UploadStep({
       } catch {
         // Conveniência, não pré-requisito: falhou, o editor volta a ficar solto
         // e a validação real continua acontecendo no processamento.
-        if (!cancelado) { setLimites(null); setTitulares([]) }
+        if (!cancelado) {
+          setLimites(null); setTitulares([]); setBancos([])
+          onBancosDetectados?.([])
+        }
       } finally {
         if (!cancelado) setLendoPeriodo(false)
       }
     }, 300)
     return () => { cancelado = true; clearTimeout(timer) }
-  }, [files, banco?.id, vencimento])
+  }, [files, vencimento])
 
   return (
     <section className="card">
-      <h2>Extratos do cartão — {banco?.nome || '…'}</h2>
+      <h2>Extratos do cartão</h2>
       <p className="muted">
         Pode mandar vários de uma vez — todos viram um CSV só, com cada fatura
-        num bloco. Este banco aceita <code>{extensoes.join(', ')}</code>.
+        num bloco, mesmo sendo de bancos diferentes. Aceita{' '}
+        <code>{extensoes.join(', ')}</code>, e descobre de qual banco é cada
+        arquivo lendo o próprio arquivo.
       </p>
 
-      {banco && !banco.validado && (
-        <div className="alert warn">
-          O perfil de leitura do {banco.nome} ainda não foi validado contra uma
+      {/* A confirmação do que foi reconhecido. Com a dropdown, quem escolhia
+          sabia; agora a tela é que precisa dizer, senão a detecção acontece em
+          silêncio e um erro dela só apareceria lá na frente. */}
+      {bancos.length > 0 && (
+        <p className="small">
+          Reconheci <strong>{bancos.map((b) => b.nome).join(' e ')}</strong>.
+        </p>
+      )}
+
+      {bancos.filter((b) => !b.validado).map((b) => (
+        <div className="alert warn" key={b.id}>
+          O perfil de leitura do {b.nome} ainda não foi validado contra uma
           fatura real. Confira os totais antes de colar na planilha.
         </div>
-      )}
+      ))}
 
       <div
         className={`dropzone ${dragging ? 'over' : ''}`}
@@ -161,8 +190,10 @@ export default function UploadStep({
                    onChange={(e) => setVencimento(e.target.value)} />
           </label>
           <span className="muted small">
-            O {banco.nome} não traz essa data no arquivo, e ela é a coluna
-            <code>Data</code> do CSV.
+            {bancos.filter((b) => b.pede_vencimento).map((b) => b.nome).join(' e ')}{' '}
+            não traz essa data no arquivo, e ela é a coluna <code>Data</code> do
+            CSV. As faturas do lote que trazem a delas continuam usando a
+            própria — a data digitada não sobrescreve nenhuma.
           </span>
         </div>
       )}

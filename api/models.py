@@ -131,6 +131,10 @@ class MerchantGroup(BaseModel):
 
 class StatementSummary(BaseModel):
     name: str
+    # O banco DETECTADO a partir do arquivo. Vem no resumo porque é a única
+    # confirmação que o usuário tem de que o portal entendeu o que ele soltou
+    # na tela — antes ele mesmo escolhia numa dropdown e sabia.
+    banco: str = ""
     due_date: str
     data_column: str
     entries: int
@@ -235,6 +239,24 @@ class PurchaseRange(BaseModel):
     fim: str
 
 
+class BancoDetectado(BaseModel):
+    """Um banco reconhecido no lote, com o que a tela de upload precisa dele.
+
+    Acima de `PurchaseRangeResponse` pelo mesmo motivo de `TravelRangeItem`
+    estar acima de `LineItem`: referência adiante em Pydantic funciona por
+    acidente.
+    """
+
+    id: str
+    nome: str
+    # O arquivo não traz a data de vencimento e o portal precisa perguntar. É o
+    # caso do Nubank — e é por isso que o campo de data só aparece DEPOIS de o
+    # arquivo ser escolhido: antes disso ninguém sabe se ele faz falta.
+    pede_vencimento: bool = False
+    validado: bool = True
+    tema: dict[str, str] = Field(default_factory=dict)
+
+
 class PurchaseRangeResponse(BaseModel):
     """Resposta do pré-voo: só o intervalo, sem transação e sem estado.
 
@@ -249,6 +271,10 @@ class PurchaseRangeResponse(BaseModel):
     # Quem o extrato diz ser o dono da conta — a sugestão de "esse sou eu",
     # para o usuário confirmar em vez de procurar o próprio nome numa lista.
     eu_sugerido: str | None = None
+    # Os bancos DETECTADOS neste lote, sem repetir. A tela usa para três coisas
+    # que antes dependiam da dropdown: dizer o que reconheceu, pintar o tema, e
+    # decidir se pergunta a data de vencimento.
+    bancos: list[BancoDetectado] = Field(default_factory=list)
 
 
 class TravelRequest(BaseModel):

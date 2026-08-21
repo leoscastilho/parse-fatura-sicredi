@@ -22,6 +22,8 @@ from typing import Any
 
 import yaml
 
+from .text import normalize
+
 
 class ProfileError(RuntimeError):
     pass
@@ -123,6 +125,37 @@ class BankProfile:
 
     def accepts(self, filename: str) -> bool:
         return filename.lower().endswith(self.extensoes)
+
+    @property
+    def reconhece_algo(self) -> bool:
+        """Todo formato deste banco diz como se reconhece?
+
+        Invariante de configuração, não de execução: um perfil novo sem
+        `deteccao` funciona enquanto for o único da extensão dele e vira
+        indetectável no dia em que aparecer um concorrente — falha longe da
+        causa, num arquivo que sempre funcionou.
+        """
+        return all((f.get("deteccao") or {}).get("contem") for f in self.formatos)
+
+    def reconhece(self, filename: str, amostra: str) -> bool:
+        """Este arquivo é DESTE banco? Extensão certa e assinatura presente.
+
+        `amostra` é o começo do arquivo já normalizado (maiúsculas, sem acento,
+        pontuação virando espaço). Normalizar antes de comparar é o que faz a
+        assinatura não depender de o palpite de encoding ter acertado o
+        "Descrição" nem de o Sicredi decidir escrever "ASSOCIADO" um dia.
+
+        Formato sem `deteccao` NUNCA reconhece nada por conta própria: só é
+        escolhido quando é o único candidato pela extensão. Um formato que
+        aceitasse qualquer coisa venceria os outros por acidente de ordem
+        alfabética do diretório, e o usuário veria "Nubank" numa fatura do
+        Sicredi sem nenhuma pista do porquê.
+        """
+        formato = self.formato_de(filename)
+        if formato is None:
+            return False
+        sinais = (formato.get("deteccao") or {}).get("contem") or []
+        return bool(sinais) and all(normalize(s) in amostra for s in sinais)
 
     @classmethod
     def from_text(cls, text: str, path: Path | None = None) -> "BankProfile":
@@ -305,24 +338,59 @@ class ConfigSet:
     categories_text: str = ""
     root: Path | None = None
 
-    @property
-    def default_bank(self) -> BankProfile:
-        """Primeiro banco VALIDADO (desempate por nome).
+    def bank(self, bank_id: str) -> BankProfile:
+        """Um banco pelo id. NÃO existe mais "banco padrão".
 
-        A ordem do diretório colocaria `nubank.yml` antes de `sicredi.yml`, e um
-        `banco` vazio no request escolheria o placeholder — que nem sabe ler a
-        data de vencimento. O padrão tem que ser o mesmo que a interface mostra.
+        Existia enquanto o portal perguntava de qual banco era o arquivo: um
+        `banco` vazio no request precisava cair em algum lugar, e cair no
+        perfil errado era pior do que recusar. Agora quem responde é o próprio
+        arquivo (`detectar`), e um padrão só voltaria a ser o palpite que a
+        detecção existe para não dar.
         """
-        if not self.banks:
-            raise ProfileError("nenhum perfil de banco carregado")
-        return sorted(self.banks.values(), key=lambda b: (not b.validado, b.nome))[0]
-
-    def bank(self, bank_id: str | None) -> BankProfile:
-        if not bank_id:
-            return self.default_bank
         if bank_id in self.banks:
             return self.banks[bank_id]
         raise ProfileError(f"banco desconhecido: {bank_id}")
+
+    def detectar(self, filename: str, amostra: bytes | str) -> BankProfile:
+        """De qual banco é este arquivo — pelo CONTEÚDO, não por uma pergunta.
+
+        Perguntar era pedir ao usuário uma informação que o arquivo já tem: ele
+        acabou de exportar do app do banco e sabe muito bem de qual, mas ter de
+        dizer isso a cada upload é uma chance por mês de escolher errado — e
+        escolher errado dava um erro de parsing sem relação óbvia com a causa.
+
+        A ordem é: extensão primeiro (barata e decisiva na maioria dos casos),
+        assinatura de conteúdo só quando a extensão empata. Hoje o empate é
+        entre os dois `.csv`, o do app do Sicredi e o do Nubank.
+        """
+        candidatos = [b for b in self.banks.values() if b.formato_de(filename)]
+        if not candidatos:
+            extensoes = sorted({e for b in self.banks.values() for e in b.extensoes})
+            raise ProfileError(
+                f"{filename}: não reconheço esta extensão — "
+                f"os bancos configurados exportam {', '.join(extensoes)}")
+        if len(candidatos) == 1:
+            return candidatos[0]
+
+        # Só aqui o arquivo é lido. `errors="replace"` porque a amostra serve
+        # para procurar assinatura, não para virar dado: um byte estranho no
+        # meio não pode derrubar a detecção.
+        if isinstance(amostra, bytes):
+            amostra = amostra.decode("utf-8", errors="replace")
+        normalizada = normalize(amostra)
+
+        achados = [b for b in candidatos if b.reconhece(filename, normalizada)]
+        if len(achados) == 1:
+            return achados[0]
+        if not achados:
+            raise ProfileError(
+                f"{filename}: é um {filename.rsplit('.', 1)[-1]} que não parece "
+                f"de nenhum banco conhecido ({', '.join(b.nome for b in candidatos)}). "
+                "Confira se o arquivo é a exportação da fatura, e não outra coisa.")
+        raise ProfileError(
+            f"{filename}: a assinatura casa com mais de um banco "
+            f"({', '.join(b.nome for b in achados)}) — os perfis precisam de "
+            "`deteccao.contem` mais específico.")
 
     @classmethod
     def load(cls, root: Path) -> "ConfigSet":

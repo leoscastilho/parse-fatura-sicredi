@@ -148,21 +148,55 @@ def test_transacao_desconhecida_da_404(client):
 
 
 def test_extensao_errada_da_415(client, nubank_csv):
-    """`.pdf` nem chega a ser lido — o Sicredi não exporta assim."""
-    assert _upload(client, nubank_csv, nome="fatura.pdf",
-                   banco="sicredi").status_code == 415
+    """`.pdf` nem chega a ser lido — banco nenhum exporta assim."""
+    resposta = _upload(client, nubank_csv, nome="fatura.pdf")
+    assert resposta.status_code == 415
+    # E a mensagem diz o que É aceito, em vez de só recusar.
+    assert ".csv" in resposta.json()["detail"]
 
 
-def test_csv_de_outro_banco_no_sicredi_explica_em_vez_de_estourar(client, nubank_csv):
-    """`.csv` deixou de ser exclusividade do Nubank, e isso muda o erro.
+def test_csv_que_nao_e_de_banco_nenhum_explica_em_vez_de_estourar(client, tmp_path):
+    """Dois bancos exportam `.csv`, então a extensão não decide mais nada.
 
-    Antes a extensão barrava (415). Agora o arquivo é ACEITO e falha na
-    leitura, que é um erro de conteúdo — e o usuário precisa ler "não achei o
-    cabeçalho", não um 500 de servidor.
+    Um CSV que não é fatura de nenhum dos dois não pode virar erro de parsing
+    do banco que a ordem alfabética escolheu: o usuário leria "não achei o
+    cabeçalho" sem entender por que o portal achava que aquilo era Nubank.
     """
-    resposta = _upload(client, nubank_csv, banco="sicredi")
-    assert resposta.status_code == 422
-    assert "cabeçalho" in resposta.json()["detail"]
+    qualquer = tmp_path / "planilha.csv"
+    qualquer.write_text("a,b,c\n1,2,3\n", encoding="utf-8")
+    resposta = _upload(client, qualquer)
+    assert resposta.status_code == 415
+    detalhe = resposta.json()["detail"]
+    assert "Sicredi" in detalhe and "Nubank" in detalhe
+
+
+def test_o_banco_sai_do_arquivo_e_nao_de_uma_pergunta(client, nubank_csv, sicredi_xlsx):
+    """O mesmo endpoint, sem escolher nada, lê os dois formatos."""
+    nu = _upload(client, nubank_csv, vencimento="2026-08-10").json()
+    assert [s["banco"] for s in nu["statements"]] == ["Nubank"]
+
+    sic = _upload(client, sicredi_xlsx).json()
+    assert [s["banco"] for s in sic["statements"]] == ["Sicredi"]
+
+
+def test_lote_com_os_dois_bancos_vira_um_csv_so(client, nubank_csv, sicredi_xlsx):
+    """Fatura do Sicredi e do Nubank no mesmo mês, num arquivo só.
+
+    E o vencimento digitado só vale para quem PEDE: o Sicredi traz o dele
+    dentro do arquivo, e deixar a data do Nubank vencer poria a fatura inteira
+    no mês errado da planilha.
+    """
+    resposta = client.post("/upload", data={"vencimento": "2026-08-10"}, files=[
+        ("files", ("nubank.csv", nubank_csv.read_bytes(), "text/csv")),
+        ("files", ("extrato.xlsx", sicredi_xlsx.read_bytes(), "application/octet-stream")),
+    ])
+    assert resposta.status_code == 200, resposta.text
+    dados = resposta.json()
+    assert sorted(s["banco"] for s in dados["statements"]) == ["Nubank", "Sicredi"]
+    venc = {s["banco"]: s["due_date"] for s in dados["statements"]}
+    assert venc["Nubank"] == "2026-08-10"
+    assert venc["Sicredi"] == "2026-08-10"   # a do arquivo, que por acaso é a mesma
+
 
 
 def test_o_pre_voo_lista_os_titulares_e_sugere_quem_sou_eu(client, tmp_path):
@@ -272,14 +306,17 @@ def test_config_lista_bancos_com_tema(client):
     por_id = {b["id"]: b for b in data["banks"]}
     assert por_id["sicredi"]["tema"]["primaria"] == "#3FA110"
     assert por_id["nubank"]["tema"]["primaria"] == "#820AD1"
-    assert data["banco_padrao"] == "sicredi", "placeholder não pode ser o padrão"
+    # Não existe mais "banco padrão": quem responde de qual banco é o arquivo
+    # é o próprio arquivo, e um padrão seria o palpite que a detecção evita.
+    assert "banco_padrao" not in data
 
 
 def test_upload_nubank_usa_as_regras_compartilhadas(client, nubank_csv):
-    data = _upload(client, nubank_csv, banco="nubank", vencimento="2026-08-10").json()
+    data = _upload(client, nubank_csv, vencimento="2026-08-10").json()
     categorias = {g["merchant"]: g["categoria"] for g in data["auto_classified_items"]}
     assert categorias["RENNER"] == "Vestuário"
-    assert any("não foi validado" in w for w in data["warnings"])
+    # O perfil foi validado contra um export real, então não há aviso a dar.
+    assert not any("não foi validado" in w for w in data["warnings"])
 
 
 def test_nubank_sem_vencimento_da_422(client, nubank_csv):
@@ -288,8 +325,11 @@ def test_nubank_sem_vencimento_da_422(client, nubank_csv):
     assert "vencimento" in resposta.json()["detail"]
 
 
-def test_banco_inexistente_da_422(client, sicredi_xlsx):
-    assert _upload(client, sicredi_xlsx, banco="itau").status_code == 422
+def test_nubank_sem_vencimento_diz_o_nome_do_banco_detectado(client, nubank_csv):
+    """A exigência vem do arquivo, não de uma escolha na tela."""
+    resposta = _upload(client, nubank_csv)
+    assert resposta.status_code == 422
+    assert "Nubank" in resposta.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -715,3 +755,132 @@ def test_a_linha_diz_de_quem_ela_e(client, tmp_path):
     assert sorted(l["titular"] for l in linhas) == ["", "Rhyesla"]
     dela = next(l for l in linhas if l["titular"] == "Rhyesla")
     assert dela["descricao"].endswith("<Rhyesla>")
+
+
+def test_nubank_de_verdade_e_reconhecido_e_lido(client, tmp_path):
+    """O arquivo REAL do app, com vírgula decimal e o menos separado.
+
+    A fixture anterior deste banco usava `270.51` — inventado — e o perfil
+    tinha sido escrito para casar com a invenção. Este caso lê o formato que o
+    Nubank exporta de verdade.
+    """
+    real = tmp_path / "nubank.csv"
+    real.write_text(
+        "date,title,amount\n"
+        '2026-07-31,Jackson Bull Steak Bar,"65,33"\n'
+        '2026-07-22,"IOF de ""Anthropic* Claude Sub""","3,98"\n'
+        '2026-07-08,Pagamento recebido,"- 5.664,61"\n',
+        encoding="utf-8")
+    dados = _upload(client, real, vencimento="2026-08-10").json()
+    assert [s["banco"] for s in dados["statements"]] == ["Nubank"]
+
+    resumo = dados["statements"][0]
+    assert resumo["debits"] == 69.31          # 65,33 + 3,98
+    assert resumo["credits"] == 5664.61       # o menos com espaço no meio
+    # Sem total declarado no arquivo, não há o que conferir — e "não há o que
+    # conferir" não pode virar "não fechou".
+    assert resumo["reconciles"] is True
+    assert resumo["declared_credits"] is None
+
+
+def test_um_sinal_so_nao_basta_para_reconhecer(client, tmp_path):
+    """O Sicredi exige `Associado` E `Data de Vencimento`, os dois.
+
+    Um `.csv` com só um dos dois não é a fatura do app — e aceitar por metade
+    da assinatura faria o portal ler um arquivo qualquer com o parser errado,
+    entregando números em vez de recusa.
+    """
+    meio = tmp_path / "meio.csv"
+    meio.write_text(" Associado ;Fulano;;;;\nqualquer;coisa\n", encoding="utf-8")
+    resposta = _upload(client, meio)
+    assert resposta.status_code == 415
+    assert "não parece de nenhum banco" in resposta.json()["detail"]
+
+
+def test_assinatura_ambigua_recusa_em_vez_de_escolher(client, tmp_path):
+    """Casar com dois bancos é erro de CONFIGURAÇÃO, e tem de aparecer.
+
+    Escolher o primeiro da lista esconderia perfis mal escritos até o dia em
+    que a ordem alfabética do diretório mudasse e as faturas passassem a ser
+    lidas por outro banco, sem nada ter sido alterado.
+    """
+    ambiguo = tmp_path / "ambiguo.csv"
+    ambiguo.write_text(
+        " Associado ;Fulano;;;;\n Data de Vencimento ;10/08/2026;;;;\n"
+        "date,title,amount\n2026-07-01,X,\"1,00\"\n", encoding="utf-8")
+    resposta = _upload(client, ambiguo)
+    assert resposta.status_code == 415
+    detalhe = resposta.json()["detail"]
+    assert "mais de um" in detalhe and "deteccao" in detalhe
+
+
+def test_perfil_sem_deteccao_nao_reconhece_nada(client, config_dir, nubank_csv):
+    """Sem assinatura declarada, o perfil não pode vencer por acidente.
+
+    Ele funciona enquanto for o único da extensão dele e vira indetectável
+    quando aparece um concorrente. O que não pode é reconhecer QUALQUER coisa:
+    aí a ordem do diretório decidiria de que banco é a fatura.
+    """
+    caminho = config_dir / "banks" / "nubank.yml"
+    texto = caminho.read_text(encoding="utf-8")
+    caminho.write_text(
+        texto.replace('    contem: ["date,title,amount"]', "    contem: []"),
+        encoding="utf-8")
+
+    resposta = _upload(client, nubank_csv, vencimento="2026-08-10")
+    assert resposta.status_code == 415
+    assert "não parece de nenhum banco" in resposta.json()["detail"]
+
+
+def test_o_pre_voo_diz_qual_banco_reconheceu(client, nubank_csv):
+    """A tela usa isto para três coisas: dizer, pintar o tema, e pedir a data."""
+    bruto = client.post("/upload/periodo", files=[
+        ("files", ("nubank.csv", nubank_csv.read_bytes(), "text/csv"))])
+    assert bruto.status_code == 200, bruto.text
+    resposta = bruto.json()
+    assert [b["nome"] for b in resposta["bancos"]] == ["Nubank"]
+    assert resposta["bancos"][0]["pede_vencimento"] is True
+    assert resposta["bancos"][0]["tema"]["primaria"] == "#820AD1"
+
+
+def test_o_vencimento_digitado_nao_atropela_quem_traz_o_seu(client, nubank_csv, tmp_path):
+    """O caso que só aparece num lote misto — e erra o MÊS inteiro na planilha.
+
+    `read_statement` deixa o argumento vencer o que está no arquivo. Com os
+    dois bancos juntos, passar a data do Nubank para todos poria a fatura do
+    Sicredi no mês errado, e o erro só apareceria na conferência contra as
+    linhas de `Cartão de crédito`.
+    """
+    from .conftest import _sicredi_workbook
+    sicredi = _sicredi_workbook(tmp_path / "sic.xlsx", vencimento="10/09/2026")
+
+    dados = client.post("/upload", data={"vencimento": "2026-08-10"}, files=[
+        ("files", ("nubank.csv", nubank_csv.read_bytes(), "text/csv")),
+        ("files", ("sic.xlsx", sicredi.read_bytes(), "application/octet-stream")),
+    ]).json()
+
+    venc = {s["banco"]: s["due_date"] for s in dados["statements"]}
+    assert venc["Nubank"] == "2026-08-10", "o que pede usa a data digitada"
+    assert venc["Sicredi"] == "2026-09-10", "quem traz a sua não é atropelado"
+
+
+def test_pagamento_da_fatura_do_nubank_e_excluido(client, tmp_path):
+    """O crédito do pagamento anterior não é despesa, e não pode virar linha.
+
+    O Sicredi já tinha `PAG FAT DEB CC` na lista de exclusão; o Nubank chama a
+    mesma coisa de "Pagamento recebido". Sem isso ele aparece todo mês na aba
+    Novos pedindo categoria — e o crédito de milhares de reais entra no CSV e
+    conta duas vezes na planilha.
+    """
+    arquivo = tmp_path / "nu.csv"
+    arquivo.write_text(
+        "date,title,amount\n"
+        '2026-07-31,Jackson Bull Steak Bar,"65,33"\n'
+        '2026-07-08,Pagamento recebido,"- 5.664,61"\n', encoding="utf-8")
+    dados = _upload(client, arquivo, vencimento="2026-08-10").json()
+
+    todos = [g["merchant"] for balde in ("unmapped_items", "auto_classified_items",
+                                         "ignored_items")
+             for g in dados[balde]]
+    assert "PAGAMENTO RECEBIDO" not in todos
+    assert any("PAGAMENTO RECEBIDO" in d["descricao"].upper() for d in dados["dropped"])

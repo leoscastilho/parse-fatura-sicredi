@@ -123,6 +123,10 @@ excluir:
   - PAG FAT DEB CC
   - PAGAMENTO EFETUADO
   - PAGTO FATURA
+  # O nome que o Nubank dá ao pagamento da fatura anterior. Sem esta linha ele
+  # vira um "estabelecimento" para categorizar todo mês — e, pior, o crédito de
+  # R$ 5.664 entraria no CSV e contaria duas vezes na planilha.
+  - PAGAMENTO RECEBIDO
 
 
 # -----------------------------------------------------------------------------
@@ -261,13 +265,6 @@ palavras:
     - BURGUER
     - OGREFF
     - LANCHONETE
-    - COSTELA NO BAFO
-    - EMPORIUM DO PASTEL
-    - CASA DE FRUTAS STA R
-    - SUPERMERCA MARISTELA
-    - JOAO VITO
-    - BELLA SAO PAULO
-    - RAFAEL BRANDANI VILE
 
   Lazer:
     # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
@@ -305,7 +302,6 @@ palavras:
     - FAIR PLAY
     - OGGI
     - THE TOWN BAR
-    - SANTA RITA COUNTRY
 
   # VIAGEM NÃO TEM PALAVRA-CHAVE, e isso é decisão, não esquecimento.
   #
@@ -332,7 +328,6 @@ palavras:
     - GOOGLEBALTAPI
     - REAL DEBRID
     - APPLE COM BILL
-    - MP MELIMAIS
 
   Seguros:
     - PRUDENT                  # seguro de vida (antes estava em Saúde)
@@ -348,8 +343,6 @@ palavras:
   Presentes:
     - PRESENTE
     - RI HAPP
-    - CORACAO BATEBATE
-    - PINGO DE GENTE
 
   Transporte:
     # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
@@ -368,7 +361,6 @@ palavras:
     - LAVA JATO
     - CONSORSIO
     - CONSORCIO
-    - CE PERU RAIL
 
   Saúde:
     # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
@@ -387,11 +379,6 @@ palavras:
     - ECONOMIZE JA
     - UNIMED
     - PLANO DE SAUDE
-    - POUSOTICA
-    - CLINICA
-    - METHODOS
-    - DROGA LUNA
-    - CAMILA GOMESDA SILV
 
   Vestuário:
     # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
@@ -427,8 +414,6 @@ palavras:
     - ARTEX
     - ESCRITORIO
     - TOKDCOR
-    - MONTREAL POUSO
-    - IRENE TECIDOS
 
   Construção:
     # -- das 10 faturas de set/25 a jun/26, os que se repetem em 2+ meses --
@@ -521,9 +506,6 @@ palavras:
 #    As sub-lojas identificáveis ficam em `regras` lá em cima e ganham destas
 #    aqui — MERCADOLIVRE LIVROS vira Educação, MERCADOLIVRE GROW vira Hobby.
 # -----------------------------------------------------------------------------
-
-  Viagem:
-    - TAXA VISTO
 marketplaces:
   - AMAZON
   - AMAZONMKTPLC

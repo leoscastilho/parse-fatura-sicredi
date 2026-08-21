@@ -53,7 +53,6 @@ class BankSummary(BaseModel):
 
 class ConfigResponse(BaseModel):
     banks: list[BankSummary]
-    banco_padrao: str
     output_yaml: str
     output_exemplo: dict[str, str]
     source_sha: str | None = None
@@ -166,7 +165,6 @@ def get_config(settings: Settings = Depends(get_settings)) -> ConfigResponse:
             )
             for b in sorted(cfg.banks.values(), key=lambda b: (not b.validado, b.nome))
         ],
-        banco_padrao=cfg.default_bank.id,
         output_yaml=schema.raw_text or "",
         output_exemplo=exemplo,
         source_sha=GitHubSync(settings).current_sha() if settings.github_enabled else None,
