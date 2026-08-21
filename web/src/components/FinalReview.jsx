@@ -87,6 +87,35 @@ export default function FinalReview({
         </div>
       )}
 
+      {/* Uma fatura por mês, do jeito que a planilha guarda: cada uma vira
+          uma linha `Cartão de crédito` do mês em que foi paga. Com um mês só
+          isto repetiria o "Total" do topo, então só aparece a partir de dois —
+          que é exatamente quando a conferência fica difícil de fazer de
+          cabeça. Aberto por padrão, ao contrário do total por categoria: é
+          número de conferir antes de colar, não de consultar quando der
+          vontade. */}
+      {(data.by_month || []).length > 1 && (
+        <details className="totals" open>
+          <summary>Total por mês <span className="count">{data.by_month.length}</span></summary>
+          <table className="grid compact">
+            <tbody>
+              {data.by_month.map((m) => (
+                <tr key={m.rotulo}>
+                  <td>{m.rotulo}</td>
+                  <td className="right muted small">{m.lancamentos} lançamentos</td>
+                  <td className="right money">{brl(m.total)}</td>
+                </tr>
+              ))}
+              <tr className="abre-grupo">
+                <td><strong>Total</strong></td>
+                <td className="right muted small">{data.rows.length} lançamentos</td>
+                <td className="right money"><strong>{brl(data.total)}</strong></td>
+              </tr>
+            </tbody>
+          </table>
+        </details>
+      )}
+
       <details className="totals">
         <summary>Total por categoria</summary>
         <table className="grid compact">

@@ -59,6 +59,7 @@ from .models import (
     LineItem,
     MappingChange,
     MerchantGroup,
+    MonthTotal,
     PreviewRequest,
     PreviewResponse,
     PurchaseRange,
@@ -269,6 +270,37 @@ def _conhecidas_para_marca(record: dict) -> list[str]:
     if record["modo"] != "recategorizacao":
         return []
     return Ruleset.from_text(record["yaml_working"]).all_categories()
+
+
+# `strftime("%b")` devolveria "Dec" ou "dez." conforme o locale da máquina, e o
+# resumo mudaria de idioma dependendo de onde o container sobe. A tabela fixa é
+# a mesma decisão que o `sufixo_data` do output.yml já tomou.
+MESES_PT = ("Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+            "Jul", "Ago", "Set", "Out", "Nov", "Dez")
+
+
+def _por_mes(lines: list[ClassifiedLine], schema) -> list[MonthTotal]:
+    """Total e contagem por mês de VENCIMENTO, na ordem do calendário.
+
+    O mês de vencimento, e não o da compra, porque é assim que a planilha
+    agrega: cada fatura vira uma linha `Cartão de crédito` do mês em que foi
+    paga. É contra esses números que o lote é conferido antes de colar.
+
+    Linha com data ilegível não é descartada — vai para um balde no fim. Somar
+    o lote e não bater com a soma dos meses seria pior do que uma linha feia.
+    """
+    baldes: dict[tuple, list] = {}
+    for line in lines:
+        try:
+            dia = datetime.strptime(line.data, schema.data_formato).date()
+            chave, rotulo = (dia.year, dia.month), f"{MESES_PT[dia.month - 1]}/{dia.year}"
+        except (ValueError, TypeError):
+            chave, rotulo = (9999, 99), "sem data"
+        balde = baldes.setdefault(chave, [rotulo, 0.0, 0])
+        balde[1] += line.valor
+        balde[2] += 1
+    return [MonthTotal(rotulo=r, total=round(v, 2), lancamentos=n)
+            for _, (r, v, n) in sorted(baldes.items())]
 
 
 def _apply_travel(
@@ -846,7 +878,7 @@ def travel(payload: TravelRequest, store: Store = Depends(get_store)) -> TravelR
 
     return TravelResponse(
         transaction_id=payload.transaction_id,
-        ranges=[TravelRangeItem(**r.to_dict()) for r in ranges],
+        ranges=[TravelRangeItem(**r.to_dict(), chave=r.chave) for r in ranges],
         purchase_range=_purchase_range(cru),
         warnings=validate_ranges(ranges, cru),
         items=[item(l) for l in sort_lines(candidatas)],
@@ -1056,7 +1088,8 @@ def _commit(settings, store, transaction_id, text, changes, record) -> str:
 # ---------------------------------------------------------------------------
 
 @app.post("/preview", response_model=PreviewResponse)
-def preview(payload: PreviewRequest, store: Store = Depends(get_store)) -> PreviewResponse:
+def preview(payload: PreviewRequest, store: Store = Depends(get_store),
+            settings: Settings = Depends(get_settings)) -> PreviewResponse:
     """Linhas guardadas + atribuições resolvidas = dataset final."""
     record = _load_transaction(store, payload.transaction_id)
     store.save_assignments(
@@ -1083,6 +1116,7 @@ def preview(payload: PreviewRequest, store: Store = Depends(get_store)) -> Previ
         rows=[LineItem.from_core(line) for line in resolved],
         total=round(sum(line.valor for line in resolved), 2),
         by_category={k: round(v, 2) for k, v in sorted(by_category.items())},
+        by_month=_por_mes(resolved, load_config(settings).output),
         remaining_blank=sum(1 for line in resolved if not line.categoria),
         filename=record["filename"],
     )

@@ -13,8 +13,16 @@
  * chave que a importação de CSV usa para não duplicar período.
  */
 
-export const chaveDoPeriodo = (periodo) =>
-  periodo ? `${periodo.inicio}|${periodo.fim}` : ''
+/**
+ * A identidade do período, calculada pelo BACKEND e só repassada aqui.
+ *
+ * São duas regras — janela para o período normal, nome normalizado para a
+ * viagem sem datas — e reescrevê-las em JavaScript faria a tela pendurar a
+ * linha numa viagem e o arquivo em outra, sem ninguém saber qual está certa.
+ * Todo período que chega nesta tela veio de uma resposta do /travel, então
+ * `chave` está sempre preenchida.
+ */
+export const chaveDoPeriodo = (periodo) => periodo?.chave || ''
 
 /**
  * `2018-12-15` -> `15/12/2018`. COM O ANO, e isso não é preciosismo.

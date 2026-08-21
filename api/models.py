@@ -42,9 +42,17 @@ from core.text import titular_de
 # referência adiante, que funciona por acidente e para de funcionar no dia em
 # que alguém importar o módulo de um jeito diferente.
 class TravelRangeItem(BaseModel):
-    inicio: str                 # AAAA-MM-DD
-    fim: str                    # AAAA-MM-DD
+    # Vazias nas duas = viagem SEM DATAS AINDA (a passagem comprada para uma
+    # viagem futura). Nesse caso `rotulo` é obrigatório: é o que identifica a
+    # viagem e o que vai para a descrição.
+    inicio: str = ""            # AAAA-MM-DD
+    fim: str = ""               # AAAA-MM-DD
     rotulo: str = ""
+    # A identidade do período, calculada pelo backend. O front NÃO a recalcula:
+    # ela é a janela para um período normal e o nome normalizado para uma
+    # viagem sem datas, e ter as duas regras escritas de novo em JavaScript
+    # faria a tela pendurar a linha numa viagem e o arquivo em outra.
+    chave: str = ""
 
 
 class LineItem(BaseModel):
@@ -343,6 +351,19 @@ class PreviewRequest(AssignmentSet):
     transaction_id: str
 
 
+class MonthTotal(BaseModel):
+    """Um mês de vencimento e o que ele soma no lote.
+
+    Acima de `PreviewResponse` pelo mesmo motivo de `TravelRangeItem` estar
+    acima de `LineItem`: referência adiante em Pydantic funciona por acidente e
+    para de funcionar no dia em que alguém importar o módulo de outro jeito.
+    """
+
+    rotulo: str                 # "Dez/2025"
+    total: float
+    lancamentos: int
+
+
 class PreviewResponse(BaseModel):
     transaction_id: str
     rows: list[LineItem]
@@ -350,6 +371,11 @@ class PreviewResponse(BaseModel):
     by_category: dict[str, float]
     remaining_blank: int
     filename: str
+    # Total por mês de VENCIMENTO, na ordem do calendário. Só faz diferença
+    # quando o lote tem mais de uma fatura — é a conferência contra as linhas
+    # de "Cartão de crédito" da planilha, uma por mês.
+    by_month: list[MonthTotal] = Field(default_factory=list)
+
 
 
 class ExportRequest(BaseModel):

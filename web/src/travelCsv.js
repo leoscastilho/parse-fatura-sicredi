@@ -193,12 +193,14 @@ export function textoDoArquivo(arquivo) {
  * iguais marcariam as mesmas compras duas vezes.
  */
 export function juntarPeriodos(atuais, novos) {
-  const vistos = new Set(atuais.map((r) => `${r.inicio}|${r.fim}`))
+  // A viagem SEM DATAS entra pelo nome: sem isso, duas delas colidiriam na
+  // chave `|` e a segunda seria descartada como repetida.
+  const chave = (r) => (r.inicio ? `${r.inicio}|${r.fim}` : `|${r.rotulo}`)
+  const vistos = new Set(atuais.map(chave))
   const adicionados = []
   for (const r of novos) {
-    const chave = `${r.inicio}|${r.fim}`
-    if (vistos.has(chave)) continue
-    vistos.add(chave)
+    if (vistos.has(chave(r))) continue
+    vistos.add(chave(r))
     adicionados.push(r)
   }
   return { lista: [...atuais, ...adicionados], adicionados: adicionados.length,

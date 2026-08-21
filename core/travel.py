@@ -60,16 +60,25 @@ class TravelError(ValueError):
 
 @dataclass(frozen=True)
 class TravelRange:
-    inicio: date
-    fim: date
+    # `None` nos dois = VIAGEM SEM DATAS AINDA. É a passagem comprada em agosto
+    # para uma viagem que você ainda não sabe quando será: o nome existe, a
+    # janela não. Ela não pega nada por data — nunca — e serve só como destino
+    # para pendurar linhas à mão. Sem isso, a única saída era inventar um
+    # período falso, que arrastaria junto tudo que caísse nele.
+    inicio: date | None
+    fim: date | None
     rotulo: str = ""
 
+    @property
+    def sem_datas(self) -> bool:
+        return self.inicio is None or self.fim is None
+
     def contains(self, dia: date) -> bool:
-        return self.inicio <= dia <= self.fim
+        return not self.sem_datas and self.inicio <= dia <= self.fim
 
     @property
     def dias(self) -> int:
-        return (self.fim - self.inicio).days + 1
+        return 0 if self.sem_datas else (self.fim - self.inicio).days + 1
 
     @property
     def chave(self) -> str:
@@ -83,24 +92,47 @@ class TravelRange:
 
         É a mesma identidade que a importação de CSV usa para não duplicar
         período (`web/src/travelCsv.js::juntarPeriodos`).
+
+        A viagem SEM DATAS não tem janela, então ali a identidade é o nome
+        normalizado — é a única coisa que ela tem, e é por isso que o nome é
+        obrigatório nesse caso. Duas viagens sem datas com o mesmo nome são a
+        mesma viagem, o que é o comportamento certo: digitar "Peru" duas vezes
+        não deveria criar dois destinos diferentes.
         """
+        if self.sem_datas:
+            return f"|{normalize(self.rotulo)}"
         return f"{self.inicio.isoformat()}|{self.fim.isoformat()}"
 
     def to_dict(self) -> dict:
-        return {"inicio": self.inicio.isoformat(), "fim": self.fim.isoformat(),
+        return {"inicio": self.inicio.isoformat() if self.inicio else "",
+                "fim": self.fim.isoformat() if self.fim else "",
                 "rotulo": self.rotulo}
 
     @classmethod
     def from_dict(cls, payload: dict) -> "TravelRange":
+        rotulo = str(payload.get("rotulo") or "").strip()
+        cru_inicio = str(payload.get("inicio") or "").strip()
+        cru_fim = str(payload.get("fim") or "").strip()
+
+        # As duas datas vazias = viagem sem datas ainda. UMA vazia é engano de
+        # quem preencheu meio formulário, e recusar é melhor do que adivinhar
+        # que a volta é igual à ida.
+        if not cru_inicio and not cru_fim:
+            if not rotulo:
+                raise TravelError(
+                    "viagem sem datas precisa de nome — é a única coisa que a "
+                    "identifica e o que vai para a descrição")
+            return cls(inicio=None, fim=None, rotulo=rotulo)
+
         try:
-            inicio = date.fromisoformat(str(payload["inicio"]))
-            fim = date.fromisoformat(str(payload["fim"]))
-        except (KeyError, ValueError) as exc:
+            inicio = date.fromisoformat(cru_inicio)
+            fim = date.fromisoformat(cru_fim)
+        except ValueError as exc:
             raise TravelError(f"período inválido: {payload!r} ({exc})")
         if fim < inicio:
             raise TravelError(
                 f"período invertido: {inicio.isoformat()} termina depois de {fim.isoformat()}")
-        return cls(inicio=inicio, fim=fim, rotulo=str(payload.get("rotulo") or "").strip())
+        return cls(inicio=inicio, fim=fim, rotulo=rotulo)
 
 
 def purchase_dates(linhas: list[ClassifiedLine]) -> list[date]:
@@ -177,8 +209,11 @@ def validate_ranges(
     # "Fora do lote" não precisa entrar nesta conta: um período que termina
     # antes da primeira compra também não contém nenhuma delas. A distinção
     # entre os dois casos existe só para escolher a FRASE, no laço abaixo.
+    # A viagem SEM DATAS fica de fora da conta: ela não pega nada por data
+    # porque não tem data, e isso é o desenho dela, não um aviso a dar.
     dias = purchase_dates(linhas)
-    vazios = [p for p in ranges if not any(p.contains(d) for d in dias)]
+    vazios = [p for p in ranges
+              if not p.sem_datas and not any(p.contains(d) for d in dias)]
 
     # UM AVISO POR PERÍODO SÓ ENQUANTO FOREM POUCOS. Quem importa o CSV com as
     # 57 viagens dos últimos oito anos — que é o uso recomendado, porque é

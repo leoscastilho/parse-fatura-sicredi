@@ -1135,3 +1135,169 @@ def test_aviso_de_sobreposicao_traz_o_ano(client, tmp_path):
     }).json()["warnings"]
     sobreposicao = next(a for a in avisos if "sobrep" in a)
     assert "01/07/2026" in sobreposicao and "08/07/2026" in sobreposicao
+
+
+# ---------------------------------------------------------------------------
+# Viagem sem datas — a passagem comprada antes de a viagem ter data
+# ---------------------------------------------------------------------------
+
+def test_viagem_sem_datas_nao_pega_nada_por_data():
+    """Ela não tem janela: é destino de fixação à mão, não um filtro."""
+    futura = TravelRange.from_dict({"inicio": "", "fim": "", "rotulo": "Peru 2027"})
+    assert futura.sem_datas
+    assert futura.dias == 0
+    assert not futura.contains(date(2026, 8, 14))
+    assert not futura.contains(date.min)
+
+
+def test_viagem_sem_datas_se_identifica_pelo_nome():
+    """Sem janela, o nome é a única identidade que ela tem.
+
+    E normalizado: "Peru" e "peru" são a mesma viagem futura, senão pendurar
+    duas linhas com a caixa diferente criaria dois destinos e o arquivo sairia
+    com duas viagens onde há uma.
+    """
+    a = TravelRange.from_dict({"inicio": "", "fim": "", "rotulo": "Peru"})
+    b = TravelRange.from_dict({"inicio": "", "fim": "", "rotulo": "peru"})
+    c = TravelRange.from_dict({"inicio": "", "fim": "", "rotulo": "Chile"})
+    assert a.chave == b.chave
+    assert a.chave != c.chave
+    # E não colide com período nenhum de verdade.
+    real = TravelRange.from_dict({"inicio": "2026-10-18", "fim": "2026-10-26"})
+    assert real.chave != a.chave
+
+
+def test_viagem_sem_datas_exige_nome():
+    """Sem datas e sem nome não sobra nada que a identifique nem que vá para a
+    descrição — seria um destino invisível."""
+    with pytest.raises(TravelError, match="precisa de nome"):
+        TravelRange.from_dict({"inicio": "", "fim": "", "rotulo": ""})
+
+
+def test_meia_data_continua_sendo_erro():
+    """Uma data só é formulário pela metade, não viagem futura.
+
+    Adivinhar que a volta é igual à ida marcaria um dia inteiro de compras.
+    """
+    with pytest.raises(TravelError):
+        TravelRange.from_dict({"inicio": "2026-10-18", "fim": "", "rotulo": "Peru"})
+
+
+def test_viagem_sem_datas_nao_vira_aviso_de_periodo_vazio(client, tmp_path):
+    """Ela não pega nada porque não tem data — é o desenho, não um problema."""
+    dados = _fatura(client, tmp_path)
+    avisos = client.post("/travel", json={
+        "transaction_id": dados["transaction_id"],
+        "ranges": [{"inicio": "", "fim": "", "rotulo": "Peru 2027"}],
+    }).json()["warnings"]
+    assert avisos == []
+
+
+def test_pendurar_na_viagem_sem_datas_marca_e_nomeia(client, tmp_path):
+    """O caminho inteiro: a passagem de hoje entra numa viagem que ainda nem
+    tem data, com a categoria real preservada."""
+    dados = _fatura(client, tmp_path)
+    tid = dados["transaction_id"]
+    alvo = next(l for l in client.post("/preview", json={
+        "transaction_id": tid, "assignments": []}).json()["rows"]
+        if "Alvora" in l["descricao"])
+
+    resposta = client.post("/travel", json={
+        "transaction_id": tid,
+        "ranges": [{"inicio": "", "fim": "", "rotulo": "Peru 2027"}],
+        "pinned": {alvo["line_id"]: "|PERU 2027"},
+    }).json()
+    assert resposta["count"] == 1
+    assert resposta["items"][0]["viagem_a_mao"] is True
+    assert resposta["ranges"][0]["chave"] == "|PERU 2027"
+
+    linha = next(l for l in client.post("/preview", json={
+        "transaction_id": tid, "assignments": []}).json()["rows"]
+        if l["line_id"] == alvo["line_id"])
+    assert linha["categoria"] == "Viagem"
+    assert "{Peru 2027}" in linha["descricao"]
+    assert f"({alvo['categoria']})" in linha["descricao"]
+
+
+def test_periodo_devolve_a_chave_para_o_front(client, tmp_path):
+    """O front pendura pela chave e nunca a recalcula — ver `viagens.js`."""
+    dados = _fatura(client, tmp_path)
+    ranges = client.post("/travel", json={
+        "transaction_id": dados["transaction_id"],
+        "ranges": [{"inicio": "2026-07-01", "fim": "2026-07-05", "rotulo": "A"}],
+    }).json()["ranges"]
+    assert ranges[0]["chave"] == "2026-07-01|2026-07-05"
+
+
+# ---------------------------------------------------------------------------
+# Resumo por mês na tela final
+# ---------------------------------------------------------------------------
+
+def test_preview_soma_por_mes_de_vencimento(client, tmp_path, output_schema):
+    """Uma linha por fatura, que é como a planilha guarda o cartão.
+
+    O mês do VENCIMENTO e não o da compra: cada fatura vira uma linha
+    `Cartão de crédito` do mês em que foi paga, e é contra esses números que o
+    lote é conferido antes de colar.
+    """
+    dez = _sicredi_workbook(tmp_path / "dez.xlsx", vencimento="10/12/2025",
+                            rows=[("28/11/2025", "MERCADO A", None, "100,00"),
+                                  ("29/11/2025", "MERCADO B", None, "50,00")])
+    jan = _sicredi_workbook(tmp_path / "jan.xlsx", vencimento="10/01/2026",
+                            rows=[("28/12/2025", "MERCADO C", None, "25,00")])
+    with dez.open("rb") as a, jan.open("rb") as b:
+        dados = client.post("/upload", files=[("files", ("dez.xlsx", a)),
+                                              ("files", ("jan.xlsx", b))]).json()
+
+    corpo = client.post("/preview", json={
+        "transaction_id": dados["transaction_id"], "assignments": []}).json()
+
+    assert [(m["rotulo"], m["total"], m["lancamentos"]) for m in corpo["by_month"]] == [
+        ("Dez/2025", 150.0, 2), ("Jan/2026", 25.0, 1)]
+    # A soma dos meses é o total: um mês perdido no caminho apareceria aqui.
+    assert round(sum(m["total"] for m in corpo["by_month"]), 2) == corpo["total"]
+
+
+def test_resumo_por_mes_de_uma_fatura_so(client, tmp_path):
+    """Continua vindo — quem decide não mostrar é a tela, com um mês só."""
+    dados = _fatura(client, tmp_path)
+    corpo = client.post("/preview", json={
+        "transaction_id": dados["transaction_id"], "assignments": []}).json()
+    assert len(corpo["by_month"]) == 1
+    assert corpo["by_month"][0]["rotulo"] == "Ago/2026"
+
+
+def test_mes_nao_depende_do_locale_da_maquina(client, tmp_path):
+    """`strftime('%b')` devolveria "Dec" ou "dez." conforme a máquina.
+
+    É a mesma armadilha que o `sufixo_data` do output.yml já documenta: 6.700
+    linhas de histórico dependem de o mês não mudar de idioma.
+    """
+    dados = _fatura(client, tmp_path, vencimento="10/12/2025")
+    corpo = client.post("/preview", json={
+        "transaction_id": dados["transaction_id"], "assignments": []}).json()
+    assert corpo["by_month"][0]["rotulo"] == "Dez/2025"
+
+
+def test_data_ilegivel_vai_para_um_balde_em_vez_de_sumir(client, output_schema):
+    """A soma dos meses tem de fechar com o total, sempre.
+
+    Uma exportação antiga pode trazer `Data` em qualquer formato — a
+    recategorização aceita o arquivo do jeito que ele está. Descartar a linha
+    faria o resumo por mês somar menos que o "Total" logo acima dele, e quem
+    confere não teria como saber onde foi parar a diferença.
+    """
+    dados = _recategorizar(client, output_schema, [
+        {"data": "12/10/2025", "categoria": "Casa",
+         "descricao": "[Cartão] Boa {Em 28/Nov}", "valor": "100.00"},
+        {"data": "novembro", "categoria": "Casa",
+         "descricao": "[Cartão] Torta {Em 29/Nov}", "valor": "40.00"},
+    ])
+    corpo = client.post("/preview", json={
+        "transaction_id": dados["transaction_id"], "assignments": []}).json()
+
+    assert [(m["rotulo"], m["total"]) for m in corpo["by_month"]] == [
+        ("Dez/2025", 100.0), ("sem data", 40.0)]
+    assert round(sum(m["total"] for m in corpo["by_month"]), 2) == corpo["total"]
+    # E o balde vai no FIM, não misturado com os meses de verdade.
+    assert corpo["by_month"][-1]["rotulo"] == "sem data"

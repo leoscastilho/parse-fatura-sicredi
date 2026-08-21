@@ -16,6 +16,7 @@ import UploadStep from '../components/UploadStep'
 import CategorySelect, { CategoriasFixas } from '../components/CategorySelect'
 import RecategorizeStep, { ChangesSummary } from '../components/RecategorizeStep'
 import TravelStep from '../components/TravelStep'
+import TravelRangesLazy from '../components/TravelRanges'
 import FinalReview from '../components/FinalReview'
 import UnmappedStep from '../components/UnmappedStep'
 import AutoReviewStep from '../components/AutoReviewStep'
@@ -791,10 +792,10 @@ describe('App', () => {
     const api = await import('../api')
     api.recategorize.mockResolvedValue(SESSAO_RECAT)
     api.travel.mockResolvedValue({
-      ranges: [{ inicio: '2019-07-01', fim: '2019-07-10', rotulo: 'Bariloche' }],
+      ranges: [{ inicio: '2019-07-01', fim: '2019-07-10', chave: '2019-07-01|2019-07-10', rotulo: 'Bariloche' }],
       items: [{ line_id: '0:9', purchase_date: '2019-07-04', valor: 66.07,
                 categoria: '', merchant: 'SCO MIRAFLORES', viagem: true,
-                viagem_periodo: { inicio: '2019-07-01', fim: '2019-07-10',
+                viagem_periodo: { inicio: '2019-07-01', fim: '2019-07-10', chave: '2019-07-01|2019-07-10',
                                   rotulo: 'Bariloche' },
                 descricao: '[Cartão] Sco Miraflores {Em 24/Oct}' }],
       outros: [{ line_id: '1:1', purchase_date: '2019-04-02', valor: 3200.69,
@@ -846,9 +847,12 @@ describe('App', () => {
     const antecipada = screen.getByText('[Cartão] Ce Peru Rail 1 {Em 2/Apr}').closest('tr')
     await userEvent.selectOptions(within(antecipada).getByRole('combobox'),
                                   '2019-07-01|2019-07-10')
+    // Os períodos aqui já voltaram do /travel, então carregam a `chave` que o
+    // backend calculou — e é ela que o front devolve, sem recalcular nada.
     await waitFor(() => expect(api.travel).toHaveBeenLastCalledWith(
       'tx-1',
-      [{ inicio: '2019-07-01', fim: '2019-07-10', rotulo: 'Bariloche' }],
+      [{ inicio: '2019-07-01', fim: '2019-07-10', chave: '2019-07-01|2019-07-10',
+         rotulo: 'Bariloche' }],
       { '1:1': '2019-07-01|2019-07-10' }))
   })
 })
@@ -3398,27 +3402,29 @@ describe('dica de viagem na aba Novos', () => {
 
 describe('viagens.js — só apresentação, a decisão é do backend', () => {
   it('rotuloDoPeriodo: o nome, ou a janela quando não tem nome', () => {
-    expect(rotuloDoPeriodo({ inicio: '2026-07-01', fim: '2026-07-10',
+    expect(rotuloDoPeriodo({ inicio: '2026-07-01', fim: '2026-07-10', chave: '2026-07-01|2026-07-10',
                              rotulo: 'Gramado' })).toBe('Gramado')
-    expect(rotuloDoPeriodo({ inicio: '2026-07-01', fim: '2026-07-10',
+    expect(rotuloDoPeriodo({ inicio: '2026-07-01', fim: '2026-07-10', chave: '2026-07-01|2026-07-10',
                              rotulo: '' })).toBe('01/07/2026 → 10/07/2026')
     expect(rotuloDoPeriodo(null)).toBe('')
   })
 
-  it('chaveDoPeriodo é a JANELA — é por ela que a fixação aponta', () => {
-    // Pelo nome não daria: renomear a viagem soltaria as linhas dela, e dois
-    // períodos sem nome teriam a mesma chave. É a mesma identidade que a
-    // importação de CSV usa para não duplicar período.
-    expect(chaveDoPeriodo({ inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'X' }))
+  it('chaveDoPeriodo repassa a chave do backend, não a recalcula', () => {
+    // São duas regras — a janela para o período normal, o nome normalizado
+    // para a viagem sem datas — e reescrevê-las aqui faria a tela pendurar a
+    // linha numa viagem e o arquivo em outra. Todo período desta tela veio de
+    // uma resposta do /travel, então `chave` está sempre preenchida.
+    expect(chaveDoPeriodo({ inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'X',
+                            chave: '2026-07-01|2026-07-10' }))
       .toBe('2026-07-01|2026-07-10')
-    expect(chaveDoPeriodo({ inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'Y' }))
-      .toBe(chaveDoPeriodo({ inicio: '2026-07-01', fim: '2026-07-10', rotulo: 'X' }))
+    expect(chaveDoPeriodo({ inicio: '', fim: '', rotulo: 'Peru', chave: '|PERU' }))
+      .toBe('|PERU')
     expect(chaveDoPeriodo(null)).toBe('')
   })
 
   it('viagensPorLinha indexa pelo período que o backend resolveu', () => {
     const mapa = viagensPorLinha([
-      { line_id: '0:1', viagem_periodo: { inicio: '2026-07-01', fim: '2026-07-10',
+      { line_id: '0:1', viagem_periodo: { inicio: '2026-07-01', fim: '2026-07-10', chave: '2026-07-01|2026-07-10',
                                           rotulo: 'Gramado' } },
       { line_id: '0:2', viagem_periodo: { inicio: '2026-07-05', fim: '2026-07-20',
                                           rotulo: '' } },
@@ -3431,8 +3437,8 @@ describe('viagens.js — só apresentação, a decisão é do backend', () => {
 })
 
 describe('pendurar uma compra antecipada na viagem', () => {
-  const PERU = { inicio: '2026-10-18', fim: '2026-10-26', rotulo: 'Peru' }
-  const FERIADO = { inicio: '2026-08-10', fim: '2026-08-20', rotulo: '' }
+  const PERU = { inicio: '2026-10-18', fim: '2026-10-26', chave: '2026-10-18|2026-10-26', rotulo: 'Peru' }
+  const FERIADO = { inicio: '2026-08-10', fim: '2026-08-20', chave: '2026-08-10|2026-08-20', rotulo: '' }
 
   const fora = (n, desc, valor, data) => ({
     line_id: `1:${n}`, purchase_date: data, valor, categoria: 'Transporte',
@@ -3538,14 +3544,14 @@ describe('api.travel — o corpo que sobe de verdade', () => {
     vi.stubGlobal('fetch', fetchMock)
     const api = await import('../api')
 
-    await api.travel('tx-9', [{ inicio: '2026-10-18', fim: '2026-10-26', rotulo: 'Peru' }],
+    await api.travel('tx-9', [{ inicio: '2026-10-18', fim: '2026-10-26', chave: '2026-10-18|2026-10-26', rotulo: 'Peru' }],
                      { '1:1': '2026-10-18|2026-10-26' })
 
     const [url, opcoes] = fetchMock.mock.calls[0]
     expect(url).toBe('/api/travel')
     expect(JSON.parse(opcoes.body)).toEqual({
       transaction_id: 'tx-9',
-      ranges: [{ inicio: '2026-10-18', fim: '2026-10-26', rotulo: 'Peru' }],
+      ranges: [{ inicio: '2026-10-18', fim: '2026-10-26', chave: '2026-10-18|2026-10-26', rotulo: 'Peru' }],
       pinned: { '1:1': '2026-10-18|2026-10-26' },
     })
     vi.unstubAllGlobals()
@@ -3553,8 +3559,8 @@ describe('api.travel — o corpo que sobe de verdade', () => {
 })
 
 describe('ano nas datas e ordem da tabela de confirmação', () => {
-  const CAMPO_BELO = { inicio: '2025-12-06', fim: '2025-12-07', rotulo: 'Campo Belo' }
-  const DALLAS = { inicio: '2025-12-13', fim: '2025-12-18', rotulo: 'Dallas' }
+  const CAMPO_BELO = { inicio: '2025-12-06', fim: '2025-12-07', chave: '2025-12-06|2025-12-07', rotulo: 'Campo Belo' }
+  const DALLAS = { inicio: '2025-12-13', fim: '2025-12-18', chave: '2025-12-13|2025-12-18', rotulo: 'Dallas' }
 
   // A ordem em que o BACKEND entrega: `[data, categoria, data_compra]` do
   // output.yml, que é a ordem do CSV — categoria antes da data.
@@ -3606,7 +3612,7 @@ describe('ano nas datas e ordem da tabela de confirmação', () => {
 })
 
 describe('a gaveta mostra mais 10 por vez', () => {
-  const PERU = { inicio: '2026-10-18', fim: '2026-10-26', rotulo: 'Peru' }
+  const PERU = { inicio: '2026-10-18', fim: '2026-10-26', chave: '2026-10-18|2026-10-26', rotulo: 'Peru' }
   const MUITOS = Array.from({ length: 25 }, (_, i) => ({
     line_id: `1:${i}`, purchase_date: '2026-08-14', valor: 1000 - i,
     categoria: 'Outros', merchant: `M${i}`, descricao: `[Cartão] Compra ${i}`,
@@ -3654,8 +3660,8 @@ describe('a gaveta mostra mais 10 por vez', () => {
 })
 
 describe('a viagem agrupa antes da data', () => {
-  const CAMPO_BELO = { inicio: '2025-12-06', fim: '2025-12-07', rotulo: 'Campo Belo' }
-  const DALLAS = { inicio: '2025-12-13', fim: '2025-12-18', rotulo: 'Dallas' }
+  const CAMPO_BELO = { inicio: '2025-12-06', fim: '2025-12-07', chave: '2025-12-06|2025-12-07', rotulo: 'Campo Belo' }
+  const DALLAS = { inicio: '2025-12-13', fim: '2025-12-18', chave: '2025-12-13|2025-12-18', rotulo: 'Dallas' }
 
   it('a passagem de agosto fica com Dallas, não no topo da tabela', () => {
     // O caso que distingue "agrupa por viagem" de "ordena por data": a
@@ -3696,7 +3702,7 @@ describe('a lista de períodos mostra o ano', () => {
     // 15/12 → 16/12" não diz qual Sorocaba é — e passa a impressão de que o
     // ano se perdeu no caminho, o que nunca aconteceu: a comparação é ISO.
     const { default: TravelRanges } = await import('../components/TravelRanges')
-    render(<TravelRanges ranges={[{ inicio: '2018-12-15', fim: '2018-12-16',
+    render(<TravelRanges ranges={[{ inicio: '2018-12-15', fim: '2018-12-16', chave: '2018-12-15|2018-12-16',
                                     rotulo: 'Sorocaba' }]} onChange={vi.fn()} />)
     expect(screen.getByText('15/12/2018 → 16/12/2018')).toBeInTheDocument()
   })
@@ -3869,7 +3875,7 @@ describe('o filtro por titular nas telas de revisão', () => {
   })
 
   it('Viagem filtra as duas listas dela', async () => {
-    const PERU = { inicio: '2026-10-18', fim: '2026-10-26', rotulo: 'Peru' }
+    const PERU = { inicio: '2026-10-18', fim: '2026-10-26', chave: '2026-10-18|2026-10-26', rotulo: 'Peru' }
     comFiltro('Rhyesla', <TravelStep
       session={{ purchase_range: null }} categories={CATS} ranges={[PERU]}
       items={[
@@ -3898,5 +3904,105 @@ describe('o filtro por titular nas telas de revisão', () => {
     await userEvent.click(screen.getByText(/Comprou algo para a viagem antes dela/))
     expect(screen.queryByText('[Cartão] Antecipada Minha')).toBeNull()
     expect(screen.getByText('[Cartão] Antecipada Dela <Rhyesla>')).toBeInTheDocument()
+  })
+})
+
+describe('viagem sem datas — a passagem de uma viagem futura', () => {
+  const montar = (ranges = []) => {
+    const onChange = vi.fn()
+    render(<TravelRangesLazy ranges={ranges} onChange={onChange} />)
+    return { onChange }
+  }
+
+  it('"Só o nome" só liga depois de ter nome', async () => {
+    // Sem nome ela não tem identidade nenhuma: é o nome que a distingue de
+    // outra viagem futura e é ele que vai para a descrição.
+    montar()
+    const botao = screen.getByRole('button', { name: 'Só o nome' })
+    expect(botao).toBeDisabled()
+    await userEvent.type(screen.getByPlaceholderText(/Gramado/), 'Peru 2027')
+    expect(botao).toBeEnabled()
+  })
+
+  it('manda as datas vazias e o nome', async () => {
+    const { onChange } = montar()
+    await userEvent.type(screen.getByPlaceholderText(/Gramado/), 'Peru 2027')
+    await userEvent.click(screen.getByRole('button', { name: 'Só o nome' }))
+    expect(onChange).toHaveBeenCalledWith([
+      { inicio: '', fim: '', rotulo: 'Peru 2027' }])
+  })
+
+  it('aparece na lista como "sem datas ainda"', () => {
+    // Sem isto ela sairia como `→` com os dois lados vazios, parecendo período
+    // quebrado em vez de viagem que ainda não tem data.
+    montar([{ inicio: '', fim: '', rotulo: 'Peru 2027', chave: '|PERU 2027' }])
+    expect(screen.getByText('sem datas ainda')).toBeInTheDocument()
+    expect(screen.getByText(/Peru 2027/)).toBeInTheDocument()
+  })
+
+  it('o "Adicionar período" continuando exigindo as duas datas', async () => {
+    const { onChange } = montar()
+    await userEvent.type(screen.getByPlaceholderText(/Gramado/), 'Peru 2027')
+    await userEvent.click(screen.getByRole('button', { name: /Adicionar período/ }))
+    expect(screen.getByText(/Escolha as duas datas/)).toBeInTheDocument()
+    expect(onChange).not.toHaveBeenCalled()
+  })
+})
+
+describe('total por mês na tela final', () => {
+  const sessao = { modo: 'fatura', transaction_id: 'tx', statements: [],
+                   source_files: [], changes: [] }
+  const preview = (by_month) => ({
+    transaction_id: 'tx', rows: [{ line_id: '0:1', descricao: 'x', valor: 10,
+      categoria: 'Casa', data: '12/10/2025', purchase_date: '2025-11-28',
+      merchant: 'X', merchant_raw: 'X', statement: 's', pago: 'x',
+      state: 'auto', titular: '' }],
+    total: 175, by_category: { Casa: 175 }, remaining_blank: 0,
+    filename: 'f.csv', by_month,
+  })
+
+  const montar = async (by_month) => {
+    vi.resetModules()
+    vi.doMock('../api', () => ({
+      preview: vi.fn().mockResolvedValue(preview(by_month)),
+      exportCsv: vi.fn(),
+    }))
+    const { default: Final } = await import('../components/FinalReview')
+    render(<Final session={sessao} assignmentList={[]} travelRejected={[]}
+                  onError={vi.fn()} />)
+    await screen.findByRole('heading', { name: /Conferir e exportar/ })
+  }
+
+  it('com duas faturas, mostra mês a mês e fecha no total', async () => {
+    await montar([{ rotulo: 'Dez/2025', total: 150, lancamentos: 2 },
+                  { rotulo: 'Jan/2026', total: 25, lancamentos: 1 }])
+    expect(await screen.findByText('Dez/2025')).toBeInTheDocument()
+    expect(screen.getByText('Jan/2026')).toBeInTheDocument()
+    expect(screen.getByText('2 lançamentos')).toBeInTheDocument()
+  })
+
+  it('com uma fatura só, não repete o total do topo', async () => {
+    // Com um mês, a tabela diria a mesma coisa que o "Total" logo acima.
+    await montar([{ rotulo: 'Dez/2025', total: 175, lancamentos: 3 }])
+    expect(screen.queryByText(/Total por mês/)).toBeNull()
+  })
+})
+
+describe('"Só o nome" não engole data digitada', () => {
+  it('desliga quando há qualquer data preenchida', async () => {
+    // Com data preenchida o botão certo é "Adicionar período". Deixar o outro
+    // ligado faria ele descartar em silêncio o que você acabou de digitar.
+    render(<TravelRangesLazy ranges={[]} onChange={vi.fn()} />)
+    await userEvent.type(screen.getByPlaceholderText(/Gramado/), 'Peru 2027')
+    const soNome = screen.getByRole('button', { name: 'Só o nome' })
+    expect(soNome).toBeEnabled()
+
+    const [ida] = document.querySelectorAll('input[type="date"]')
+    await userEvent.type(ida, '2027-03-01')
+    expect(soNome).toBeDisabled()
+    expect(soNome).toHaveAttribute('title', expect.stringMatching(/Limpe as datas/))
+
+    await userEvent.clear(ida)
+    expect(soNome).toBeEnabled()
   })
 })

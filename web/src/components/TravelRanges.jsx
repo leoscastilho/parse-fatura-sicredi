@@ -29,8 +29,28 @@ export default function TravelRanges({
   function adicionar() {
     if (!inicio || !fim) return setErro('Escolha as duas datas.')
     if (fim < inicio) return setErro('A volta não pode ser antes da ida.')
+    guardar({ inicio, fim, rotulo: rotulo.trim() })
+  }
+
+  /**
+   * Uma viagem que só tem NOME — a passagem comprada para uma viagem futura.
+   *
+   * Sem isto, a única saída era inventar um período em volta da data da compra,
+   * que arrastaria junto o mercado e o posto do mesmo dia. A viagem sem datas
+   * não pega nada sozinha: ela existe para você pendurar linhas nela lá
+   * embaixo, e no mês em que a viagem acontecer você cria o período de verdade.
+   */
+  function adicionarSemDatas() {
+    if (!rotulo.trim()) return setErro('A viagem futura precisa de um nome.')
+    // As datas saem vazias SEMPRE, e o botão fica desligado quando há alguma
+    // preenchida: assim ele nunca joga fora uma data que você acabou de
+    // digitar em silêncio.
+    guardar({ inicio: '', fim: '', rotulo: rotulo.trim() })
+  }
+
+  function guardar(periodo) {
     setErro(null)
-    onChange([...ranges, { inicio, fim, rotulo: rotulo.trim() }])
+    onChange([...ranges, periodo])
     setInicio('')
     setFim('')
     setRotulo('')
@@ -120,6 +140,15 @@ export default function TravelRanges({
         <button className="ghost" onClick={adicionar} disabled={busy}>
           Adicionar período
         </button>
+        {/* A viagem futura ainda não tem datas — e inventar um período em volta
+            da data da passagem arrastaria o mercado e o posto do mesmo dia. */}
+        <button className="ghost" onClick={adicionarSemDatas}
+                disabled={busy || !rotulo.trim() || Boolean(inicio || fim)}
+                title={inicio || fim
+                  ? 'Limpe as datas — com data preenchida, use "Adicionar período"'
+                  : 'Para a passagem comprada antes de a viagem ter data'}>
+          Só o nome
+        </button>
       </div>
 
       <div className="toolbar">
@@ -172,7 +201,9 @@ export default function TravelRanges({
               <span>
                 {/* Com o ano: são 57 viagens entre 2018 e 2026 nesta
                     lista, e `15/12 → 16/12` não diz qual Sorocaba é. */}
-                <strong>{dataCurta(r.inicio)} → {dataCurta(r.fim)}</strong>
+                {r.inicio
+                  ? <strong>{dataCurta(r.inicio)} → {dataCurta(r.fim)}</strong>
+                  : <strong className="muted">sem datas ainda</strong>}
                 {r.rotulo && <span className="muted"> · {r.rotulo}</span>}
               </span>
               <button className="link" onClick={() => remover(i)} disabled={busy}>
