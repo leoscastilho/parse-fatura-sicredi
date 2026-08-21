@@ -95,7 +95,8 @@ class DroppedLine:
 
 
 def build_description(entry: Entry, schema: OutputSchema | bool | None = None,
-                      apelidos: dict[str, str] | None = None) -> str:
+                      apelidos: dict[str, str] | None = None,
+                      banco: str = "") -> str:
     """Monta a descrição conforme o modelo do `config/output.yml`.
 
     `apelidos` mapeia o titular do cartão para o rótulo que vai na descrição —
@@ -105,6 +106,12 @@ def build_description(entry: Entry, schema: OutputSchema | bool | None = None,
 
     Sem o mapa, nada muda. É o caso do `.xls` do site, que não diz quem passou
     o cartão, e do cartão de uma pessoa só, onde não há o que perguntar.
+
+    `banco` segue a MESMA regra, um nível acima: vem vazio quando o lote inteiro
+    é de um banco só, porque aí a etiqueta não separa nada — seriam seis
+    caracteres a mais em toda linha do histórico para repetir o que já é igual
+    em todas. Quem decide é `classify_sources`, que é o único a enxergar o lote
+    completo: daqui não dá para saber se existe outra fatura ao lado.
 
     Aceita um bool no lugar do schema por compatibilidade com o código antigo,
     que passava só o flag `collapse_whitespace`.
@@ -133,8 +140,14 @@ def build_description(entry: Entry, schema: OutputSchema | bool | None = None,
     apelido = (apelidos or {}).get(entry.cardholder, "")
     marca = schema.titular_modelo.format(titular=apelido) if apelido else ""
 
+    # A etiqueta do banco entra DENTRO do modelo, ao contrário do titular: ela
+    # qualifica o `[Cartão]`, e um `output.yml` antigo — sem `{banco}` no
+    # modelo — simplesmente a ignora, porque `str.format` descarta o que sobra.
+    # É o que faz este campo novo não quebrar nenhuma configuração já gravada.
+    etiqueta = schema.banco_modelo.format(banco=banco) if banco else ""
+
     return schema.modelo.format(
-        descricao=merchant, parcela=parcela, sufixo_data=sufixo,
+        descricao=merchant, parcela=parcela, sufixo_data=sufixo, banco=etiqueta,
     ) + marca
 
 
@@ -142,6 +155,7 @@ def classify_statement(
     statement: Statement, rules: Ruleset, index: int = 0,
     schema: OutputSchema | None = None,
     apelidos: dict[str, str] | None = None,
+    banco: str = "",
 ) -> tuple[list[ClassifiedLine], list[DroppedLine]]:
     schema = schema or OutputSchema()
     if statement.due_date is None:
@@ -168,7 +182,7 @@ def classify_statement(
                 purchase_date=entry.purchase_date.date().isoformat(),
                 merchant_raw=entry.description.strip(),
                 merchant=merchant_key(entry.description),
-                descricao=build_description(entry, schema, apelidos),
+                descricao=build_description(entry, schema, apelidos, banco),
                 valor=entry.amount,
                 pago=schema.pago,
                 categoria=match.categoria,
@@ -198,22 +212,36 @@ def classify_sources(
     argumento vencer o que está no arquivo — então passar a data para os dois
     faria a fatura do Sicredi adotar o vencimento do Nubank, silenciosamente e
     com o mês errado na planilha.
+
+    A LEITURA acontece toda antes da classificação, e não em passo único, por
+    causa da etiqueta de banco: ela só entra quando o lote tem mais de um, e
+    isso é uma propriedade do LOTE — a primeira fatura não tem como saber se
+    virá outra de outro banco atrás dela. Classificar enquanto lê deixaria a
+    fatura de cima sem etiqueta e a de baixo com.
     """
     schema = schema or OutputSchema()
-    all_lines: list[ClassifiedLine] = []
-    all_dropped: list[DroppedLine] = []
     statements: list[Statement] = []
 
-    for index, fonte in enumerate(sources):
+    for fonte in sources:
         name, source, *resto = fonte
         perfil = resto[0] if resto else profile
         venc = due_date if (perfil is None or perfil.pede_vencimento) else None
-        statement = read_statement(source, name=name, profile=perfil, due_date=venc)
-        lines, dropped = classify_statement(statement, rules, index=index,
-                                            schema=schema, apelidos=apelidos)
+        statements.append(read_statement(source, name=name, profile=perfil,
+                                         due_date=venc))
+
+    # Um banco só (ou nenhum) não precisa de etiqueta: ela distinguiria o quê?
+    # Duas faturas do MESMO banco também não — o que conta é a variedade, não a
+    # quantidade de arquivos.
+    misto = len({s.bank_id for s in statements}) > 1
+
+    all_lines: list[ClassifiedLine] = []
+    all_dropped: list[DroppedLine] = []
+    for index, statement in enumerate(statements):
+        lines, dropped = classify_statement(
+            statement, rules, index=index, schema=schema, apelidos=apelidos,
+            banco=statement.bank_id.upper() if misto else "")
         all_lines += lines
         all_dropped += dropped
-        statements.append(statement)
 
     return all_lines, all_dropped, statements
 

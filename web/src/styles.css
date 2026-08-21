@@ -523,6 +523,18 @@ tr.abre-grupo:first-child > td { border-top: none; }
   border: 1px solid var(--border); border-radius: var(--radius);
   padding: 12px 14px; margin: 16px 0; background: var(--surface-2);
 }
+
+/* Os arquivos cifrados do lote: a explicação em cima, um campo por arquivo e um
+   único "Abrir" no fim. Mesma moldura da conta conjunta porque é o mesmo tipo
+   de bloco — uma pergunta que só existe quando o arquivo a provoca.           */
+.protegidos {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 14px; margin: 16px 0; background: var(--surface-2);
+}
+.protegidos > p { margin: 4px 0 10px; }
+.protegidos .toolbar { margin: 0 0 8px; }
+.protegidos input[type="password"] { max-width: 260px; }
+
 .titular {
   display: flex; align-items: flex-start; gap: 14px;
   padding: 8px 0; border-top: 1px solid var(--border);

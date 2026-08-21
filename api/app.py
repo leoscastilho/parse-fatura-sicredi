@@ -426,6 +426,40 @@ def _apelidos_do_form(bruto: str) -> dict[str, str]:
     return saida
 
 
+def _senhas_do_form(bruto: str) -> dict[int, str]:
+    """`indice=senha`, uma linha por arquivo cifrado do lote.
+
+    UMA SENHA POR ARQUIVO porque um lote pode trazer dois arquivos protegidos
+    com chaves diferentes, e uma senha só para todos deixaria um deles sem
+    jeito de abrir. Os que não estão cifrados nem aparecem aqui.
+
+    A chave é a POSIÇÃO do arquivo em `files`, não o nome. Nome exigiria
+    escapar o `=` (que é caractere legal em nome de arquivo) e escolher entre
+    partir o par pela primeira ou pela última ocorrência — com a posição não há
+    ambiguidade nenhuma, e é o mesmo índice que o `protegidos` do pré-voo
+    devolve para a tela montar os campos.
+
+    A senha não é normalizada, e é por isso que este parser NÃO passa pelo
+    `_linhas_do_form` como os outros campos: ele apara cada linha, e aparar
+    apagaria um espaço na ponta da senha que o banco pôs de propósito —
+    transformando uma senha válida em "não confere" sem nada na tela explicando
+    por quê. Só o `\\r` do fim de linha sai, e só o índice é limpo.
+    """
+    saida: dict[int, str] = {}
+    for linha in (bruto or "").split("\n"):
+        linha = linha.rstrip("\r")
+        if not linha.strip():
+            continue
+        indice, separador, senha = linha.partition("=")
+        if not separador:
+            continue
+        try:
+            saida[int(indice.strip())] = senha
+        except ValueError:
+            continue
+    return saida
+
+
 def _vencimento(bruto: str, perfis) -> datetime | None:
     """A data digitada, exigida quando ALGUM dos bancos do lote não a traz.
 
@@ -448,8 +482,9 @@ def _vencimento(bruto: str, perfis) -> datetime | None:
 
 
 async def _fontes(files: list[UploadFile], cfg, settings: Settings,
-                  senha: str = "") -> tuple[list[tuple[str, io.BytesIO, object]],
-                                            list[ArquivoProtegido]]:
+                  senhas: dict[int, str] | None = None,
+                  ) -> tuple[list[tuple[str, io.BytesIO, object]],
+                             list[ArquivoProtegido]]:
     """Lê os arquivos para memória e descobre de que banco é cada um.
 
     Extraído porque `/upload` e `/upload/periodo` precisam ler o MESMO lote com
@@ -461,32 +496,40 @@ async def _fontes(files: list[UploadFile], cfg, settings: Settings,
     o próprio perfil colado: um lote pode ter a fatura do Sicredi e a do
     Nubank, e as duas viram um CSV só.
 
-    A SENHA, quando existe, é do ARQUIVO — o BTG manda a fatura cifrada. Ela
-    entra por aqui, decifra em memória e some com a chamada: o que segue adiante
-    é o `.xlsx` de dentro, e nada além dele. Arquivo protegido sem senha (ou com
-    a senha errada) NÃO derruba a leitura — sai na segunda lista, para o pré-voo
-    poder pedir a senha em vez de acusar erro num arquivo que a pessoa ainda nem
-    terminou de informar.
+    As SENHAS são DOS ARQUIVOS — o BTG manda a fatura cifrada —, uma por
+    arquivo e endereçadas pela POSIÇÃO no lote: dois arquivos protegidos podem
+    ter chaves diferentes, e uma senha só para o lote deixaria um deles sem
+    jeito de abrir. Cada uma decifra em memória e some com a chamada: o que
+    segue adiante é o `.xlsx` de dentro, e nada além dele.
+
+    Arquivo protegido sem senha (ou com a senha errada) NÃO derruba a leitura —
+    sai na segunda lista, para o pré-voo poder pedir a senha em vez de acusar
+    erro num arquivo que a pessoa ainda nem terminou de informar. E os outros
+    arquivos do lote seguem sendo lidos: num lote de três, com um cifrado, os
+    dois abertos já dão o intervalo de compras e o banco reconhecido enquanto a
+    senha do terceiro não vem.
     """
     if len(files) > settings.max_files_per_upload:
         raise HTTPException(413, detail=f"máximo {settings.max_files_per_upload} arquivos")
 
+    senhas = senhas or {}
     fontes = []
     protegidos: list[ArquivoProtegido] = []
-    for upload_file in files:
+    for indice, upload_file in enumerate(files):
         blob = await upload_file.read()
         if len(blob) > settings.max_upload_bytes:
             raise HTTPException(413, detail=f"{upload_file.filename} excede o limite")
 
         if esta_protegido(blob):
             try:
-                blob = abrir_protegido(blob, senha)
+                blob = abrir_protegido(blob, senhas.get(indice, ""))
             except PrecisaDeSenha:
-                protegidos.append(ArquivoProtegido(nome=upload_file.filename))
+                protegidos.append(ArquivoProtegido(
+                    indice=indice, nome=upload_file.filename))
                 continue
             except SenhaIncorreta:
                 protegidos.append(ArquivoProtegido(
-                    nome=upload_file.filename, senha_incorreta=True))
+                    indice=indice, nome=upload_file.filename, senha_incorreta=True))
                 continue
 
         try:
@@ -517,6 +560,23 @@ def _exigir_abertos(protegidos: list[ArquivoProtegido]) -> None:
         422,
         detail=f"{', '.join(p.nome for p in protegidos)} está protegido por "
                "senha — informe a senha do arquivo no upload")
+
+
+def _bancos_detectados(sources) -> list[BancoDetectado]:
+    """Os bancos reconhecidos no lote, sem repetir e na ordem em que apareceram.
+
+    Dois arquivos do mesmo banco não são dois bancos: é esta lista que a tela
+    usa para dizer o que reconheceu, para pintar o tema — e, com mais de um
+    nome aqui, para NÃO pintar nenhum e ficar neutra.
+    """
+    bancos: list[BancoDetectado] = []
+    for _, _, perfil in sources:
+        if any(b.id == perfil.id for b in bancos):
+            continue
+        bancos.append(BancoDetectado(
+            id=perfil.id, nome=perfil.nome, validado=perfil.validado,
+            pede_vencimento=perfil.pede_vencimento, tema=perfil.tema.to_dict()))
+    return bancos
 
 
 def _period_of(record: dict) -> str:
@@ -573,7 +633,7 @@ async def upload(
     files: list[UploadFile] = File(..., description="extrato de qualquer banco configurado"),
     vencimento: str = Form("", description="AAAA-MM-DD, para bancos que não trazem a data"),
     titulares: str = Form("", description="`Nome Completo=Rótulo` por linha; vazio = sou eu"),
-    senha: str = Form("", description="senha DO ARQUIVO, para extratos cifrados; usada em memória e descartada"),
+    senhas: str = Form("", description="`indice=senha` por linha, para os extratos cifrados; usadas em memória e descartadas"),
     settings: Settings = Depends(get_settings),
     store: Store = Depends(get_store),
 ) -> UploadResponse:
@@ -583,7 +643,8 @@ async def upload(
     yaml_sha = GitHubSync(settings).current_sha() if settings.github_enabled else None
     rules = Ruleset.from_text(text)
 
-    sources, protegidos = await _fontes(files, cfg, settings, senha)
+    sources, protegidos = await _fontes(files, cfg, settings,
+                                        _senhas_do_form(senhas))
     _exigir_abertos(protegidos)
     perfis = [perfil for _, _, perfil in sources]
     due = _vencimento(vencimento, perfis)
@@ -663,7 +724,7 @@ async def upload(
 async def upload_periodo(
     files: list[UploadFile] = File(..., description="extrato de qualquer banco configurado"),
     vencimento: str = Form(""),
-    senha: str = Form("", description="senha DO ARQUIVO, para extratos cifrados; usada em memória e descartada"),
+    senhas: str = Form("", description="`indice=senha` por linha, para os extratos cifrados; usadas em memória e descartadas"),
     settings: Settings = Depends(get_settings),
 ) -> PurchaseRangeResponse:
     """De quando a quando vão as COMPRAS deste lote — e nada além disso.
@@ -684,7 +745,8 @@ async def upload_periodo(
     # arquivo pede senha porque este endpoint conta, e é com isto que ela monta
     # o campo — pedir a senha antes de saber se algum arquivo precisa dela seria
     # perguntar a todo mundo por causa de um banco.
-    sources, protegidos = await _fontes(files, cfg, settings, senha)
+    sources, protegidos = await _fontes(files, cfg, settings,
+                                        _senhas_do_form(senhas))
 
     # O vencimento pode não ter sido preenchido ainda: aqui ele não faz falta,
     # porque a data comparada é a da COMPRA, não a do vencimento da fatura.
@@ -715,18 +777,8 @@ async def upload_periodo(
                 vistos.append(nome)
     sugerido = next((s.titular for s in statements if s.titular), None)
 
-    # Sem repetir e na ordem em que apareceram: dois arquivos do mesmo banco
-    # não são dois bancos, e a tela mostra esta lista como "reconheci X".
-    bancos: list[BancoDetectado] = []
-    for _, _, perfil in sources:
-        if any(b.id == perfil.id for b in bancos):
-            continue
-        bancos.append(BancoDetectado(
-            id=perfil.id, nome=perfil.nome, validado=perfil.validado,
-            pede_vencimento=perfil.pede_vencimento, tema=perfil.tema.to_dict()))
-
     return PurchaseRangeResponse(
-        bancos=bancos,
+        bancos=_bancos_detectados(sources),
         protegidos=protegidos,
         purchase_range=_purchase_range(lines),
         titulares=sorted(vistos),

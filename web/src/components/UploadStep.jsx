@@ -36,6 +36,24 @@ export const formTitulares = (titulares, eu, apelidos) => (
     .map((nome) => `${nome}=${apelidos[nome].trim()}`)
     .join('\n'))
 
+/**
+ * As senhas no formato que o backend espera: `indice=senha`, uma por linha.
+ *
+ * A chave é a POSIÇÃO do arquivo no lote, não o nome — `=` é caractere legal em
+ * nome de arquivo, e o par `chave=valor` teria de escapá-lo. Aqui dentro o mapa
+ * é por NOME, que é o que sobrevive a acrescentar ou tirar um arquivo da lista:
+ * a tradução para índice acontece só na hora de enviar.
+ *
+ * Manda a senha de todo arquivo que tem uma digitada, protegido ou não. O
+ * servidor só usa a dos que estão cifrados, e filtrar aqui exigiria manter uma
+ * segunda cópia da lista de protegidos só para isso.
+ */
+export const formSenhas = (files, senhas) => files
+  .map((f, i) => [i, senhas[f.name]])
+  .filter(([, s]) => s)
+  .map(([i, s]) => `${i}=${s}`)
+  .join('\n')
+
 export default function UploadStep({
   onUpload, busy, extensoes = ['.xls', '.xlsx', '.csv'],
   onBancosDetectados, travelRanges = [], onTravelRangesChange,
@@ -62,12 +80,16 @@ export default function UploadStep({
   // de saber se alguém precisa dela seria perguntar a todo mundo por causa de
   // um banco.
   const [protegidos, setProtegidos] = useState([])
-  // DUAS senhas de propósito. `senha` é o que está no campo; `senhaEnviada` é o
-  // que já foi tentado. Sem a separação, o pré-voo rodaria a cada pausa da
+  // UMA SENHA POR ARQUIVO, indexada pelo nome: dois cifrados no mesmo lote
+  // podem ter chaves diferentes, e uma senha só deixaria um deles sem jeito de
+  // abrir.
+  //
+  // E DOIS mapas de propósito: `senhas` é o que está nos campos, `senhasEnviadas`
+  // é o que já foi tentado. Sem a separação, o pré-voo rodaria a cada pausa da
   // digitação e a pessoa veria "a senha não confere" antes de terminar de
   // escrever — um erro sobre um estado que ela ainda não pediu para conferir.
-  const [senha, setSenha] = useState('')
-  const [senhaEnviada, setSenhaEnviada] = useState('')
+  const [senhas, setSenhas] = useState({})
+  const [senhasEnviadas, setSenhasEnviadas] = useState({})
   const inputRef = useRef(null)
 
   // A pergunta da data só aparece DEPOIS de reconhecer o banco, porque só aí
@@ -79,10 +101,17 @@ export default function UploadStep({
   // apontando para a causa.
   const pronto = files.length > 0 && !protegidos.length
     && (!precisaVencimento || vencimento)
-  // Só é erro quando o que está no campo é o que foi tentado: assim que a
-  // pessoa começa a corrigir, o aviso sai da frente.
-  const senhaNaoConfere = senha === senhaEnviada
-    && protegidos.some((p) => p.senha_incorreta)
+  // Só é erro quando o que está NAQUELE campo é o que foi tentado NAQUELE
+  // arquivo: assim que a pessoa começa a corrigir, o aviso sai da frente — e o
+  // aviso de um arquivo não aparece por causa da senha errada de outro.
+  const senhaNaoConfere = (p) => p.senha_incorreta
+    && (senhas[p.nome] ?? '') === (senhasEnviadas[p.nome] ?? '')
+  // O que vai para o servidor, e o que o efeito abaixo observa. String em vez
+  // do objeto porque `useEffect` compara por identidade: um mapa novo a cada
+  // tecla dispararia o pré-voo de novo, que é justamente o que os dois mapas
+  // existem para evitar.
+  const enviadas = formSenhas(files, senhasEnviadas)
+  const podeAbrir = protegidos.some((p) => (senhas[p.nome] || '').trim())
 
   function accept(list) {
     // Filtra pela união das extensões de todos os bancos: qual deles é, quem
@@ -102,10 +131,10 @@ export default function UploadStep({
     if (!files.length) {
       setBancos([])
       setProtegidos([])
-      // A senha some junto com os arquivos: ela é de um lote, não da sessão, e
-      // guardá-la depois que o lote saiu de cena é mantê-la em memória por um
+      // As senhas somem junto com os arquivos: são de um lote, não da sessão, e
+      // guardá-las depois que o lote saiu de cena é mantê-las em memória por um
       // tempo que não serve para nada.
-      setSenha(''); setSenhaEnviada('')
+      setSenhas({}); setSenhasEnviadas({})
       onBancosDetectados?.([])
       return setLimites(null)
     }
@@ -115,7 +144,7 @@ export default function UploadStep({
     const timer = setTimeout(async () => {
       setLendoPeriodo(true)
       try {
-        const r = await api.uploadPeriodo(files, vencimento, senhaEnviada)
+        const r = await api.uploadPeriodo(files, vencimento, enviadas)
         if (cancelado) return
         setLimites(r.purchase_range || null)
         setBancos(r.bancos || [])
@@ -145,7 +174,7 @@ export default function UploadStep({
       }
     }, 300)
     return () => { cancelado = true; clearTimeout(timer) }
-  }, [files, vencimento, senhaEnviada])
+  }, [files, vencimento, enviadas])
 
   return (
     <section className="card">
@@ -213,39 +242,56 @@ export default function UploadStep({
           isso com todas as letras: perguntar "senha" e mais nada faria a pessoa
           procurar uma que ela nunca cadastrou. */}
       {protegidos.length > 0 && (
-        <div className="toolbar">
-          <label className="small">
-            Senha do arquivo{' '}
-            <input
-              type="password"
-              value={senha}
-              autoComplete="off"
-              disabled={busy || lendoPeriodo}
-              aria-label="Senha do arquivo"
-              onChange={(e) => setSenha(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && senha.trim()
-                && setSenhaEnviada(senha)}
-            />
-          </label>
+        <div className="protegidos">
+          <strong className="small">
+            {protegidos.length > 1
+              ? `${protegidos.length} arquivos deste lote estão protegidos por senha`
+              : `${protegidos[0].nome} está protegido por senha`}
+          </strong>
+          <p className="muted small">
+            É a senha <strong>do arquivo</strong>, a que o banco pede para
+            abri-lo — serve só para ler a fatura aqui e não fica guardada em
+            lugar nenhum.
+            {protegidos.length > 1 && ' Cada arquivo tem a sua; os que não estão'
+              + ' cifrados já foram lidos e não pedem nada.'}
+          </p>
+
+          {protegidos.map((p) => (
+            <div className="toolbar" key={p.nome}>
+              <label className="small">
+                {/* Com um arquivo só, o nome dele já está na frase acima e o
+                    rótulo fica sendo o que a pessoa procura ("senha"). Com
+                    vários, o rótulo TEM que ser o nome — é a única coisa que
+                    diz qual campo é de qual arquivo. */}
+                {protegidos.length > 1 ? p.nome : 'Senha do arquivo'}{' '}
+                <input
+                  type="password"
+                  value={senhas[p.nome] ?? ''}
+                  autoComplete="off"
+                  disabled={busy || lendoPeriodo}
+                  onChange={(e) => setSenhas((atuais) =>
+                    ({ ...atuais, [p.nome]: e.target.value }))}
+                  onKeyDown={(e) => e.key === 'Enter' && podeAbrir
+                    && setSenhasEnviadas({ ...senhas })}
+                />
+              </label>
+              {senhaNaoConfere(p) && (
+                <span className="inline-note error small">
+                  A senha não abre este arquivo.
+                </span>
+              )}
+            </div>
+          ))}
+
+          {/* UM botão para todos: com dois arquivos você preenche os dois e
+              tenta uma vez. Um botão por campo faria duas leituras do lote
+              inteiro para conferir uma senha de cada vez. */}
           <button
-            disabled={!senha.trim() || busy || lendoPeriodo}
-            onClick={() => setSenhaEnviada(senha)}
+            disabled={!podeAbrir || busy || lendoPeriodo}
+            onClick={() => setSenhasEnviadas({ ...senhas })}
           >
             {lendoPeriodo ? 'Abrindo…' : 'Abrir'}
           </button>
-          {senhaNaoConfere ? (
-            <span className="inline-note error small">
-              A senha não abre {protegidos.map((p) => p.nome).join(', ')}.
-            </span>
-          ) : (
-            <span className="muted small">
-              {protegidos.map((p) => p.nome).join(', ')}{' '}
-              {protegidos.length > 1 ? 'estão protegidos' : 'está protegido'} por
-              senha. É a senha <strong>do arquivo</strong>, a que o banco pede
-              para abri-lo — serve só para ler a fatura aqui e não fica guardada
-              em lugar nenhum.
-            </span>
-          )}
         </div>
       )}
 
@@ -337,7 +383,7 @@ export default function UploadStep({
               // dizer "Leonardo" em vez de "Sem marca".
               onClick={() => onUpload(files, vencimento,
                                       formTitulares(titulares, eu, apelidos), eu,
-                                      senhaEnviada)}>
+                                      enviadas)}>
         {busy ? 'Processando…' : 'Processar'}
       </button>
     </section>

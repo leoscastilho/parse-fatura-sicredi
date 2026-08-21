@@ -36,29 +36,31 @@ export const getRules = () => json('/rules')
 export const editRules = (operations, commit = false) =>
   json('/rules/edit', asJson({ operations, commit }))
 
-// `senha` é a senha DO ARQUIVO, não do portal — o BTG manda a fatura cifrada.
-// Ela sobe no formulário, decifra no servidor e morre ali: não fica guardada
-// aqui, não volta em resposta nenhuma e não entra no banco da transação.
-export function upload(files, vencimento = '', titulares = '', senha = '') {
+// `senhas` são as senhas DOS ARQUIVOS, não do portal — o BTG manda a fatura
+// cifrada. Vão como `indice=senha`, uma linha por arquivo protegido, porque
+// dois cifrados no mesmo lote podem ter chaves diferentes. Sobem no formulário,
+// decifram no servidor e morrem ali: não ficam guardadas aqui, não voltam em
+// resposta nenhuma e não entram no banco da transação.
+export function upload(files, vencimento = '', titulares = '', senhas = '') {
   const form = new FormData()
   for (const file of files) form.append('files', file)
   form.append('vencimento', vencimento)
   // `Nome Completo=Rótulo`, uma linha por pessoa. Lado direito vazio = sou eu,
   // e a linha não recebe marca nenhuma.
   form.append('titulares', titulares)
-  form.append('senha', senha)
+  form.append('senhas', senhas)
   return json('/upload', { method: 'POST', body: form })
 }
 
 // Pré-voo: de quando a quando vão as COMPRAS deste lote, e nada além disso.
 // Não abre transação e não grava nada — serve para a pergunta "viajou neste
-// período?" poder nomear as datas antes do processamento, e para descobrir que
-// um arquivo do lote está cifrado antes de tentar processá-lo.
-export function uploadPeriodo(files, vencimento = '', senha = '') {
+// período?" poder nomear as datas antes do processamento, e para descobrir
+// QUAIS arquivos do lote estão cifrados antes de tentar processá-los.
+export function uploadPeriodo(files, vencimento = '', senhas = '') {
   const form = new FormData()
   for (const file of files) form.append('files', file)
   form.append('vencimento', vencimento)
-  form.append('senha', senha)
+  form.append('senhas', senhas)
   return json('/upload/periodo', { method: 'POST', body: form })
 }
 

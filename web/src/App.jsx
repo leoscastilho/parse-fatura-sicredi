@@ -12,7 +12,7 @@ import ConfigBundle from './components/ConfigBundle'
 import RecategorizeStep, { ChangesSummary } from './components/RecategorizeStep'
 import TravelStep from './components/TravelStep'
 import AnalyticsView from './components/AnalyticsView'
-import { applyTheme, resetTheme } from './theme'
+import { applyTheme, resetTheme, TEMA_NEUTRO } from './theme'
 import { viagensPorLinha } from './viagens'
 import { TODOS, TitularFiltro, opcoesDeTitular } from './titulares'
 
@@ -113,7 +113,13 @@ export default function App() {
   // O tema segue o banco DETECTADO no arquivo. Repintar é reescrever as CSS
   // custom properties no `:root`, então nenhum componente precisa saber que
   // existe mais de um banco — e sem lote nenhum a folha volta a mandar.
+  //
+  // COM MAIS DE UM BANCO no lote, nenhum deles pinta: a tela fica no grafite
+  // neutro. Seguir o primeiro (que era o que acontecia) escolhia um banco pela
+  // ordem em que os arquivos foram soltos, e a cor passava a dizer "Sicredi"
+  // numa tela em que metade das linhas é do BTG.
   useEffect(() => {
+    if (bancosDoLote.length > 1) return applyTheme(TEMA_NEUTRO)
     const banco = banks.find((b) => b.id === bancosDoLote[0]?.id)
     if (banco) applyTheme(banco.tema)
     else if (!bancosDoLote.length) resetTheme()
@@ -121,9 +127,12 @@ export default function App() {
 
   // O banco deixou de ser escolha e virou leitura: quem responde é o arquivo.
   // A tela mostra o que foi reconhecido em vez de perguntar — ver `detectar`
-  // em `core/profiles.py`. Com um lote de dois bancos, o tema segue o primeiro
-  // e a lista inteira aparece no texto.
-  const bancoAtual = bancosDoLote[0] || null
+  // em `core/profiles.py`.
+  //
+  // Só existe "o banco do lote" quando é UM. Com dois, não há inicial que sirva
+  // (nem "B" nem "S" descrevem o que está carregado), e a marca volta ao "$" do
+  // portal pela mesma razão que o tema fica neutro.
+  const bancoAtual = bancosDoLote.length === 1 ? bancosDoLote[0] : null
 
   // A união do que TODOS os bancos exportam. A dropzone filtra por isto e o
   // conteúdo decide o resto: um `.pdf` não é fatura de banco nenhum, mas um

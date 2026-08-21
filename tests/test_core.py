@@ -828,3 +828,32 @@ def test_deteccao_separa_os_dois_xlsx(btg_xlsx, sicredi_xlsx):
     assert achado.id == "btg"
     achado = cfg.detectar("extrato.xlsx", amostra_de_texto(sicredi_xlsx.read_bytes()))
     assert achado.id == "sicredi"
+
+
+def test_etiqueta_de_banco_vem_do_formato_de_saida(tmp_path):
+    """`Item.banco` é configurável como todo o resto do formato de saída.
+
+    E o PADRÃO do `OutputSchema` tem que concordar com o `output.yml` que o
+    projeto entrega: quem constrói o schema na mão — a CLI, um teste, qualquer
+    chamada sem YAML — precisa produzir a mesma descrição que o portal.
+    """
+    from datetime import datetime as _dt
+    from core.pipeline import build_description
+    from core.statement import Entry
+    from core.profiles import OutputSchema
+
+    compra = Entry(purchase_date=_dt(2026, 5, 3), description="Netflix",
+                   installment=None, amount=44.90)
+
+    # Sem YAML nenhum: o default do dataclass.
+    assert build_description(compra, banco="BTG").startswith("[Cartão-BTG] Netflix")
+    assert build_description(compra).startswith("[Cartão] Netflix")
+
+    # E com um `banco:` diferente no YAML, é o do YAML que vale.
+    schema = OutputSchema.from_text(
+        'colunas: [Data, Categoria, Item, Valor, Pago]\n'
+        'Item:\n'
+        '  modelo: "[Cartão{banco}] {descricao}{parcela}{sufixo_data}"\n'
+        '  banco: " · {banco}"\n')
+    assert build_description(compra, schema, banco="BTG").startswith(
+        "[Cartão · BTG] Netflix")

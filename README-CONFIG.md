@@ -81,6 +81,39 @@ da transação, não volta em resposta nenhuma e não entra em log. O
 `protegido: true` no YAML é documentação para quem lê o perfil, não um
 interruptor.
 
+**Uma senha por arquivo**, não uma por lote: dois cifrados na mesma leva podem
+ter chaves diferentes. A tela mostra um campo por arquivo protegido, e os
+arquivos abertos do mesmo lote já são lidos enquanto a senha dos outros não vem
+— num lote de três com um cifrado, os dois abertos já dão o intervalo de
+compras e os bancos reconhecidos. No formulário as senhas viajam como
+`indice=senha`, uma por linha; a chave é a POSIÇÃO do arquivo no lote, porque
+`=` é caractere legal em nome de arquivo e o índice não precisa de escape.
+
+### Lote com bancos diferentes
+
+Faturas de bancos diferentes podem subir juntas e saem num CSV só. Quando isso
+acontece — e **só** quando acontece — cada linha leva o banco na descrição:
+
+```
+[Cartão-BTG] Supermercado Confianca {Em 26/Apr} <8134>
+[Cartão-SICREDI] Supermercados Alvora {Em 5/Jun}
+```
+
+Com um banco só (ou várias faturas do mesmo banco) a etiqueta some e a descrição
+continua `[Cartão] …`, exatamente como sempre foi: uma etiqueta igual em toda
+linha não separa nada e só acrescentaria caracteres ao histórico. O que decide é
+a variedade de bancos, não a quantidade de arquivos.
+
+A etiqueta mora DENTRO do colchete porque qualifica o "Cartão" — e porque tudo
+que lê a descrição (`merchant_of`, a recategorização, a análise) já pulava o
+colchete inteiro, então nada precisou mudar para entendê-la. Quem manda no
+formato é o `Item.banco` do `output.yml`; apagar essa chave, ou tirar o
+`{banco}` do `modelo`, desliga a etiqueta de vez.
+
+A TELA também fica neutra num lote misto: com dois bancos, pintá-la com a cor de
+um deles diria "Sicredi" numa tela em que metade das linhas é do BTG. O tema vai
+para o grafite do portal e a marca volta ao `$`.
+
 ### Mais de um formato no mesmo banco
 
 Um banco pode exportar de vários jeitos. O Sicredi exporta dois — planilha

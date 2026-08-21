@@ -205,8 +205,17 @@ class OutputSchema:
     campos: dict[str, str] = field(default_factory=dict)
     data_origem: str = "vencimento"
     data_formato: str = "%m/%d/%Y"
-    modelo: str = "[Cartão] {descricao}{parcela}{sufixo_data}"
+    modelo: str = "[Cartão{banco}] {descricao}{parcela}{sufixo_data}"
     parcela_modelo: str = " (Parcela {parcela})"
+    # De qual banco veio a linha, e SÓ quando o lote tem mais de um. Com uma
+    # fatura só — ou várias do mesmo banco — a etiqueta não distingue nada e
+    # não entra: escrevê-la sempre acrescentaria seis caracteres a toda linha
+    # do histórico para repetir uma informação que já é a mesma em todas.
+    #
+    # Mora DENTRO do colchete (`[Cartão-BTG]`) porque é uma qualificação do
+    # "Cartão", não um campo novo — e porque `merchant_of` já pula o colchete
+    # inteiro, então nada que lê a descrição precisou mudar.
+    banco_modelo: str = "-{banco}"
     # Numa conta conjunta, de quem foi a compra. Vai no FIM da descrição, depois
     # da data, porque é a informação menos usada das três — e porque colocá-la
     # antes moveria o `{Em 3/Jan}` de lugar em toda linha já exportada.
@@ -277,6 +286,7 @@ class OutputSchema:
             data_formato=data.get("formato", defaults.data_formato),
             modelo=desc.get("modelo", defaults.modelo),
             parcela_modelo=desc.get("parcela", defaults.parcela_modelo),
+            banco_modelo=desc.get("banco", defaults.banco_modelo),
             titular_modelo=desc.get("titular", defaults.titular_modelo),
             sufixo_data=desc.get("sufixo_data", defaults.sufixo_data),
             titlecase=bool(desc.get("titlecase", True)),

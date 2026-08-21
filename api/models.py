@@ -273,6 +273,10 @@ class ArquivoProtegido(BaseModel):
     referência adiante em Pydantic funciona por acidente.
     """
 
+    # A POSIÇÃO do arquivo no lote enviado. É por ela que a senha volta, e não
+    # pelo nome: `=` é caractere legal em nome de arquivo, e o mapa de senhas
+    # é um campo `chave=valor` por linha. Com o índice não há o que escapar.
+    indice: int = 0
     nome: str
     senha_incorreta: bool = False
 

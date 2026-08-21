@@ -896,16 +896,22 @@ def test_pagamento_da_fatura_do_nubank_e_excluido(client, tmp_path):
 # BTG — a fatura vem cifrada e a senha é DO ARQUIVO
 # ---------------------------------------------------------------------------
 
+# As senhas viajam como `indice=senha`, uma linha por arquivo cifrado: dois
+# protegidos no mesmo lote podem ter chaves diferentes. Com um arquivo só, o
+# índice é sempre 0.
 def _upload_btg(client, path, senha="", vencimento=""):
-    return client.post("/upload", data={"vencimento": vencimento, "senha": senha},
-                       files=[("files", (path.name, path.read_bytes(),
-                                         "application/octet-stream"))])
+    return client.post(
+        "/upload",
+        data={"vencimento": vencimento, "senhas": f"0={senha}" if senha else ""},
+        files=[("files", (path.name, path.read_bytes(),
+                          "application/octet-stream"))])
 
 
 def _preflight(client, path, senha=""):
-    return client.post("/upload/periodo", data={"senha": senha},
-                       files=[("files", (path.name, path.read_bytes(),
-                                         "application/octet-stream"))]).json()
+    return client.post(
+        "/upload/periodo", data={"senhas": f"0={senha}" if senha else ""},
+        files=[("files", (path.name, path.read_bytes(),
+                          "application/octet-stream"))]).json()
 
 
 def test_upload_btg_com_a_senha_certa(client, btg_xlsx_cifrado):
@@ -979,7 +985,7 @@ def test_a_senha_do_arquivo_nunca_e_devolvida_nem_gravada(client, btg_xlsx_cifra
     assert corpo.status_code == 200
     assert SENHA_BTG not in corpo.text
 
-    preflight = client.post("/upload/periodo", data={"senha": SENHA_BTG},
+    preflight = client.post("/upload/periodo", data={"senhas": f"0={SENHA_BTG}"},
                             files=[("files", (btg_xlsx_cifrado.name,
                                               btg_xlsx_cifrado.read_bytes(),
                                               "application/octet-stream"))])
@@ -998,7 +1004,7 @@ def test_lote_misto_com_um_cifrado_e_um_aberto(client, btg_xlsx_cifrado, sicredi
     """
     from tests.conftest import SENHA_BTG
     resposta = client.post(
-        "/upload", data={"senha": SENHA_BTG},
+        "/upload", data={"senhas": f"0={SENHA_BTG}"},
         files=[("files", ("btg.xlsx", btg_xlsx_cifrado.read_bytes(),
                           "application/octet-stream")),
                ("files", ("sic.xlsx", sicredi_xlsx.read_bytes(),
@@ -1034,3 +1040,169 @@ def test_pagamento_da_fatura_do_btg_e_excluido(client, btg_xlsx):
              for g in dados[balde]]
     assert "PAGAMENTO DE FATURA" not in todos
     assert any("PAGAMENTO DE FATURA" in d["descricao"].upper() for d in dados["dropped"])
+
+
+# ---------------------------------------------------------------------------
+# Lote com bancos diferentes — a etiqueta na descrição
+# ---------------------------------------------------------------------------
+
+def _lote(client, *arquivos, senhas="", vencimento=""):
+    return client.post(
+        "/upload", data={"senhas": senhas, "vencimento": vencimento},
+        files=[("files", (nome, caminho.read_bytes(), "application/octet-stream"))
+               for nome, caminho in arquivos])
+
+
+def test_lote_de_bancos_diferentes_etiqueta_a_linha(client, btg_xlsx, sicredi_xlsx):
+    """`[Cartão-BTG]` e `[Cartão-SICREDI]` na mesma exportação.
+
+    Sem a etiqueta, duas faturas do mesmo mês viram um bloco só na planilha e
+    não há como saber qual linha veio de qual cartão — nem para conferir o
+    total de um deles, nem para achar a compra na fatura certa.
+    """
+    dados = _lote(client, ("btg.xlsx", btg_xlsx), ("sic.xlsx", sicredi_xlsx))
+    assert dados.status_code == 200
+
+    tx = dados.json()["transaction_id"]
+    csv_texto = client.post("/export", json={"transaction_id": tx, "assignments": [],
+                                             "commit_mapping": False}).content.decode()
+    assert "[Cartão-BTG]" in csv_texto
+    assert "[Cartão-SICREDI]" in csv_texto
+    assert "[Cartão]" not in csv_texto, "num lote misto, toda linha leva etiqueta"
+
+
+def test_lote_de_um_banco_so_nao_etiqueta_nada(client, btg_xlsx):
+    """Com um banco só a etiqueta seria igual em toda linha, e não separaria nada.
+
+    Escrevê-la assim mesmo acrescentaria seis caracteres a cada linha do
+    histórico para repetir uma informação constante — e mudaria a cara de todo
+    CSV que este portal já exportou.
+    """
+    tx = _lote(client, ("btg.xlsx", btg_xlsx)).json()["transaction_id"]
+    csv_texto = client.post("/export", json={"transaction_id": tx, "assignments": [],
+                                             "commit_mapping": False}).content.decode()
+    assert "[Cartão]" in csv_texto
+    assert "[Cartão-" not in csv_texto
+
+
+def test_dois_arquivos_do_mesmo_banco_nao_sao_dois_bancos(client, btg_xlsx):
+    """O que decide é a VARIEDADE, não a quantidade de arquivos."""
+    tx = _lote(client, ("jan.xlsx", btg_xlsx),
+               ("fev.xlsx", btg_xlsx)).json()["transaction_id"]
+    csv_texto = client.post("/export", json={"transaction_id": tx, "assignments": [],
+                                             "commit_mapping": False}).content.decode()
+    assert "[Cartão-" not in csv_texto
+
+
+def test_a_etiqueta_sobrevive_a_recategorizacao(client, btg_xlsx, sicredi_xlsx):
+    """O CSV etiquetado volta pelo Recategorizar sem perder nem ganhar nada.
+
+    A recategorização promete mudar SÓ a coluna Categoria. A etiqueta mora
+    dentro do colchete que `merchant_of` já pulava, então o estabelecimento
+    continua sendo lido igual — e a descrição tem que voltar caractere por
+    caractere como entrou.
+    """
+    tx = _lote(client, ("btg.xlsx", btg_xlsx),
+               ("sic.xlsx", sicredi_xlsx)).json()["transaction_id"]
+    original = client.post("/export", json={"transaction_id": tx, "assignments": [],
+                                            "commit_mapping": False}).content
+
+    volta = client.post("/recategorize",
+                        files=[("files", ("faturas.csv", original, "text/csv"))])
+    assert volta.status_code == 200
+    tx2 = volta.json()["transaction_id"]
+    refeito = client.post("/export", json={"transaction_id": tx2, "assignments": [],
+                                           "commit_mapping": False}).content
+
+    def descricoes(bruto):
+        import csv as _csv
+        linhas = list(_csv.DictReader(io.StringIO(bruto.decode("utf-8-sig"))))
+        col = next(c for c in linhas[0] if c in ("Descrição", "Item"))
+        return [l[col] for l in linhas]
+
+    assert descricoes(refeito) == descricoes(original)
+    assert any(d.startswith("[Cartão-BTG]") for d in descricoes(refeito))
+    # E o estabelecimento continua sendo lido de dentro da etiqueta.
+    grupos = {g["merchant"] for g in volta.json()["auto_classified_items"]}
+    assert "SUPERMERCADO CONFIANCA" in grupos
+
+
+def test_dois_cifrados_com_senhas_diferentes(client, tmp_path):
+    """Cada arquivo abre com a SUA senha, e o segundo é endereçado pelo índice.
+
+    Uma senha só para o lote deixaria um dos dois sem jeito nenhum de abrir — e
+    endereçar pelo nome exigiria escapar o `=`, que é caractere legal em nome de
+    arquivo.
+    """
+    from tests.conftest import SENHA_BTG, _btg_workbook, _cifrar
+    outra = "99887766554"
+    claro = _btg_workbook(tmp_path / "claro.xlsx")
+    um = _cifrar(claro, tmp_path / "btg-1.xlsx", SENHA_BTG)
+    dois = _cifrar(claro, tmp_path / "btg-2.xlsx", outra)
+
+    # A senha do primeiro no segundo (e vice-versa): as duas erradas.
+    trocadas = client.post(
+        "/upload", data={"senhas": f"0={outra}\n1={SENHA_BTG}"},
+        files=[("files", ("btg-1.xlsx", um.read_bytes(), "application/octet-stream")),
+               ("files", ("btg-2.xlsx", dois.read_bytes(), "application/octet-stream"))])
+    assert trocadas.status_code == 422
+    assert "não abre" in trocadas.json()["detail"]
+
+    certas = client.post(
+        "/upload", data={"senhas": f"0={SENHA_BTG}\n1={outra}"},
+        files=[("files", ("btg-1.xlsx", um.read_bytes(), "application/octet-stream")),
+               ("files", ("btg-2.xlsx", dois.read_bytes(), "application/octet-stream"))])
+    assert certas.status_code == 200
+    assert len(certas.json()["statements"]) == 2
+
+
+def test_preflight_endereca_cada_protegido_pela_posicao(client, tmp_path,
+                                                        sicredi_xlsx):
+    """O índice do protegido é o do LOTE, não a ordem em que ele foi recusado.
+
+    É por ele que a senha volta. Fixá-lo em zero faria a senha do terceiro
+    arquivo ser tentada no primeiro — e o primeiro sequer estar cifrado.
+    """
+    from tests.conftest import SENHA_BTG, _btg_workbook, _cifrar
+    cifrado = _cifrar(_btg_workbook(tmp_path / "claro.xlsx"),
+                      tmp_path / "btg.xlsx", SENHA_BTG)
+
+    resposta = client.post(
+        "/upload/periodo", data={"senhas": ""},
+        files=[("files", ("sic.xlsx", sicredi_xlsx.read_bytes(),
+                          "application/octet-stream")),
+               ("files", ("btg.xlsx", cifrado.read_bytes(),
+                          "application/octet-stream"))]).json()
+
+    assert [(p["indice"], p["nome"]) for p in resposta["protegidos"]] == [(1, "btg.xlsx")]
+    # O arquivo aberto do lote foi lido assim mesmo: não é porque um pede senha
+    # que os outros ficam esperando.
+    assert [b["id"] for b in resposta["bancos"]] == ["sicredi"]
+
+    # E a senha endereçada ao índice 1 abre o que faltava.
+    completo = client.post(
+        "/upload/periodo", data={"senhas": f"1={SENHA_BTG}"},
+        files=[("files", ("sic.xlsx", sicredi_xlsx.read_bytes(),
+                          "application/octet-stream")),
+               ("files", ("btg.xlsx", cifrado.read_bytes(),
+                          "application/octet-stream"))]).json()
+    assert completo["protegidos"] == []
+    assert {b["id"] for b in completo["bancos"]} == {"sicredi", "btg"}
+
+
+def test_a_senha_do_arquivo_nao_e_aparada(client, tmp_path):
+    """Espaço na ponta da senha é senha, não sujeira de formulário.
+
+    Quem escolheu a senha foi o banco; `strip()` no valor transformaria uma
+    senha válida em "não confere" sem nada na tela explicando por quê.
+    """
+    from tests.conftest import _btg_workbook, _cifrar
+    com_espacos = "  1234  "
+    cifrado = _cifrar(_btg_workbook(tmp_path / "claro.xlsx"),
+                      tmp_path / "btg.xlsx", com_espacos)
+
+    resposta = client.post(
+        "/upload", data={"senhas": f"0={com_espacos}"},
+        files=[("files", ("btg.xlsx", cifrado.read_bytes(),
+                          "application/octet-stream"))])
+    assert resposta.status_code == 200

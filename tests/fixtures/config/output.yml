@@ -7,8 +7,8 @@
 #  mudar, muda só este arquivo — nenhum código.
 #
 #  Placeholders disponíveis:
-#     {descricao} {parcela} {dia} {mes} {ano}   -> na descrição
-#     {periodo} {inicio} {fim}                  -> no nome do arquivo
+#     {descricao} {parcela} {banco} {dia} {mes} {ano}   -> na descrição
+#     {periodo} {inicio} {fim}                          -> no nome do arquivo
 # =============================================================================
 
 colunas: [Data, Categoria, Item, Valor, Pago]
@@ -23,8 +23,14 @@ data:
 
 Item:
   # "[Cartão] Renner (Parcela 03/05) {Em 10/May}"
-  modelo: "[Cartão] {descricao}{parcela}{sufixo_data}"
+  modelo: "[Cartão{banco}] {descricao}{parcela}{sufixo_data}"
   parcela: " (Parcela {parcela})"
+  # De qual banco veio a linha — "[Cartão-BTG] Petz …". SÓ aparece quando o
+  # mesmo lote traz faturas de bancos DIFERENTES: com um banco só a etiqueta
+  # seria igual em todas as linhas e não separaria nada, então ela some e o
+  # histórico continua exatamente como sempre foi. Apagar esta linha (ou tirar
+  # o `{banco}` do modelo acima) desliga a etiqueta de vez.
+  banco: "-{banco}"
   # A data da compra fica preservada aqui porque a coluna Data guarda o
   # vencimento.  Mês em inglês, fixo — `strftime('%b')` mudaria com o locale
   # da máquina e quebraria 6.700 linhas de histórico.

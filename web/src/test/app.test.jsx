@@ -277,29 +277,44 @@ describe('UploadStep', () => {
 describe('UploadStep — arquivo protegido por senha', () => {
   const BTG = { id: 'btg', nome: 'BTG Pactual', pede_vencimento: false,
                 validado: true, tema: { primaria: '#195AB4' } }
+  const SICREDI = { id: 'sicredi', nome: 'Sicredi', pede_vencimento: false,
+                    validado: true, tema: { primaria: '#3FA110' } }
   const SENHA = '41589855876'
+  const OUTRA = '99887766554'
 
-  // O pré-voo responde conforme a senha que RECEBE — é assim que o servidor se
-  // comporta, e é isso que faz o teste exercitar o ciclo inteiro em vez de uma
-  // resposta congelada.
-  async function montar() {
+  /**
+   * Um pré-voo de mentira que se comporta como o de verdade: recebe o mapa
+   * `indice=senha`, abre os arquivos cujas senhas conferem e devolve os outros
+   * em `protegidos`. Uma resposta congelada não exercitaria o ciclo — foi por
+   * isso que o mock virou uma função.
+   *
+   * `cifrados` mapeia POSIÇÃO do arquivo -> senha correta. O que não está no
+   * mapa é um arquivo aberto, e nunca aparece em `protegidos`.
+   */
+  async function montar({ arquivos = ['btg.xlsx'], cifrados = { 0: SENHA },
+                          bancos = [BTG] } = {}) {
     vi.resetModules()
-    const uploadPeriodo = vi.fn(async (_arquivos, _venc, senha) => {
-      if (senha === SENHA) {
-        return { purchase_range: { inicio: '2026-04-27', fim: '2026-05-28' },
-                 titulares: [], eu_sugerido: null,
-                 bancos: [BTG], protegidos: [] }
+    const uploadPeriodo = vi.fn(async (_arquivos, _venc, senhas) => {
+      const dadas = Object.fromEntries(
+        (senhas || '').split('\n').filter(Boolean)
+          .map((l) => [Number(l.slice(0, l.indexOf('='))), l.slice(l.indexOf('=') + 1)]))
+      const protegidos = Object.entries(cifrados)
+        .filter(([i, certa]) => dadas[i] !== certa)
+        .map(([i]) => ({ indice: Number(i), nome: arquivos[i],
+                         senha_incorreta: Boolean(dadas[i]) }))
+      if (protegidos.length) {
+        return { purchase_range: null, titulares: [], eu_sugerido: null,
+                 bancos: [], protegidos }
       }
-      return { purchase_range: null, titulares: [], eu_sugerido: null,
-               bancos: [], protegidos: [
-                 { nome: 'btg.xlsx', senha_incorreta: Boolean(senha) }] }
+      return { purchase_range: { inicio: '2026-04-27', fim: '2026-05-28' },
+               titulares: [], eu_sugerido: null, bancos, protegidos: [] }
     })
     vi.doMock('../api', () => ({ upload: vi.fn(), uploadPeriodo }))
     const { default: Step } = await import('../components/UploadStep')
     const onUpload = vi.fn()
     const { container } = render(<Step onUpload={onUpload} busy={false} />)
     await userEvent.upload(container.querySelector('input[type="file"]'),
-                           new File(['x'], 'btg.xlsx'))
+                           arquivos.map((n) => new File(['x'], n)))
     return { onUpload, container, uploadPeriodo }
   }
 
@@ -307,19 +322,7 @@ describe('UploadStep — arquivo protegido por senha', () => {
     // A pergunta não pode ser fixa: pedir senha a todo upload por causa de um
     // banco faria toda importação de Sicredi e Nubank carregar um campo que
     // não tem resposta.
-    vi.resetModules()
-    vi.doMock('../api', () => ({
-      upload: vi.fn(),
-      uploadPeriodo: vi.fn().mockResolvedValue({
-        purchase_range: { inicio: '2026-07-01', fim: '2026-07-31' },
-        titulares: [], eu_sugerido: null, protegidos: [],
-        bancos: [{ id: 'sicredi', nome: 'Sicredi', pede_vencimento: false,
-                   validado: true }] }),
-    }))
-    const { default: Step } = await import('../components/UploadStep')
-    const { container } = render(<Step onUpload={vi.fn()} busy={false} />)
-    await userEvent.upload(container.querySelector('input[type="file"]'),
-                           new File(['x'], 'sic.xlsx'))
+    await montar({ arquivos: ['sic.xlsx'], cifrados: {}, bancos: [SICREDI] })
     await screen.findByText(/Reconheci/)
     expect(screen.queryByLabelText('Senha do arquivo')).toBeNull()
   })
@@ -331,8 +334,7 @@ describe('UploadStep — arquivo protegido por senha', () => {
     // senha é a diferença entre digitar a certa e tentar as três que você tem.
     // E diz que a senha é DO ARQUIVO — quem lê só "senha" vai procurar uma que
     // nunca cadastrou no portal.
-    expect(screen.getByText(/btg\.xlsx está protegido por senha/))
-      .toBeInTheDocument()
+    expect(screen.getByText('btg.xlsx está protegido por senha')).toBeInTheDocument()
     expect(screen.getByText('do arquivo')).toBeInTheDocument()
   })
 
@@ -357,14 +359,14 @@ describe('UploadStep — arquivo protegido por senha', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Abrir' }))
     await waitFor(() => expect(uploadPeriodo).toHaveBeenCalledTimes(2))
-    expect(uploadPeriodo.mock.calls[1][2]).toBe(SENHA)
+    expect(uploadPeriodo.mock.calls[1][2]).toBe(`0=${SENHA}`)
   })
 
   it('a senha errada é dita com outras palavras', async () => {
     await montar()
     const campo = await screen.findByLabelText('Senha do arquivo')
     await userEvent.type(campo, 'nao-e-essa{Enter}')
-    expect(await screen.findByText(/não abre btg\.xlsx/)).toBeInTheDocument()
+    expect(await screen.findByText(/não abre este arquivo/)).toBeInTheDocument()
 
     // E some assim que a correção começa, para não ficar acusando o que já
     // está sendo consertado.
@@ -383,8 +385,61 @@ describe('UploadStep — arquivo protegido por senha', () => {
     const processar = screen.getByRole('button', { name: /Processar/ })
     await waitFor(() => expect(processar).toBeEnabled())
     await userEvent.click(processar)
-    // A senha segue no 5º argumento, para o /upload poder decifrar de novo.
-    expect(onUpload).toHaveBeenCalledWith(expect.any(Array), '', '', '', SENHA)
+    // As senhas seguem no 5º argumento, para o /upload poder decifrar de novo.
+    expect(onUpload).toHaveBeenCalledWith(
+      expect.any(Array), '', '', '', `0=${SENHA}`)
+  })
+
+  it('um campo por arquivo, cada um com a sua senha', async () => {
+    // Duas faturas cifradas com chaves diferentes. Uma senha só para o lote
+    // deixaria uma das duas sem jeito nenhum de abrir.
+    const { onUpload, uploadPeriodo } = await montar({
+      arquivos: ['btg-1.xlsx', 'btg-2.xlsx'],
+      cifrados: { 0: SENHA, 1: OUTRA },
+    })
+    expect(await screen.findByText('2 arquivos deste lote estão protegidos por senha'))
+      .toBeInTheDocument()
+
+    await userEvent.type(screen.getByLabelText('btg-1.xlsx'), SENHA)
+    await userEvent.type(screen.getByLabelText('btg-2.xlsx'), OUTRA)
+    await userEvent.click(screen.getByRole('button', { name: 'Abrir' }))
+
+    await waitFor(() => expect(screen.queryByText(/protegidos por senha/)).toBeNull())
+    expect(uploadPeriodo.mock.calls.at(-1)[2]).toBe(`0=${SENHA}\n1=${OUTRA}`)
+
+    await userEvent.click(screen.getByRole('button', { name: /Processar/ }))
+    expect(onUpload).toHaveBeenCalledWith(
+      expect.any(Array), '', '', '', `0=${SENHA}\n1=${OUTRA}`)
+  })
+
+  it('o erro de um arquivo não acusa o outro', async () => {
+    const { container } = await montar({
+      arquivos: ['btg-1.xlsx', 'btg-2.xlsx'],
+      cifrados: { 0: SENHA, 1: OUTRA },
+    })
+    await screen.findByLabelText('btg-1.xlsx')
+    await userEvent.type(screen.getByLabelText('btg-1.xlsx'), SENHA)
+    await userEvent.type(screen.getByLabelText('btg-2.xlsx'), 'chute')
+    await userEvent.click(screen.getByRole('button', { name: 'Abrir' }))
+
+    // Só sobra um campo — o que abriu saiu da lista — e é o segundo.
+    expect(await screen.findByLabelText('Senha do arquivo')).toBeInTheDocument()
+    expect(screen.getByText('btg-2.xlsx está protegido por senha')).toBeInTheDocument()
+    expect(container.querySelectorAll('.inline-note.error')).toHaveLength(1)
+  })
+
+  it('o arquivo aberto do lote não pede senha nenhuma', async () => {
+    // Um cifrado e um aberto: a pergunta é só do primeiro, e é o nome dele que
+    // aparece. Pedir senha para o lote inteiro faria a pessoa procurar uma
+    // senha que o outro arquivo nunca teve.
+    await montar({
+      arquivos: ['btg.xlsx', 'sic.xlsx'],
+      cifrados: { 0: SENHA },
+      bancos: [BTG, SICREDI],
+    })
+    await screen.findByLabelText('Senha do arquivo')
+    expect(screen.getByText('btg.xlsx está protegido por senha')).toBeInTheDocument()
+    expect(screen.queryByText(/sic\.xlsx está protegido/)).toBeNull()
   })
 })
 
@@ -4217,5 +4272,73 @@ describe('o banco sai do arquivo, não de uma dropdown', () => {
                            new File(['x'], 'nu.csv', { type: 'text/csv' }))
     await waitFor(() => expect(
       document.documentElement.style.getPropertyValue('--verde')).toBe('#820AD1'))
+  })
+})
+
+
+// ------------------------------------------- lote com bancos diferentes
+
+describe('lote misto: nenhuma marca ganha a tela', () => {
+  const NUBANK = { id: 'nubank', nome: 'Nubank', pede_vencimento: false,
+                   validado: true, tema: { primaria: '#820AD1', inicial: 'N' } }
+  const SICREDI = { id: 'sicredi', nome: 'Sicredi', pede_vencimento: false,
+                    validado: true, tema: { primaria: '#3FA110', inicial: 'S' } }
+
+  const montarApp = async (bancos) => {
+    vi.resetModules()
+    vi.doMock('../api', () => ({
+      getCategories: vi.fn().mockResolvedValue({ categories: ['Casa'] }),
+      getRules: vi.fn().mockResolvedValue({ flagged_count: 0 }),
+      getConfig: vi.fn().mockResolvedValue({
+        banks: [
+          { id: 'sicredi', nome: 'Sicredi', extensoes: ['.xls', '.xlsx', '.csv'],
+            validado: true, tema: SICREDI.tema },
+          { id: 'nubank', nome: 'Nubank', extensoes: ['.csv'],
+            validado: true, tema: NUBANK.tema },
+        ],
+      }),
+      upload: vi.fn(), recategorize: vi.fn(), travel: vi.fn(),
+      uploadPeriodo: vi.fn().mockResolvedValue({
+        purchase_range: { inicio: '2026-07-01', fim: '2026-07-31' },
+        titulares: [], eu_sugerido: null, protegidos: [], bancos,
+      }),
+      preview: vi.fn(), exportCsv: vi.fn(),
+    }))
+    const { default: App } = await import('../App')
+    const r = render(<App />)
+    await screen.findByRole('heading', { name: 'Importar fatura' })
+    await userEvent.upload(r.container.querySelector('input[type=file]'),
+                           [new File(['x'], 'nu.csv', { type: 'text/csv' }),
+                            new File(['x'], 'sic.csv', { type: 'text/csv' })])
+    return r
+  }
+
+  it('com dois bancos, a tela fica no grafite neutro', async () => {
+    // Seguir o PRIMEIRO banco (que era o que acontecia) escolhia um deles pela
+    // ordem em que os arquivos foram soltos, e a cor passava a dizer "Nubank"
+    // numa tela em que metade das linhas é do Sicredi.
+    document.documentElement.style.removeProperty('--verde')
+    await montarApp([NUBANK, SICREDI])
+    await waitFor(() => expect(
+      document.documentElement.style.getPropertyValue('--verde')).toBe('#465061'))
+    expect(document.documentElement.style.getPropertyValue('--verde'))
+      .not.toBe(NUBANK.tema.primaria)
+  })
+
+  it('com dois bancos, a marca volta ao "$" do portal', async () => {
+    // Nem "N" nem "S" descrevem o que está carregado.
+    const { container } = await montarApp([NUBANK, SICREDI])
+    await screen.findByText('Nubank e Sicredi')
+    expect(container.querySelector('.mark').textContent).toBe('$')
+  })
+
+  it('dois arquivos do MESMO banco continuam pintando a tela', async () => {
+    // O que decide é a variedade, não a quantidade de arquivos: duas faturas do
+    // Nubank são um banco só, e apagar a cor aí não diria nada de útil.
+    document.documentElement.style.removeProperty('--verde')
+    const { container } = await montarApp([NUBANK])
+    await waitFor(() => expect(
+      document.documentElement.style.getPropertyValue('--verde')).toBe('#820AD1'))
+    expect(container.querySelector('.mark').textContent).toBe('N')
   })
 })
