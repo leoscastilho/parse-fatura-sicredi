@@ -49,6 +49,13 @@ ROTULO_RE = re.compile(r"\s*\{([^{}]*)\}")
 # conteúdo é um nome de categoria CONHECIDO — ver `desanotar`.
 PARENTESES_RE = re.compile(r"\s*\(([^()]*)\)")
 
+# Como as duas marcas são ESCRITAS. São constantes, e não literais no meio do
+# `annotate`, porque a tela "Formato de saída" documenta a forma delas — e
+# documentação retipada é documentação que mente no dia em que alguém troca a
+# chave pelo colchete aqui e esquece do outro lado.
+MARCA_CATEGORIA = "({})"
+MARCA_ROTULO = "{{{}}}"
+
 
 # Acima disto, os períodos vazios viram um aviso só. Ver `validate_ranges`.
 LIMITE_DE_AVISOS = 3
@@ -413,9 +420,9 @@ def annotate(descricao: str, categoria_real: str, rotulo: str = "",
 
     partes = []
     if categoria_real:
-        partes.append(f"({categoria_real})")
+        partes.append(MARCA_CATEGORIA.format(categoria_real))
     if rotulo:
-        partes.append(f"{{{rotulo}}}")
+        partes.append(MARCA_ROTULO.format(rotulo))
     if not partes:
         return base
 

@@ -472,9 +472,23 @@ def test_o_pacote_de_configuracao_ainda_leva_os_bancos(client):
         assert any(n.startswith("banks/") for n in z.namelist())
 
 
-def test_output_schema_invalido_da_422(client):
-    assert client.post("/config/output",
-                       json={"yaml_text": "colunas: []\n"}).status_code == 422
+def test_o_formato_de_saida_nao_se_grava_pelo_portal(client):
+    """A tela virou PAINEL, e a rota de gravar saiu junto.
+
+    Ela criava uma segunda verdade sobre o mesmo `output.yml`: bastava editar o
+    arquivo com a tela aberta para o botão "Salvar" devolver o formato antigo
+    por cima do novo, em silêncio. Quem escreve o formato é o arquivo.
+    """
+    from api.config_routes import router
+    rotas = {r.path for r in router.routes}
+    assert "/config/output" not in rotas
+    assert "/config" in rotas, "a leitura continua existindo"
+
+    # E o painel devolve o formato EM VIGOR no lugar do editor.
+    doc = client.get("/config").json()["output_doc"]
+    assert [c["papel"] for c in doc["colunas"]] == [
+        "data", "categoria", "descricao", "valor", "pago"]
+    assert doc["marcas"], "as marcas da descrição têm que estar documentadas"
 
 
 # ---------------------------------------------------------------------------
@@ -1206,3 +1220,142 @@ def test_a_senha_do_arquivo_nao_e_aparada(client, tmp_path):
         files=[("files", ("btg.xlsx", cifrado.read_bytes(),
                           "application/octet-stream"))])
     assert resposta.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Formato de saída — o painel
+# ---------------------------------------------------------------------------
+
+_OUTPUT_ESQUISITO = '''
+colunas: [Quando, Rubrica, Item, Quanto, Quitado]
+data:
+  origem: vencimento
+  formato: "%d/%m/%Y"
+Item:
+  modelo: "<<Cartao{banco}>> {descricao}{parcela}{sufixo_data}"
+  parcela: " [[{parcela}]]"
+  banco: "/{banco}"
+  titular: " ((({titular})))"
+  sufixo_data: " %%Em {dia} de {mes}%%"
+pago: sim
+'''
+
+
+def test_o_painel_segue_a_configuracao_e_nao_um_texto_fixo(client, config_dir):
+    """Renomear no arquivo renomeia no painel — senão ele vira uma lenda.
+
+    Documentação retipada é documentação que mente na primeira mudança. Este
+    teste usa um `output.yml` DE PROPÓSITO esquisito: se alguma forma estiver
+    escrita à mão em vez de derivada do schema, ela não muda junto e aparece
+    aqui.
+    """
+    (config_dir / "output.yml").write_text(_OUTPUT_ESQUISITO, encoding="utf-8")
+    doc = client.get("/config").json()["output_doc"]
+
+    assert [c["nome"] for c in doc["colunas"]] == [
+        "Quando", "Rubrica", "Item", "Quanto", "Quitado"]
+    assert [c["papel"] for c in doc["colunas"]] == [
+        "data", "categoria", "descricao", "valor", "pago"]
+
+    por_papel = {c["papel"]: c for c in doc["colunas"]}
+    assert "%d/%m/%Y" in por_papel["data"]["tipo"]
+    assert por_papel["data"]["exemplo"] == "10/08/2026"
+    assert por_papel["pago"]["exemplo"] == "sim"
+    assert '"sim"' in por_papel["pago"]["tipo"]
+
+    formas = {m["nome"]: m["forma"] for m in doc["marcas"]}
+    assert formas["Etiqueta fixa"] == "<<Cartao>>"
+    assert formas["Banco"] == "<<Cartao/BTG>>"
+    assert formas["Parcela"] == "[[03/05]]"
+    assert formas["Data da compra"] == "%%Em 15 de Jul%%"
+    assert formas["Titular"] == "(((Rhyesla)))"
+
+
+def test_a_forma_documentada_e_a_que_o_portal_escreve(client, config_dir):
+    """A prova que segura o painel: a marca da tabela existe no arquivo real.
+
+    Não basta o painel ser derivado — ele tem que ser derivado do MESMO lugar
+    que escreve. Aqui a descrição é montada pelo caminho de verdade e cada
+    forma documentada é procurada dentro dela, literalmente.
+    """
+    from datetime import datetime as _dt
+    from core.pipeline import build_description
+    from core.profiles import ConfigSet
+    from core.statement import Entry
+    from core.travel import annotate
+
+    (config_dir / "output.yml").write_text(_OUTPUT_ESQUISITO, encoding="utf-8")
+    doc = client.get("/config").json()["output_doc"]
+    formas = {m["nome"]: m["forma"] for m in doc["marcas"]}
+
+    schema = ConfigSet.load(config_dir).output
+    compra = Entry(purchase_date=_dt(2026, 7, 15), description="SUPERMERCADOS ALVORA",
+                   installment="03/05", amount=270.51, cardholder="Rhyesla Siqueira")
+    escrita = build_description(compra, schema, {"Rhyesla Siqueira": "Rhyesla"},
+                                banco="BTG")
+
+    for nome in ("Banco", "Parcela", "Data da compra", "Titular"):
+        assert formas[nome] in escrita, (
+            f"o painel promete {formas[nome]!r} e a descrição real é {escrita!r}")
+    assert formas["Estabelecimento"] in escrita
+
+    # E as duas marcas que só a etapa de Viagem escreve.
+    viajada = annotate(escrita, "Alimentação", "Peru", ["Alimentação"])
+    assert formas["Categoria real"] in viajada
+    assert formas["Nome da viagem"] in viajada
+
+
+def test_o_painel_diz_o_que_o_portal_le_de_volta(client):
+    """As marcas que o portal reencontra são as que não podem sumir do arquivo.
+
+    É a informação mais útil da tela: `{Em 15/Jul}` não é enfeite — sem ele a
+    etapa de Viagem e a Análise ficam sem a data da compra.
+    """
+    doc = client.get("/config").json()["output_doc"]
+    lido = {m["nome"]: m["lido"] for m in doc["marcas"]}
+    for nome in ("Estabelecimento", "Data da compra", "Categoria real",
+                 "Nome da viagem", "Titular"):
+        assert lido[nome].strip(), f"{nome} é lida de volta e o painel não diz"
+
+
+def test_o_painel_diz_o_caminho_de_um_jeito_que_da_para_abrir(client, tmp_path,
+                                                              monkeypatch):
+    """`config/output.yml`, não o absoluto de dentro do contêiner.
+
+    `/app/config/output.yml` é verdade e não existe na máquina de quem lê. Numa
+    pasta com outro nome o absoluto volta, porque aí ele é a única resposta.
+    """
+    assert client.get("/config").json()["output_doc"]["caminho"] == "config/output.yml"
+
+    import shutil
+    from tests.conftest import CONFIG
+    from api.settings import get_settings
+    outro = tmp_path / "config-de-outra-pessoa"
+    shutil.copytree(CONFIG, outro)
+    # Quem manda na pasta de configuração é o `FATURA_RULES_PATH`: a raiz é o
+    # diretório do `categories.yml`.
+    monkeypatch.setenv("FATURA_RULES_PATH", str(outro / "categories.yml"))
+    get_settings.cache_clear()
+    try:
+        caminho = client.get("/config").json()["output_doc"]["caminho"]
+        assert caminho == str(outro / "output.yml")
+    finally:
+        get_settings.cache_clear()
+
+
+def test_o_painel_le_a_constante_da_marca_de_viagem(client, monkeypatch):
+    """As marcas de viagem não são configuráveis — são constantes no código.
+
+    Justamente por isso o painel podia "documentá-las" com uma cópia digitada à
+    mão, que ficaria certa hoje e mentiria no dia em que alguém trocasse a chave
+    pelo colchete. Trocar a constante aqui prova que a tela lê a mesma fonte que
+    escreve.
+    """
+    import core.travel as travel
+    monkeypatch.setattr(travel, "MARCA_ROTULO", "!!{}!!")
+    monkeypatch.setattr(travel, "MARCA_CATEGORIA", "@@{}@@")
+
+    formas = {m["nome"]: m["forma"]
+              for m in client.get("/config").json()["output_doc"]["marcas"]}
+    assert formas["Nome da viagem"] == "!!Peru!!"
+    assert formas["Categoria real"] == "@@Alimentação@@"

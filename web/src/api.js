@@ -100,13 +100,16 @@ export function analytics(files, {
 
 // --- configuração (bancos e formato de saída) ------------------------------
 //
-// O formato de ENTRADA não se edita: ele descreve como o banco exporta, que é
-// fato do banco, não preferência de quem usa. O de SAÍDA descreve a planilha
-// de quem usa, e por isso continua aqui.
+// NENHUM DOS DOIS FORMATOS se edita pelo portal. O de ENTRADA descreve como o
+// banco exporta, que é fato do banco e não preferência de quem usa. O de SAÍDA
+// é definido no `output.yml`, à mão — e o `saveOutput` que existia aqui criava
+// uma segunda verdade sobre o mesmo arquivo: bastava editá-lo com a tela aberta
+// para o botão "Salvar" devolver o formato antigo por cima do novo.
+//
+// `/config` continua devolvendo os dois, agora com `output_doc`: o formato em
+// vigor já descrito, que é o que a tela "Formato de saída" mostra.
 
 export const getConfig = () => json('/config')
-export const saveOutput = (yaml_text) =>
-  json('/config/output', asJson({ yaml_text }))
 
 // --- regras ordenadas (regex) ---------------------------------------------
 

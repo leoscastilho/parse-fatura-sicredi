@@ -124,7 +124,7 @@ export default function RulesView({ onError, onCategoriesChanged, onFlaggedChang
               key={f.id}
               className={filter === f.id ? 'ghost active' : 'ghost'}
               style={filter === f.id
-                ? { borderColor: 'var(--verde)', color: 'var(--verde-escuro)' }
+                ? { borderColor: 'var(--primaria)', color: 'var(--primaria-escura)' }
                 : undefined}
               onClick={() => setFilter(f.id)}
             >

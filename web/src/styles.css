@@ -1,40 +1,49 @@
 /* ---------------------------------------------------------------------------
-   Paleta oficial Sicredi — marca.sicredi.com.br/cores
+   A paleta do PORTAL — grafite, a cor de banco nenhum.
 
-   Princípio da marca: "o verde Sicredi deve sempre ganhar destaque como cor
-   principal", com o branco servindo de respiro. Por isso o tema é CLARO com
-   verde dominante, e não o escuro genérico de dashboard.
+   Era o verde Sicredi, de quando o portal lia um banco só. Isso ficou errado em
+   dois momentos: antes de soltar arquivo (o portal não é de banco nenhum até
+   alguém dizer de qual é a fatura) e num lote com bancos diferentes (a cor
+   dizia "Sicredi" numa tela em que metade das linhas é do BTG).
+
+   O verde continua existindo — em `config/banks/sicredi.yml`, como tema DAQUELE
+   banco, e aparece quando o lote é só dele. Aqui embaixo é o repouso: `theme.js`
+   sobrescreve estas variáveis quando reconhece UM banco e as remove quando são
+   vários ou nenhum, e é justamente isso que faz "voltar ao padrão" significar
+   "voltar ao neutro" em vez de "voltar ao Sicredi".
+
+   Os nomes são de PAPEL, não de cor (`--primaria`, e não `--verde`): eram de
+   cor enquanto havia uma cor só, e um `--verde: #820AD1` roxo no meio do
+   Nubank não descrevia mais nada.
 --------------------------------------------------------------------------- */
 
 :root {
   /* Primárias */
-  --verde: #3FA110;            /* Verde Sicredi */
+  --primaria: #465061;
   --branco: #FFFFFF;
 
   /* Secundárias */
-  --verde-escuro: #146E37;     /* destaque de informação importante */
-  --neutro-claro: #D7E6C8;
-  --amarelo: #FFCD00;
-  --neutro-escuro: #5A645A;
-  --marrom: #5A3C1E;
+  --primaria-escura: #232A36;     /* destaque de informação importante */
+  --clara: #D6DBE3;
+  --destaque: #E4C767;
+  --neutra: #5F6874;
+  --aviso: #6B4A12;
 
   /* Apoio — uso restrito a elementos pequenos */
-  --magenta: #E60050;
-  --bordo: #730028;
-  --azul: #46D7FF;
-  --laranja: #FF6400;
+  --erro: #E60050;
+  --erro-escuro: #730028;
 
   /* Derivadas para interface */
-  --bg: #F4F7F1;
+  --bg: #F5F6F8;
   --surface: var(--branco);
-  --surface-2: #F7FAF4;
-  --border: #DDE4D6;
-  --text: #24291F;
-  --muted: var(--neutro-escuro);
-  --verde-suave: #EDF5E5;
+  --surface-2: #F7F8FA;
+  --border: #DDE1E8;
+  --text: #232A36;
+  --muted: var(--neutra);
+  --primaria-suave: #F0F2F6;
 
   --radius: 12px;
-  --shadow: 0 1px 2px rgba(36, 41, 31, .06), 0 4px 16px rgba(36, 41, 31, .04);
+  --shadow: 0 1px 2px rgba(35, 42, 54, .06), 0 4px 16px rgba(35, 42, 54, .04);
   --sidebar-w: 244px;
 }
 
@@ -54,7 +63,7 @@ body {
 .sidebar {
   width: var(--sidebar-w);
   flex: 0 0 var(--sidebar-w);
-  background: var(--verde-escuro);
+  background: var(--primaria-escura);
   color: #fff;
   padding: 20px 14px;
   display: flex; flex-direction: column; gap: 4px;
@@ -65,7 +74,7 @@ body {
 .brand { display: flex; align-items: center; gap: 10px; padding: 0 8px 18px; }
 .brand .mark {
   width: 26px; height: 26px; border-radius: 7px;
-  background: var(--verde); display: grid; place-items: center;
+  background: var(--primaria); display: grid; place-items: center;
   font-weight: 800; font-size: 14px; color: #fff;
 }
 .brand .name { font-weight: 650; font-size: 15px; letter-spacing: -.01em; }
@@ -78,9 +87,9 @@ body {
   border-radius: 8px; font: inherit; font-size: 14px; cursor: pointer;
 }
 .nav-item:hover { background: rgba(255, 255, 255, .09); color: #fff; }
-.nav-item.active { background: var(--verde); color: #fff; font-weight: 550; }
+.nav-item.active { background: var(--primaria); color: #fff; font-weight: 550; }
 .nav-item .pill {
-  margin-left: auto; background: var(--amarelo); color: #24291F;
+  margin-left: auto; background: var(--destaque); color: #24291F;
   border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 700;
 }
 .nav-sep { height: 1px; background: rgba(255, 255, 255, .14); margin: 12px 8px; }
@@ -119,15 +128,15 @@ body {
   padding: 7px 15px; font-size: 13px; cursor: pointer;
 }
 .step:disabled { opacity: .45; cursor: not-allowed; }
-.step.active { color: var(--verde-escuro); border-color: var(--verde); background: var(--verde-suave); }
+.step.active { color: var(--primaria-escura); border-color: var(--primaria); background: var(--primaria-suave); }
 .step.done { color: var(--text); }
 .step .num {
   display: grid; place-items: center; width: 19px; height: 19px;
   border-radius: 50%; background: var(--surface-2); font-size: 11px;
 }
-.step.active .num { background: var(--verde); color: #fff; }
+.step.active .num { background: var(--primaria); color: #fff; }
 .step .badge {
-  background: var(--amarelo); color: #24291F;
+  background: var(--destaque); color: #24291F;
   border-radius: 999px; padding: 0 7px; font-size: 11px; font-weight: 700;
 }
 
@@ -139,7 +148,7 @@ body {
 .card + .card { margin-top: 16px; }
 h2 { font-size: 17px; font-weight: 640; margin: 0 0 6px; letter-spacing: -.01em; }
 .count {
-  background: var(--verde-suave); color: var(--verde-escuro);
+  background: var(--primaria-suave); color: var(--primaria-escura);
   border-radius: 999px; padding: 1px 9px; font-size: 13px; font-weight: 600;
 }
 .muted { color: var(--muted); }
@@ -154,13 +163,13 @@ button {
   border: 1px solid var(--border); background: var(--surface); color: var(--text);
   padding: 9px 16px;
 }
-button:hover:not(:disabled) { border-color: var(--verde); color: var(--verde-escuro); }
+button:hover:not(:disabled) { border-color: var(--primaria); color: var(--primaria-escura); }
 button:disabled { opacity: .5; cursor: not-allowed; }
 button.primary {
-  background: var(--verde); border-color: var(--verde); color: #fff;
+  background: var(--primaria); border-color: var(--primaria); color: #fff;
   font-weight: 600; margin-top: 18px;
 }
-button.primary:hover:not(:disabled) { background: var(--verde-escuro); border-color: var(--verde-escuro); color: #fff; }
+button.primary:hover:not(:disabled) { background: var(--primaria-escura); border-color: var(--primaria-escura); color: #fff; }
 button.ghost { background: var(--surface-2); font-size: 13px; padding: 7px 13px; }
 
 /* Um `<input type=file>` cru desenha um botão do SISTEMA OPERACIONAL, que
@@ -172,16 +181,16 @@ label.como-botao {
   border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
   padding: 7px 13px; font-size: 13px;
 }
-label.como-botao:hover { border-color: var(--verde); color: var(--verde-escuro); }
+label.como-botao:hover { border-color: var(--primaria); color: var(--primaria-escura); }
 label.como-botao.desabilitado { opacity: .5; cursor: not-allowed; }
 label.como-botao input[type="file"] {
   /* `display:none` também tiraria do fluxo de foco; isto esconde sem sumir. */
   position: absolute; width: 1px; height: 1px; opacity: 0;
 }
 
-button.danger:hover:not(:disabled) { border-color: var(--magenta); color: var(--magenta); }
+button.danger:hover:not(:disabled) { border-color: var(--erro); color: var(--erro); }
 button.link {
-  background: none; border: none; color: var(--verde-escuro);
+  background: none; border: none; color: var(--primaria-escura);
   padding: 0; text-decoration: underline; font-size: 13px;
 }
 button.link.small { display: block; margin-top: 4px; font-size: 12px; }
@@ -191,7 +200,7 @@ input[type="date"] {
   font: inherit; color: var(--text); background: var(--surface);
   border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
 }
-select:focus, input:focus { outline: 2px solid var(--verde); outline-offset: -1px; }
+select:focus, input:focus { outline: 2px solid var(--primaria); outline-offset: -1px; }
 .category-select { min-width: 190px; }
 .category-select.empty { color: var(--muted); }
 input.keyword { width: 100%; max-width: 220px; margin-top: 5px; font-size: 13px; }
@@ -212,7 +221,7 @@ input.keyword { width: 100%; max-width: 220px; margin-top: 5px; font-size: 13px;
   margin: 16px 0; background: var(--surface-2);
   transition: border-color .15s, background .15s;
 }
-.dropzone.over, .dropzone:hover { border-color: var(--verde); background: var(--verde-suave); }
+.dropzone.over, .dropzone:hover { border-color: var(--primaria); background: var(--primaria-suave); }
 .file-list { list-style: none; padding: 0; margin: 0; }
 .file-list li {
   display: flex; justify-content: space-between;
@@ -224,19 +233,19 @@ input.keyword { width: 100%; max-width: 220px; margin-top: 5px; font-size: 13px;
 .grid th {
   text-align: left; font-weight: 600; font-size: 11px;
   text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
-  padding: 9px 10px; border-bottom: 2px solid var(--neutro-claro);
+  padding: 9px 10px; border-bottom: 2px solid var(--clara);
 }
 .grid td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
 .grid.compact td, .grid.compact th { padding: 6px 9px; }
 .grid tbody tr:hover td { background: var(--surface-2); }
-.grid tr.dirty td { background: var(--verde-suave); }
+.grid tr.dirty td { background: var(--primaria-suave); }
 .grid tr.blank td { background: #FFF8DC; }
 .grid tr.muted-row td { opacity: .55; }
 .samples { color: var(--muted); font-size: 12px; margin-top: 2px; }
 /* A dica de viagem não é a descrição: é contexto que a descrição ainda não
    tem. Cor da marca para separar as duas sem virar alerta — não há nada de
    errado com a linha, e a etapa Viagem é quem confirma. */
-.samples.viagem-dica { color: var(--verde-escuro); }
+.samples.viagem-dica { color: var(--primaria-escura); }
 
 /* A linha pendurada na viagem à mão. Tarja, e não cor de alerta: não há nada
    de errado com ela — só não foi a data que a colocou ali, e essa diferença
@@ -244,13 +253,13 @@ input.keyword { width: 100%; max-width: 220px; margin-top: 5px; font-size: 13px;
    está numa viagem de outubro. A etiqueta "à mão" que existia aqui saiu junto
    com a célula de texto: hoje a viagem dessa linha é um seletor, e um controle
    aberto no meio de uma coluna de texto já diz que alguém escolheu. */
-tr.amao td:first-child { box-shadow: inset 3px 0 0 var(--amarelo); }
+tr.amao td:first-child { box-shadow: inset 3px 0 0 var(--destaque); }
 details.pendurar {
   border: 1px dashed var(--border); border-radius: 10px;
   padding: 10px 14px; margin-top: 16px; background: var(--surface-2);
 }
 details.pendurar > summary {
-  cursor: pointer; font-size: 14px; font-weight: 600; color: var(--verde-escuro);
+  cursor: pointer; font-size: 14px; font-weight: 600; color: var(--primaria-escura);
 }
 /* Sem isto o contador cola no ponto de interrogação: "antes dela?1". */
 details.pendurar > summary .badge { margin-left: 8px; }
@@ -261,31 +270,31 @@ details.pendurar > summary .badge { margin-left: 8px; }
 
 /* ------------------------------------------------------------------ notes */
 .alert { border-radius: 10px; padding: 11px 14px; margin: 14px 0; font-size: 14px; }
-.alert.error { background: #FDECF1; border: 1px solid var(--magenta); color: var(--bordo); }
-.alert.ok { background: var(--verde-suave); border: 1px solid var(--verde); color: var(--verde-escuro); }
-.alert.warn { background: #FFF8DC; border: 1px solid var(--amarelo); color: var(--marrom); }
+.alert.error { background: #FDECF1; border: 1px solid var(--erro); color: var(--erro-escuro); }
+.alert.ok { background: var(--primaria-suave); border: 1px solid var(--primaria); color: var(--primaria-escura); }
+.alert.warn { background: #FFF8DC; border: 1px solid var(--destaque); color: var(--aviso); }
 .inline-note { font-size: 12px; margin-top: 5px; }
-.inline-note.warning { color: var(--marrom); }
-.inline-note.error { color: var(--magenta); }
+.inline-note.warning { color: var(--aviso); }
+.inline-note.error { color: var(--erro); }
 .inline-note ul { margin: 4px 0 0; padding-left: 16px; }
 
 .tag {
   display: inline-block; border-radius: 999px; padding: 1px 8px;
   font-size: 11px; font-weight: 600; margin-right: 5px;
 }
-.tag.flag { background: var(--amarelo); color: var(--marrom); }
-.tag.redundant { background: var(--neutro-claro); color: var(--verde-escuro); }
+.tag.flag { background: var(--destaque); color: var(--aviso); }
+.tag.redundant { background: var(--clara); color: var(--primaria-escura); }
 .tag.override { background: #E8F4FD; color: #0B5A82; }
 .tag.block { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
 
 .summary { display: flex; gap: 28px; flex-wrap: wrap; margin: 16px 0; }
 .summary .k { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
-.summary .v { font-size: 20px; font-weight: 650; color: var(--verde-escuro); }
+.summary .v { font-size: 20px; font-weight: 650; color: var(--primaria-escura); }
 .totals { margin: 12px 0; }
-.totals summary { cursor: pointer; color: var(--verde-escuro); font-size: 14px; }
+.totals summary { cursor: pointer; color: var(--primaria-escura); font-size: 14px; }
 
 code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: .9em; }
-a { color: var(--verde-escuro); }
+a { color: var(--primaria-escura); }
 
 @media (max-width: 860px) {
   .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 40; box-shadow: var(--shadow); }
@@ -310,9 +319,9 @@ a { color: var(--verde-escuro); }
 /* A caixa de regex é visualmente separada de propósito: ela obedece a outra
    regra de decisão (primeira que casa vence, não trecho mais longo). */
 .regex-card {
-  border-left: 4px solid var(--verde);
+  border-left: 4px solid var(--primaria);
   background: linear-gradient(to right,
-              color-mix(in srgb, var(--verde) 4%, var(--surface)), var(--surface) 60px);
+              color-mix(in srgb, var(--primaria) 4%, var(--surface)), var(--surface) 60px);
 }
 
 .yaml-editor {
@@ -322,19 +331,70 @@ a { color: var(--verde-escuro); }
   border: 1px solid var(--border); border-radius: 10px;
   resize: vertical; tab-size: 2;
 }
-.yaml-editor:focus { outline: 2px solid var(--verde); outline-offset: -1px; }
+.yaml-editor:focus { outline: 2px solid var(--primaria); outline-offset: -1px; }
+
+/* ------------------------------------------------- Formato de saída (painel)
+
+   A tela é de LEITURA: o formato mora no `output.yml` e é editado lá. O que
+   ela precisa fazer bem é uma coisa só — deixar óbvio o que cada delimitador
+   significa, para uma linha da planilha se ler sem consultar nada.            */
+.yaml-leitura {
+  margin: 10px 0 0; padding: 12px 14px; overflow-x: auto;
+  font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 10px; tab-size: 2;
+}
+
+/* Tabela larga rola dentro do próprio quadro, e não empurra a página. */
+.rolagem { overflow-x: auto; }
+
+.familias { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 6px; }
+.familia {
+  display: flex; align-items: flex-start; gap: 10px; flex: 1 1 210px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 9px 12px; font-size: 13px;
+}
+.familia .delim {
+  font-family: ui-monospace, Menlo, monospace; font-size: 15px; font-weight: 700;
+  color: var(--primaria-escura); white-space: nowrap; padding-top: 1px;
+}
+
+/* O exemplo com cada marca pintada. Quatro tons distintos e SUAVES: o que tem
+   de saltar é a fronteira entre os pedaços, não a cor. */
+.exemplo-anotado {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px; line-height: 2.1; margin: 6px 0 8px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px; overflow-x: auto;
+}
+.exemplo-anotado mark {
+  border-radius: 5px; padding: 2px 3px; color: var(--text);
+  box-shadow: inset 0 -2px 0 rgba(35, 42, 54, .12);
+}
+.exemplo-anotado .m-col { background: #DCE6F5; }   /* [ ] de onde veio       */
+.exemplo-anotado .m-par { background: #F3E3C4; }   /* ( ) complemento        */
+.exemplo-anotado .m-cha { background: #D9E9DC; }   /* { } marca do portal    */
+.exemplo-anotado .m-ang { background: #EEDCE8; }   /* < > pessoa             */
+/* O estabelecimento não tem delimitador e não entra na legenda: cinza, para
+   aparecer como pedaço sem se passar por uma das quatro famílias.            */
+.exemplo-anotado .m-txt { background: #E5E8ED; }
+
+code.papel {
+  background: var(--primaria-suave); color: var(--primaria-escura);
+  border-radius: 5px; padding: 1px 6px; font-size: 12px;
+}
 
 input[type="date"], input[type="file"] {
   font: inherit; color: var(--text); background: var(--surface);
   border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
 }
 
-.destaque { color: var(--verde-escuro); font-weight: 700; }
-button.ghost.confirm { border-color: var(--verde); color: var(--verde-escuro); }
+.destaque { color: var(--primaria-escura); font-weight: 700; }
+button.ghost.confirm { border-color: var(--primaria); color: var(--primaria-escura); }
 
 /* Linha cuja categoria a regra trocou na recategorização. Marcada porque é o
    que se confere: o resto do arquivo volta exatamente como entrou. */
-tr.changed td { background: var(--verde-suave); }
+tr.changed td { background: var(--primaria-suave); }
 
 /* ------------------------------------------------------------------ viagem */
 /* Campo rotulado dentro de uma .toolbar — o rótulo em cima, o controle
@@ -351,7 +411,7 @@ tr.changed td { background: var(--verde-suave); }
   border: 1px solid var(--border); border-radius: 10px;
 }
 .viagem-upload > summary {
-  cursor: pointer; font-weight: 600; color: var(--verde-escuro);
+  cursor: pointer; font-weight: 600; color: var(--primaria-escura);
   display: flex; align-items: center; gap: 8px;
 }
 
@@ -408,7 +468,7 @@ tr.changed td { background: var(--verde-suave); }
 td.alta, .alta { color: #d03b3b; }
 .viz-janelas { display: inline-flex; gap: 4px; flex-wrap: wrap; }
 .viz-janelas .ghost.ativo {
-  border-color: var(--verde); color: var(--verde-escuro); background: var(--verde-suave);
+  border-color: var(--primaria); color: var(--primaria-escura); background: var(--primaria-suave);
 }
 
 /* ------------------------------------------------------ recorte de período
@@ -438,7 +498,7 @@ td.alta, .alta { color: #d03b3b; }
 }
 .viz-barra.clicavel:hover { background: var(--surface-2); }
 .viz-barra.clicavel:hover .viz-barra-preenche { opacity: .55; }
-.viz-barra.clicavel:focus-visible { outline: 2px solid var(--verde); }
+.viz-barra.clicavel:focus-visible { outline: 2px solid var(--primaria); }
 
 /* Divergente: o zero no meio do trilho e o preenchimento saindo dele. */
 .viz-barra-trilho.divergente { position: relative; overflow: hidden; }
@@ -460,10 +520,10 @@ tr.abre-grupo:first-child > td { border-top: none; }
 .chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .chip {
   font-size: 12px; padding: 3px 10px; border-radius: 999px;
-  background: var(--verde-suave); border: 1px solid var(--neutro-claro);
-  color: var(--verde-escuro);
+  background: var(--primaria-suave); border: 1px solid var(--clara);
+  color: var(--primaria-escura);
 }
-.chip:hover { border-color: var(--magenta); color: var(--magenta); }
+.chip:hover { border-color: var(--erro); color: var(--erro); }
 
 .card h3 { font-size: 14px; font-weight: 640; margin: 22px 0 4px; }
 
@@ -481,7 +541,7 @@ tr.abre-grupo:first-child > td { border-top: none; }
 .filtros-aba.aberta { right: 340px; }
 .filtros-bolha {
   writing-mode: horizontal-tb; display: inline-block; margin-top: 8px;
-  background: var(--amarelo); color: #24291F; border-radius: 999px;
+  background: var(--destaque); color: #24291F; border-radius: 999px;
   padding: 0 7px; font-size: 11px; font-weight: 700;
 }
 .filtros {
@@ -511,7 +571,7 @@ tr.abre-grupo:first-child > td { border-top: none; }
 }
 .viz-legenda-item:hover { background: var(--surface-2); color: var(--text); }
 .viz-legenda-item.oculta { opacity: .55; text-decoration: line-through; }
-.viz-legenda-item:focus-visible { outline: 2px solid var(--verde); }
+.viz-legenda-item:focus-visible { outline: 2px solid var(--primaria); }
 
 /* ------------------------------------------------------------ conta conjunta
 

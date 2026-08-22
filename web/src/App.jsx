@@ -12,7 +12,7 @@ import ConfigBundle from './components/ConfigBundle'
 import RecategorizeStep, { ChangesSummary } from './components/RecategorizeStep'
 import TravelStep from './components/TravelStep'
 import AnalyticsView from './components/AnalyticsView'
-import { applyTheme, resetTheme, TEMA_NEUTRO } from './theme'
+import { applyTheme, resetTheme } from './theme'
 import { viagensPorLinha } from './viagens'
 import { TODOS, TitularFiltro, opcoesDeTitular } from './titulares'
 
@@ -114,15 +114,19 @@ export default function App() {
   // custom properties no `:root`, então nenhum componente precisa saber que
   // existe mais de um banco — e sem lote nenhum a folha volta a mandar.
   //
-  // COM MAIS DE UM BANCO no lote, nenhum deles pinta: a tela fica no grafite
-  // neutro. Seguir o primeiro (que era o que acontecia) escolhia um banco pela
-  // ordem em que os arquivos foram soltos, e a cor passava a dizer "Sicredi"
-  // numa tela em que metade das linhas é do BTG.
+  // Cor de banco só quando o lote é DE UM banco. Com vários, nenhum deles
+  // descreve a tela — pintar do primeiro (que era o que acontecia) escolhia um
+  // pela ordem em que os arquivos foram soltos e dizia "Sicredi" numa tela em
+  // que metade das linhas é do BTG. Sem lote, idem: o portal não é de banco
+  // nenhum até alguém soltar um arquivo.
+  //
+  // Nos dois casos a saída é a mesma — `resetTheme`, que devolve a palavra ao
+  // `:root` da folha, hoje o grafite do portal.
   useEffect(() => {
-    if (bancosDoLote.length > 1) return applyTheme(TEMA_NEUTRO)
-    const banco = banks.find((b) => b.id === bancosDoLote[0]?.id)
+    const banco = bancosDoLote.length === 1
+      && banks.find((b) => b.id === bancosDoLote[0].id)
     if (banco) applyTheme(banco.tema)
-    else if (!bancosDoLote.length) resetTheme()
+    else resetTheme()
   }, [banks, bancosDoLote])
 
   // O banco deixou de ser escolha e virou leitura: quem responde é o arquivo.

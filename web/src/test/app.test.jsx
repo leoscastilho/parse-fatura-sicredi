@@ -43,8 +43,8 @@ describe('applyTheme', () => {
   it('reescreve as CSS custom properties do banco escolhido', () => {
     applyTheme({ primaria: '#820AD1', escura: '#1B0C24', clara: '#E9D5F7' })
     const style = document.documentElement.style
-    expect(style.getPropertyValue('--verde')).toBe('#820AD1')
-    expect(style.getPropertyValue('--verde-escuro')).toBe('#1B0C24')
+    expect(style.getPropertyValue('--primaria')).toBe('#820AD1')
+    expect(style.getPropertyValue('--primaria-escura')).toBe('#1B0C24')
     // A borda acompanha o tom claro para o contorno não destoar.
     expect(style.getPropertyValue('--border')).toBe('#E9D5F7')
   })
@@ -54,9 +54,9 @@ describe('applyTheme', () => {
   })
 
   it('não apaga variáveis que o tema não define', () => {
-    document.documentElement.style.setProperty('--amarelo', '#FFCD00')
+    document.documentElement.style.setProperty('--destaque', '#FFCD00')
     applyTheme({ primaria: '#820AD1' })
-    expect(document.documentElement.style.getPropertyValue('--amarelo')).toBe('#FFCD00')
+    expect(document.documentElement.style.getPropertyValue('--destaque')).toBe('#FFCD00')
   })
 })
 
@@ -4265,13 +4265,13 @@ describe('o banco sai do arquivo, não de uma dropdown', () => {
   it('o tema segue o banco detectado no arquivo', async () => {
     // O roxo do Nubank aparece porque o arquivo é do Nubank, não porque
     // alguém escolheu Nubank numa lista.
-    document.documentElement.style.removeProperty('--verde')
+    document.documentElement.style.removeProperty('--primaria')
     const { container } = await montarApp()
     await screen.findByRole('heading', { name: 'Importar fatura' })
     await userEvent.upload(container.querySelector('input[type=file]'),
                            new File(['x'], 'nu.csv', { type: 'text/csv' }))
     await waitFor(() => expect(
-      document.documentElement.style.getPropertyValue('--verde')).toBe('#820AD1'))
+      document.documentElement.style.getPropertyValue('--primaria')).toBe('#820AD1'))
   })
 })
 
@@ -4313,16 +4313,17 @@ describe('lote misto: nenhuma marca ganha a tela', () => {
     return r
   }
 
-  it('com dois bancos, a tela fica no grafite neutro', async () => {
+  it('com dois bancos, nenhuma cor de banco fica na tela', async () => {
     // Seguir o PRIMEIRO banco (que era o que acontecia) escolhia um deles pela
     // ordem em que os arquivos foram soltos, e a cor passava a dizer "Nubank"
     // numa tela em que metade das linhas é do Sicredi.
-    document.documentElement.style.removeProperty('--verde')
+    //
+    // A prova é a variável INLINE estar vazia: é assim que a folha volta a
+    // mandar, e o `:root` dela é o grafite do portal.
+    document.documentElement.style.setProperty('--primaria', NUBANK.tema.primaria)
     await montarApp([NUBANK, SICREDI])
     await waitFor(() => expect(
-      document.documentElement.style.getPropertyValue('--verde')).toBe('#465061'))
-    expect(document.documentElement.style.getPropertyValue('--verde'))
-      .not.toBe(NUBANK.tema.primaria)
+      document.documentElement.style.getPropertyValue('--primaria')).toBe(''))
   })
 
   it('com dois bancos, a marca volta ao "$" do portal', async () => {
@@ -4335,10 +4336,125 @@ describe('lote misto: nenhuma marca ganha a tela', () => {
   it('dois arquivos do MESMO banco continuam pintando a tela', async () => {
     // O que decide é a variedade, não a quantidade de arquivos: duas faturas do
     // Nubank são um banco só, e apagar a cor aí não diria nada de útil.
-    document.documentElement.style.removeProperty('--verde')
+    document.documentElement.style.removeProperty('--primaria')
     const { container } = await montarApp([NUBANK])
     await waitFor(() => expect(
-      document.documentElement.style.getPropertyValue('--verde')).toBe('#820AD1'))
+      document.documentElement.style.getPropertyValue('--primaria')).toBe('#820AD1'))
     expect(container.querySelector('.mark').textContent).toBe('N')
+  })
+})
+
+
+// ------------------------------------------- Formato de saída (painel)
+
+describe('anotar', () => {
+  it('parte o exemplo pelas formas que o backend mandou', async () => {
+    const { anotar } = await import('../components/OutputFormatView')
+    const pedacos = anotar(
+      '[Cartão] Petz (Parcela 03/03) {Em 8/Mar}',
+      [{ forma: '[Cartão]' }, { forma: '(Parcela 03/03)' }, { forma: '{Em 8/Mar}' }])
+    const marcados = pedacos.filter((p) => p.marca).map((p) => p.txt)
+    expect(marcados).toEqual(['[Cartão]', '(Parcela 03/03)', '{Em 8/Mar}'])
+    // E nada se perde no caminho: os pedaços remontam o texto original.
+    expect(pedacos.map((p) => p.txt).join('')).toBe(
+      '[Cartão] Petz (Parcela 03/03) {Em 8/Mar}')
+  })
+
+  it('casa a forma MAIS LONGA primeiro', async () => {
+    // Uma forma pode conter outra — o estabelecimento é uma forma sem
+    // delimitador, então nada impede que ele contenha o texto de uma marca. Se
+    // a menor casar antes, ela parte a maior no meio e a maior nunca mais é
+    // encontrada, deixando um pedaço marcado pela metade.
+    const { anotar } = await import('../components/OutputFormatView')
+    const pedacos = anotar('[Cartão] Petz aqui',
+                           [{ forma: '[Cartão]' }, { forma: '[Cartão] Petz' }])
+    expect(pedacos.filter((p) => p.marca).map((p) => p.txt))
+      .toEqual(['[Cartão] Petz'])
+    expect(pedacos.map((p) => p.txt).join('')).toBe('[Cartão] Petz aqui')
+  })
+
+  it('ignora forma que não está no exemplo', async () => {
+    const { anotar } = await import('../components/OutputFormatView')
+    const pedacos = anotar('Petz', [{ forma: '<Rhyesla>' }, { forma: '' }])
+    expect(pedacos).toEqual([{ txt: 'Petz', marca: null }])
+  })
+})
+
+describe('Formato de saída — painel', () => {
+  const DOC = {
+    colunas: [
+      { nome: 'Quando', papel: 'data', conteudo: 'o vencimento', tipo: 'data · %d/%m/%Y', exemplo: '10/08/2026' },
+      { nome: 'Rubrica', papel: 'categoria', conteudo: 'a categoria', tipo: 'texto', exemplo: 'Alimentação' },
+      { nome: 'Item', papel: 'descricao', conteudo: 'a descrição', tipo: 'texto', exemplo: '[Cartão] Petz {Em 8/Mar}' },
+      { nome: 'Quanto', papel: 'valor', conteudo: 'o valor', tipo: 'número', exemplo: '270.51' },
+      { nome: 'Quitado', papel: 'pago', conteudo: 'fixo', tipo: 'texto fixo · "sim"', exemplo: 'sim' },
+    ],
+    marcas: [
+      { forma: '[Cartão]', delimitador: '[ ]', nome: 'Etiqueta fixa', origem: 'o modelo',
+        quando: 'toda linha', lido: '' },
+      { forma: 'Petz', delimitador: '— (sem marca)', nome: 'Estabelecimento',
+        origem: 'a fatura', quando: 'toda linha', lido: 'é a chave das regras' },
+      { forma: '{Em 8/Mar}', delimitador: '{ }', nome: 'Data da compra', origem: 'a compra',
+        quando: 'toda linha', lido: 'reconstrói a data ao reimportar' },
+    ],
+    modelo: '[Cartão{banco}] {descricao}{sufixo_data}',
+    exemplo_descricao: '[Cartão] Petz {Em 8/Mar}',
+    ordenacao: ['data', 'categoria'], categoria_vazia_no_fim: true,
+    encoding: 'utf-8', nome_um: 'fatura_{periodo}.csv',
+    nome_varios: 'faturas_{inicio}_a_{fim}.csv',
+    caminho: '/app/config/output.yml',
+  }
+
+  async function montar(doc = DOC) {
+    vi.resetModules()
+    vi.doMock('../api', () => ({
+      getConfig: vi.fn().mockResolvedValue({
+        banks: [], output_yaml: 'colunas: [Quando]\n', output_exemplo: {}, output_doc: doc,
+      }),
+    }))
+    const { default: View } = await import('../components/OutputFormatView')
+    const r = render(<View onError={vi.fn()} />)
+    await screen.findByText('As colunas')
+    return r
+  }
+
+  it('mostra as colunas com o nome que ESTA configuração deu', async () => {
+    await montar()
+    for (const nome of ['Quando', 'Rubrica', 'Item', 'Quanto', 'Quitado']) {
+      expect(screen.getByText(nome)).toBeInTheDocument()
+    }
+    expect(screen.getByText('texto fixo · "sim"')).toBeInTheDocument()
+  })
+
+  it('pinta cada marca dentro do exemplo, cada família com a sua cor', async () => {
+    const { container } = await montar()
+    const marcas = [...container.querySelectorAll('.exemplo-anotado mark')]
+    expect(marcas.map((m) => m.textContent)).toEqual(['[Cartão]', 'Petz', '{Em 8/Mar}'])
+    // O estabelecimento não tem delimitador e não está na legenda das quatro
+    // famílias: pintá-lo com a cor de uma delas faria a legenda mentir sobre o
+    // exemplo logo abaixo dela.
+    expect(marcas.map((m) => m.className)).toEqual(['m-col', 'm-txt', 'm-cha'])
+  })
+
+  it('diz o que o portal lê de volta, marca por marca', async () => {
+    await montar()
+    expect(screen.getByText('reconstrói a data ao reimportar')).toBeInTheDocument()
+  })
+
+  it('não tem editor nem botão de salvar', async () => {
+    // A tela é painel: um "Salvar" aqui criava uma segunda verdade sobre o
+    // mesmo `output.yml` — bastava editar o arquivo com a tela aberta para o
+    // botão devolver o formato antigo por cima do novo.
+    const { container } = await montar()
+    expect(container.querySelector('textarea')).toBeNull()
+    expect(screen.queryByRole('button', { name: /salvar/i })).toBeNull()
+    expect(screen.getByText('/app/config/output.yml')).toBeInTheDocument()
+  })
+
+  it('o arquivo em si fica atrás de um clique', async () => {
+    await montar()
+    expect(screen.queryByText(/colunas: \[Quando\]/)).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: /ver o arquivo/ }))
+    expect(await screen.findByText(/colunas: \[Quando\]/)).toBeInTheDocument()
   })
 })

@@ -33,8 +33,14 @@ chamam as colunas, se o número usa vírgula ou ponto.
 O formato de entrada **não se edita pelo portal**. Ele descreve como o banco
 exporta, que é fato do banco e não preferência de quem usa — e um fato que,
 quando muda, muda para todo mundo ao mesmo tempo. Editável, cada instalação
-podia acabar com um leitor diferente. (O formato de SAÍDA continua editável na
-tela, e pelo motivo simétrico: ele descreve a SUA planilha.)
+podia acabar com um leitor diferente.
+
+O de **saída** também não. Ele mora no `output.yml` e é escrito à mão; o botão
+de salvar que existia na tela criava uma segunda verdade sobre o mesmo arquivo
+— bastava editá-lo com a tela aberta para o "Salvar" devolver o formato antigo
+por cima do novo, em silêncio. A aba **Formato de saída** virou painel: mostra
+as colunas, os delimitadores da descrição e o que o portal relê de cada um,
+tudo derivado do schema em vigor. Ver `documentar` em `api/config_routes.py`.
 
 1. Copie `config/banks/nubank.yml` para `config/banks/<id>.yml`.
 2. Ajuste `id`, `nome`, `tema` e o bloco `leitura`.

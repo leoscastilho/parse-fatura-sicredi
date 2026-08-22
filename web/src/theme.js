@@ -1,50 +1,22 @@
 /**
  * Aplica o tema do banco escolhido nas CSS custom properties.
  *
- * Todo o CSS usa `var(--verde)`, `var(--verde-escuro)` etc. Trocar o banco é
+ * Todo o CSS usa `var(--primaria)`, `var(--primaria-escura)` etc. Trocar o banco é
  * só reescrever essas variáveis no `:root` — nenhum componente precisa saber
  * que existe mais de um banco, e não há classe `.tema-nubank` espalhada pelo
  * código.
  */
 const MAP = {
-  primaria: '--verde',
-  escura: '--verde-escuro',
-  clara: '--neutro-claro',
-  suave: '--verde-suave',
-  destaque: '--amarelo',
-  neutra: '--neutro-escuro',
-  aviso: '--marrom',
-  erro: '--magenta',
+  primaria: '--primaria',
+  escura: '--primaria-escura',
+  clara: '--clara',
+  suave: '--primaria-suave',
+  destaque: '--destaque',
+  neutra: '--neutra',
+  aviso: '--aviso',
+  erro: '--erro',
   fundo: '--bg',
   texto: '--text',
-}
-
-/**
- * O tema de LOTE MISTO — a cor de banco nenhum, de propósito.
- *
- * Com faturas de bancos diferentes na mesma leva, pintar a tela com a cor de um
- * deles seria escolher um sem motivo: metade das linhas na tela é do outro, e a
- * cor passaria a dizer algo falso sobre o que está carregado.
- *
- * Não dá para resolver isso com `resetTheme`: o `:root` da folha ainda é o
- * verde Sicredi de quando o portal lia um banco só, então "voltar ao padrão"
- * num lote Sicredi + BTG seria exatamente pintar a tela de Sicredi. Daí uma
- * paleta própria — com as MESMAS chaves de um `tema:` de banco, para passar
- * pelo `applyTheme` sem nenhum caso especial.
- */
-export const TEMA_NEUTRO = {
-  primaria: '#465061',
-  escura: '#232A36',
-  clara: '#D6DBE3',
-  suave: '#F0F2F6',
-  destaque: '#E4C767',
-  neutra: '#5F6874',
-  aviso: '#6B4A12',
-  erro: '#E60050',
-  fundo: '#F5F6F8',
-  texto: '#232A36',
-  // A marca também não vira inicial de banco nenhum: volta ao "$" do portal.
-  inicial: '$',
 }
 
 export function applyTheme(tema) {
@@ -58,14 +30,17 @@ export function applyTheme(tema) {
 }
 
 /**
- * Volta ao tema do próprio CSS, o que estiver escrito no `:root` da folha.
+ * Volta ao GRAFITE do portal — o `:root` da folha, que é a cor de banco nenhum.
  *
- * Existe porque o banco deixou de ser uma escolha permanente e passou a ser
- * detectado por arquivo: entre um lote e o seguinte a tela precisa esquecer o
- * roxo do Nubank, senão "Começar de novo" mantém a cara do banco anterior até
- * alguém soltar outro arquivo — e a cor passa a mentir sobre o que está
- * carregado. Remover a propriedade inline é o que devolve a palavra à folha;
- * sobrescrever com um valor fixo criaria um terceiro tema para manter.
+ * Chamado nos dois casos em que nenhuma cor de banco descreve a tela: sem lote
+ * (o portal não é de banco nenhum até alguém soltar um arquivo) e com bancos
+ * DIFERENTES no mesmo lote (pintar de um deles diria "Sicredi" numa tela em que
+ * metade das linhas é do BTG).
+ *
+ * Remover a propriedade inline é o que devolve a palavra à folha. Sobrescrever
+ * com uma paleta fixa aqui — que foi como isto nasceu — criava um segundo
+ * neutro para manter em sincronia com o do CSS, e os dois divergiriam no dia em
+ * que alguém mexesse num só.
  */
 export function resetTheme() {
   const root = document.documentElement
